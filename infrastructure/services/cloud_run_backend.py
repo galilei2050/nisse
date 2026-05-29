@@ -1,25 +1,33 @@
-"""Cloud Run service for the nisse Telegram backend — uses baski.infra helpers."""
+"""Cloud Run service for the nisse Telegram backend."""
 
 import pulumi_gcp as gcp
-from baski.infra.iam import get_service_account
 from baski.infra.run import (
     CloudRunServiceConfig,
-    create_cloud_run_secret_env,
     create_cloud_run_with_monitoring,
     repo_short_sha,
 )
 
-DOCKER_REPOSITORY = f"us-docker.pkg.dev/{gcp.config.project}/docker"
+from delivery import docker_repository_url
+from iam import cloud_run_service_account
+from secret_manager import telegram_token
 
-cloud_run_service_account = get_service_account("cloud-run")
+telegram_token_env = gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+    name="TELEGRAM_TOKEN",
+    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+            secret=telegram_token.secret_id,
+            version="latest",
+        ),
+    ),
+)
 
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(
         service_name="backend",
-        image=f"{DOCKER_REPOSITORY}/backend:{repo_short_sha('..')}",
+        image=docker_repository_url.apply(lambda url: f"{url}/backend:{repo_short_sha('..')}"),
         envs=[
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name="CLOUD", value="1"),
-            create_cloud_run_secret_env("TELEGRAM_TOKEN", "backend"),
+            telegram_token_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,

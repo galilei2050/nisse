@@ -18,20 +18,26 @@ config.yml          Runtime YAML config (overridden by Firestore in cloud)
 ## Local
 
 ```bash
-make setup                                  # one-shot venv + pip install
-export TELEGRAM_TOKEN=<your bot token>
-python3 -m app.backend                      # polling mode
+make setup                          # uv sync + pre-commit install
+export TELEGRAM_TOKEN=<bot token>
+make backend-run                    # polling mode, no public URL needed
 ```
-
-Polling mode talks to Telegram directly — no public URL needed.
 
 ## Deploy
 
-Prerequisites (one-time, set up by hand in `nisse2050`):
+Pulumi owns Artifact Registry, Cloud Run, the `cloud-run` service account, the
+`TELEGRAM_TOKEN` secret container, and its IAM binding. Two things must exist
+*before* the first `pulumi up` because Pulumi itself depends on them:
 
-1. Artifact Registry repo named `docker` in `us-central1` (`gcloud artifacts repositories create docker --repository-format=docker --location=us-central1`)
-2. Secret Manager secrets: `TELEGRAM_TOKEN`, `PULUMI_CONFIG_PASSPHRASE`
-3. GCS bucket for Pulumi state: `gs://nisse2050-pulumi`
-4. Service accounts: `cloud-run@nisse2050.iam.gserviceaccount.com` (with access to `TELEGRAM_TOKEN`)
+1. GCS bucket for Pulumi state: `gsutil mb -p nisse2050 -l us-central1 gs://nisse2050-pulumi`
+2. `PULUMI_CONFIG_PASSPHRASE` secret in Secret Manager (any random string).
 
-Then `make cd` (or push to `main` → Cloud Build trigger).
+Then:
+
+```bash
+make infra-setup       # pulumi login + stack init/select
+make infra-apply       # creates registry, SA, secret container, IAM
+# now set the actual token value:
+echo -n "<bot token>" | gcloud secrets versions add TELEGRAM_TOKEN --data-file=-
+make cd                # build + push image, pulumi up
+```
