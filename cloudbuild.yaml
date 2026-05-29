@@ -1,0 +1,31 @@
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'docker-login'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - 'gcloud auth configure-docker us-docker.pkg.dev --quiet'
+
+  # Single source of truth: cloudbuild does nothing the Makefile can't do locally.
+  # `make cd` builds + pushes the image, then runs pulumi up.
+  - name: 'ghcr.io/astral-sh/uv:python3.12-bookworm'
+    id: 'cd'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        apt-get update && apt-get install -y --no-install-recommends git make curl
+        curl -fsSL https://get.pulumi.com | sh
+        export PATH="$$HOME/.pulumi/bin:$$PATH"
+        uv sync
+        make cd
+    secretEnv: ['PULUMI_CONFIG_PASSPHRASE']
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/PULUMI_CONFIG_PASSPHRASE/versions/latest
+      env: 'PULUMI_CONFIG_PASSPHRASE'

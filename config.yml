@@ -1,0 +1,3 @@
+# Runtime config. Overridden by Firestore `config` collection in cloud mode.
+# baski.server.AsyncServer reads this on startup.
+name: nisse
