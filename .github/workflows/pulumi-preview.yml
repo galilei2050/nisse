@@ -33,7 +33,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - run: make setup
       - name: Pulumi preview
-        run: make infra-diff   # infra-diff depends on infra-setup (login + stack)
+        run: make infra-setup infra-diff   # CI is fresh, so bootstrap the backend explicitly
       - name: Comment PR with preview
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7

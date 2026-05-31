@@ -12,7 +12,7 @@ export PULUMI_STATE_BUCKET := nisse2050-pulumi
 export DOCKER_REPOSITORY_ROOT := us-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/docker
 export BACKEND_IMAGE := ${DOCKER_REPOSITORY_ROOT}/backend:${SHORT_COMMIT_SHA}
 export BACKEND_IMAGE_LATEST := ${DOCKER_REPOSITORY_ROOT}/backend:latest
-export PATH := ~/.pulumi/bin:$(PATH)
+export PATH := $(HOME)/.pulumi/bin:$(PATH)   # $(HOME) — make doesn't expand ~ inside PATH
 
 # Pulumi runs from infrastructure/ but shares the root .venv.
 PULUMI := cd infrastructure && uv run pulumi
@@ -109,9 +109,10 @@ backend-docker-push: backend-docker-build
 	docker push ${BACKEND_IMAGE_LATEST}
 
 # Pulumi
-# Backend targeting only: point Pulumi at the state bucket + select/create the stack +
-# set stack config. Cheap and idempotent, so every infra op below depends on it — you
-# never have to remember to run it first. (Tooling install lives in `setup`.)
+# Backend targeting: point Pulumi at the state bucket + select/create the stack + set
+# config. Has a network login, so it's NOT a prereq of the infra ops below — run it once
+# per session, then iterate fast with infra-diff/refresh. `cd` calls it explicitly.
+# (Tooling install lives in `setup`.)
 .PHONY: infra-setup
 infra-setup:
 	$(PULUMI) login gs://${PULUMI_STATE_BUCKET}
@@ -121,20 +122,20 @@ infra-setup:
 	$(PULUMI) config set gcp:region ${GOOGLE_CLOUD_REGION}
 
 .PHONY: infra-preview
-infra-preview: infra-setup
+infra-preview:
 	$(PULUMI) preview
 
 # Preview + capture to infrastructure/preview.txt for the PR comment (INFRA workflow).
 .PHONY: infra-diff
-infra-diff: infra-setup
+infra-diff:
 	$(PULUMI) preview --diff --non-interactive 2>&1 | tee preview.txt
 
 .PHONY: infra-apply
-infra-apply: infra-setup
+infra-apply:
 	$(PULUMI) up --yes --skip-preview
 
-# Full deploy: build+push image, then pulumi up. infra-setup is listed first (make
-# dedups it against infra-apply's prereq → runs once) so a bad login/stack fails fast,
-# before the docker build. Assumes `make setup` already ran on this box/container.
+# Full deploy: bootstrap backend (infra-setup), build+push image, then pulumi up.
+# infra-setup first so a bad login/stack fails fast, before the docker build.
+# Assumes `make setup` already ran on this box/container.
 .PHONY: cd
 cd: infra-setup backend-docker-push infra-apply
