@@ -1,5 +1,8 @@
-include .env
-export
+# Load .env when present (local dev). Absent in CI — guard so make doesn't hard-fail.
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
 
 SHELL := /bin/bash
 SHORT_COMMIT_SHA := $(shell git rev-parse --short HEAD)
@@ -27,8 +30,8 @@ backend-run:
 	@ln -sf ~/Logs/nisse-backend.log tmp/backend.log
 	@echo "Backend started (logs: tmp/backend.log → ~/Logs/nisse-backend.log)"
 
-.PHONY: backend-dry-run
-backend-dry-run:
+.PHONY: test-backend-dry-run
+test-backend-dry-run:
 	uv run python -m app.backend --dry-run
 
 .PHONY: lint
@@ -47,8 +50,19 @@ lint-fix:
 typecheck:
 	uv run mypy app/
 
+# Functional tests — pure, no running backend. Part of `make test` / CI.
+.PHONY: test-backend
+test-backend:
+	uv run pytest tests/backend/
+
+# Smoke tests — hit a real backend at BACKEND_URL (local --cloud boot or deployed
+# Cloud Run). Not in `make test`: needs a live service, run post-deploy.
+.PHONY: smoke-test
+smoke-test:
+	uv run pytest tests/smoke/
+
 .PHONY: test
-test: lint typecheck backend-dry-run
+test: lint typecheck test-backend test-backend-dry-run
 
 # Docker
 .PHONY: backend-docker-build
@@ -65,7 +79,9 @@ backend-docker-push: backend-docker-build
 .PHONY: infra-setup
 infra-setup:
 	$(PULUMI) login gs://${PULUMI_STATE_BUCKET}
-	$(PULUMI) stack select prod
+	# select-or-init in one shell (no second cd — $(PULUMI) already chdirs to infrastructure).
+	cd infrastructure && (uv run pulumi stack select prod || uv run pulumi stack init prod --secrets-provider=passphrase)
+	$(PULUMI) install
 	$(PULUMI) config set gcp:project ${GOOGLE_CLOUD_PROJECT}
 	$(PULUMI) config set gcp:region ${GOOGLE_CLOUD_REGION}
 

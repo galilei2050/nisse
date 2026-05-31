@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    # test-backend-dry-run boots the server, which reads these at import time
+    # (baski treats an empty value as unset). Dummy values are fine — dry-run
+    # never constructs the Bot or connects to Telegram.
+    env:
+      TELEGRAM_TOKEN: ci-dummy-token
+      WEBHOOK_URL: https://ci.invalid/webhook
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make test-backend
+      - run: make test-backend-dry-run

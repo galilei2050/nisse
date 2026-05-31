@@ -6,7 +6,6 @@ from baski.infra.run import (
     create_cloud_run_with_monitoring,
     repo_short_sha,
 )
-
 from delivery import docker_repository_url
 from iam import cloud_run_service_account
 from secret_manager import telegram_token

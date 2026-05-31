@@ -26,11 +26,13 @@ make backend-run                    # polling mode, no public URL needed
 ## Deploy
 
 Pulumi owns Artifact Registry, Cloud Run, the `cloud-run` service account, the
-`TELEGRAM_TOKEN` secret container, and its IAM binding. Two things must exist
+`TELEGRAM_TOKEN` secret container, and its IAM binding. Three things must exist
 *before* the first `pulumi up` because Pulumi itself depends on them:
 
 1. GCS bucket for Pulumi state: `gsutil mb -p nisse2050 -l us-central1 gs://nisse2050-pulumi`
 2. `PULUMI_CONFIG_PASSPHRASE` secret in Secret Manager (any random string).
+3. Service APIs enabled once (a fresh project has only storage/logging/monitoring on):
+   `gcloud services enable artifactregistry.googleapis.com iam.googleapis.com secretmanager.googleapis.com run.googleapis.com --project nisse2050`
 
 Then:
 

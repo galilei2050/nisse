@@ -1,7 +1,6 @@
 """Secret Manager containers + IAM bindings for nisse runtime."""
 
 import pulumi_gcp as gcp
-
 from iam import cloud_run_service_account
 
 telegram_token = gcp.secretmanager.Secret(
