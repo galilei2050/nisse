@@ -26,11 +26,11 @@ setup:
 	$(PULUMI) install                         # Pulumi resource plugins (gcp) — dep prep, no stack needed
 	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 
-# Local dev — polling. Same command everywhere; the token comes from the
-# environment's TELEGRAM_TOKEN (.env locally, Secret Manager in Cloud Run).
+# Local dev / smoke — polling. Single instance: one bot token can't have two
+# pollers, so stop any running one first. Token from env TELEGRAM_TOKEN.
 .PHONY: backend-run
 backend-run:
-	@fuser -k 8080/tcp 2>/dev/null; true
+	@pkill -f '[a]pp.backend' 2>/dev/null; true   # bracket avoids pkill matching its own recipe shell
 	@mkdir -p ~/Logs tmp
 	nohup uv run python -m app.backend > ~/Logs/nisse-backend.log 2>&1 < /dev/null & disown
 	@ln -sf ~/Logs/nisse-backend.log tmp/backend.log
@@ -61,28 +61,22 @@ typecheck:
 test-backend:
 	uv run pytest tests/backend/
 
-# Smoke — boot the same app in webhook mode on :8080 (TELEGRAM_TOKEN from the
-# environment), wait for /ping, run smoke tests, then stop it. Not part of `ci`;
-# needs TELEGRAM_TOKEN + public WEBHOOK_URL.
+# Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
+# Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
+# running. Needs a real TELEGRAM_TOKEN; not in GitHub `ci` (no token there).
 .PHONY: smoke-test
-smoke-test: backend-cloud-run backend-wait
-	uv run pytest tests/smoke/; rc=$$?; fuser -k 8080/tcp 2>/dev/null; exit $$rc
+smoke-test: backend-run backend-wait
+	uv run pytest tests/smoke/
 
-.PHONY: backend-cloud-run
-backend-cloud-run:
-	@fuser -k 8080/tcp 2>/dev/null; true
-	@mkdir -p ~/Logs tmp
-	nohup uv run python -m app.backend --cloud -p 8080 > ~/Logs/nisse-smoke.log 2>&1 < /dev/null & disown
-	@ln -sf ~/Logs/nisse-smoke.log tmp/smoke.log
-	@echo "Smoke backend (webhook) booting on :8080"
-
+# backend-wait — poll until healthy. Polling has no HTTP; the "Run polling for
+# bot @…" log line (aiogram getMe succeeded) is the ready signal.
 .PHONY: backend-wait
 backend-wait:
 	@for i in $$(seq 1 20); do \
 		sleep 1; \
-		if ! pgrep -f 'app.backend --cloud' >/dev/null; then echo "Smoke backend died — see tmp/smoke.log"; exit 1; fi; \
-		if curl -sf http://localhost:8080/ping >/dev/null 2>&1; then echo "Smoke backend ready!"; exit 0; fi; \
-	done; echo "Smoke backend failed to start in 20s — see tmp/smoke.log"; exit 1
+		if ! pgrep -f '[a]pp.backend' >/dev/null; then echo "Backend died — see tmp/backend.log"; exit 1; fi; \
+		if grep -q 'Run polling for bot @' ~/Logs/nisse-backend.log 2>/dev/null; then echo "Backend ready (polling)!"; exit 0; fi; \
+	done; echo "Backend failed to start in 20s — see tmp/backend.log"; exit 1
 
 # Single source of truth for CI — GitHub Actions just runs `make ci`, no copy-paste.
 # Smoke excluded: needs a live backend with a real token + public WEBHOOK_URL.
@@ -92,10 +86,10 @@ ci: lint typecheck test-backend test-backend-dry-run
 .PHONY: test
 test: ci
 
-# Pre-push git hook (.pre-commit-config.yaml) runs this. Smoke is excluded —
-# it needs a live backend, which a local push can't assume.
+# Pre-push git hook (.pre-commit-config.yaml). Mirrors clarity's pre-push-check:
+# full ci + a real-bot smoke boot before pushing.
 .PHONY: pre-push
-pre-push: test
+pre-push: ci smoke-test
 
 # Docker
 .PHONY: backend-docker-build
@@ -133,6 +127,10 @@ infra-diff:
 .PHONY: infra-apply
 infra-apply:
 	$(PULUMI) up --yes --skip-preview
+
+.PHONY: infra-deploy
+infra-deploy: infra-setup backend-docker-push
+	$(MAKE) infra-apply
 
 # Full deploy: bootstrap backend (infra-setup), build+push image, then pulumi up.
 # infra-setup first so a bad login/stack fails fast, before the docker build.

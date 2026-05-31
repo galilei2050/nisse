@@ -42,45 +42,51 @@ provision env — the runner does (CI job / local `.env`).
 - [x] `make test` = `lint typecheck test-backend test-backend-dry-run`; CI runs
       `make test-backend`.
 
-## 3. CI (GitHub Actions) ✅
+## 3. CI (GitHub Actions) ✅ DONE
 
-- [x] Added `.github/workflows/ci.yml` with jobs `lint`, `typecheck`, `test`
-      (uv + setup-python 3.12 + `make setup` then the granular target)
+- [x] `.github/workflows/ci.yml` — 3 jobs `lint` / `typecheck` / `test`, each
+      delegating to a `make` target (Makefile is the source of truth, no
+      copy-paste). `make ci` runs the same three locally.
 - [x] Triggers on `pull_request` and `push` to `main`
 - [x] `test` job sets dummy `TELEGRAM_TOKEN` / `WEBHOOK_URL` so
       `test-backend-dry-run` boots (baski treats empty env as unset)
 - [x] Guarded `include .env` in the Makefile so CI (no `.env`) doesn't hard-fail
-- [x] Added `per-file-ignores` for `infrastructure/**` (Pulumi false positives:
-      INP001/S106/D104) so `make lint` is green
-- [ ] Confirm CI passes green on a real PR (push branch + open PR)
-- [ ] Optional: add `infra` preview job (mirrors clarity `pulumi-preview.yml`):
-      `pulumi preview` on PRs touching `infrastructure/**` (needs GCP auth secret)
+- [x] `per-file-ignores` for `infrastructure/**` (Pulumi false positives) so lint is green
+- [x] CI green on real PR #1 — lint / typecheck / test all pass
+- [x] `infra` preview job: `.github/workflows/pulumi-preview.yml` (INFRA) added
+      and **passing** on PR #1 (SERVICE_ACCOUNT secret wired, GCP auth works)
 
-## 4. CD — successful deployment to `nisse2050`
+## 4. CD — deployment to `nisse2050` 🟡 IN PROGRESS
 
-One-time prerequisites (must exist BEFORE first `pulumi up`; Pulumi depends on them):
+Infra has been `pulumi up`'d already (image `backend:5ab470e`), but the Cloud Run
+service is **Ready=False** — two boot blockers below.
 
-- [ ] GCS state bucket: `gsutil mb -p nisse2050 -l us-central1 gs://nisse2050-pulumi`
-- [ ] `PULUMI_CONFIG_PASSPHRASE` secret in Secret Manager (any random string)
-- [ ] Cloud Build service account has roles: Artifact Registry writer,
-      Cloud Run admin, Secret Manager admin, Service Account user, Storage admin
+Done:
 
-Pipeline:
+- [x] GCS state bucket `gs://nisse2050-pulumi` exists (Pulumi state under `.pulumi/`)
+- [x] Pulumi stack `prod` + `make infra-apply` ran → Artifact Registry `docker`,
+      `cloud-run@` SA, `TELEGRAM_TOKEN` secret container, Cloud Run `backend` service
+- [x] IAM: `cloud-run@` + `deploy@` roles copied from clarity; `github-actions@`
+      read-only SA created (CI preview uses it)
+- [x] Cloud Build ↔ GitHub connection (`galilei2050-github-oauthtoken-*` secret)
 
-- [ ] `make infra-setup` — `pulumi login` + stack `prod` init/select + gcp config
-- [ ] `make infra-apply` (or `infra-preview` first) creates Artifact Registry,
-      `cloud-run` SA, `TELEGRAM_TOKEN` secret container, IAM binding, Cloud Run svc
-- [ ] Set the real token value:
-      `echo -n "<bot token>" | gcloud secrets versions add TELEGRAM_TOKEN --data-file=-`
-- [ ] Connect a **Cloud Build trigger** to the GitHub repo (push to `main` →
-      runs `cloudbuild.yaml` → `make cd`). Today `cloudbuild.yaml` exists but
-      nothing invokes it — wire the trigger (GCP console or
-      `gcloud builds triggers create github`)
-- [ ] First `make cd` (or triggered build) builds + pushes the image and runs
-      `pulumi up` end-to-end without manual steps
-- [ ] `WEBHOOK_URL` is set to the deployed Cloud Run URL and registered with
-      Telegram so webhook mode (`--cloud`) actually receives updates
-- [ ] **Live check**: message the deployed bot on Telegram → it replies `hello`
+Blockers (why `backend` is Ready=False):
+
+- [ ] **`TELEGRAM_TOKEN` secret has NO version** — container exists, value never
+      added. Run: `echo -n "<prod bot token>" | gcloud secrets versions add TELEGRAM_TOKEN --data-file=- --project nisse2050`
+- [ ] **`WEBHOOK_URL` not set on the Cloud Run service** — `cloud_run_backend.py`
+      omits it, so baski crashes on boot (`get_env("WEBHOOK_URL","")` → empty →
+      raises). Set it to the service's own URL (Pulumi `service.uri`) and
+      `pulumi up` again.
+
+Remaining:
+
+- [ ] `PULUMI_CONFIG_PASSPHRASE` in Secret Manager (cloudbuild.yaml reads it for
+      `make cd`) — not present yet (GitHub Actions has its own secret)
+- [ ] **Cloud Build trigger** on push to `main` → `cloudbuild.yaml` → `make cd`
+      — none configured yet
+- [ ] `WEBHOOK_URL` registered with Telegram so webhook mode receives updates
+- [ ] **Live check**: message the deployed bot → it replies
 
 ## 5. Docs / housekeeping
 

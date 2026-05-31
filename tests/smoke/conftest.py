@@ -1,16 +1,12 @@
 import os
 
-import httpx
 import pytest_asyncio
-
-# Where the live backend is. Provisioned by the runner (Makefile / CI), never by
-# the tests: a local `python -m app.backend --cloud` boot, or the deployed
-# Cloud Run URL for post-deploy smoke.
-BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8080")
+from aiogram import Bot
 
 
 @pytest_asyncio.fixture
-async def smoke_client():
-    """Async HTTP client targeting the live backend at BACKEND_URL."""
-    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=10.0) as client:
-        yield client
+async def bot():
+    """Bot bound to the runner-provided TELEGRAM_TOKEN (same bot the process runs)."""
+    bot = Bot(token=os.environ["TELEGRAM_TOKEN"])
+    yield bot
+    await bot.session.close()

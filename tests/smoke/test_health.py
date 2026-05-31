@@ -1,19 +1,12 @@
-"""Smoke tests — hit a real, running backend (webhook mode exposes GET /ping, /).
+"""Smoke — the bot is reachable on Telegram with the configured token.
 
-These FAIL unless a backend is actually serving at BACKEND_URL. Run with
-`make smoke-test` against a local `--cloud` boot or the deployed Cloud Run URL.
+Pairs with `make smoke-test`, which boots the bot in polling and waits for the
+"Run polling for bot @…" health line before this runs.
 """
 
 
-async def test_ping_returns_ok(smoke_client):
-    resp = await smoke_client.get("/ping")
+async def test_get_me(bot):
+    me = await bot.get_me()
 
-    assert resp.status_code == 200
-    assert resp.json() == "OK"
-
-
-async def test_root_returns_ok(smoke_client):
-    resp = await smoke_client.get("/")
-
-    assert resp.status_code == 200
-    assert resp.json() == "OK"
+    assert me.is_bot
+    assert me.username
