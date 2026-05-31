@@ -19,16 +19,22 @@ PULUMI := cd infrastructure && uv run pulumi
 
 .PHONY: setup
 setup:
+	# Tools + deps so the box can build, test, and deploy. (Backend targeting — login,
+	# stack, config — lives in `infra-setup`, not here: that's not tooling.)
+	curl -fsSL https://get.pulumi.com | sh    # Pulumi CLI → ~/.pulumi/bin (on PATH, export above)
 	uv sync
+	$(PULUMI) install                         # Pulumi resource plugins (gcp) — dep prep, no stack needed
 	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 
+# Local dev — polling. Same command everywhere; the token comes from the
+# environment's TELEGRAM_TOKEN (.env locally, Secret Manager in Cloud Run).
 .PHONY: backend-run
 backend-run:
 	@fuser -k 8080/tcp 2>/dev/null; true
 	@mkdir -p ~/Logs tmp
 	nohup uv run python -m app.backend > ~/Logs/nisse-backend.log 2>&1 < /dev/null & disown
 	@ln -sf ~/Logs/nisse-backend.log tmp/backend.log
-	@echo "Backend started (logs: tmp/backend.log → ~/Logs/nisse-backend.log)"
+	@echo "Backend (polling) started — logs: tmp/backend.log"
 
 .PHONY: test-backend-dry-run
 test-backend-dry-run:
@@ -55,14 +61,36 @@ typecheck:
 test-backend:
 	uv run pytest tests/backend/
 
-# Smoke tests — hit a real backend at BACKEND_URL (local --cloud boot or deployed
-# Cloud Run). Not in `make test`: needs a live service, run post-deploy.
+# Smoke — boot the same app in webhook mode on :8080 (TELEGRAM_TOKEN from the
+# environment), wait for /ping, run smoke tests, then stop it. Not part of `ci`;
+# needs TELEGRAM_TOKEN + public WEBHOOK_URL.
 .PHONY: smoke-test
-smoke-test:
-	uv run pytest tests/smoke/
+smoke-test: backend-cloud-run backend-wait
+	uv run pytest tests/smoke/; rc=$$?; fuser -k 8080/tcp 2>/dev/null; exit $$rc
+
+.PHONY: backend-cloud-run
+backend-cloud-run:
+	@fuser -k 8080/tcp 2>/dev/null; true
+	@mkdir -p ~/Logs tmp
+	nohup uv run python -m app.backend --cloud -p 8080 > ~/Logs/nisse-smoke.log 2>&1 < /dev/null & disown
+	@ln -sf ~/Logs/nisse-smoke.log tmp/smoke.log
+	@echo "Smoke backend (webhook) booting on :8080"
+
+.PHONY: backend-wait
+backend-wait:
+	@for i in $$(seq 1 20); do \
+		sleep 1; \
+		if ! pgrep -f 'app.backend --cloud' >/dev/null; then echo "Smoke backend died — see tmp/smoke.log"; exit 1; fi; \
+		if curl -sf http://localhost:8080/ping >/dev/null 2>&1; then echo "Smoke backend ready!"; exit 0; fi; \
+	done; echo "Smoke backend failed to start in 20s — see tmp/smoke.log"; exit 1
+
+# Single source of truth for CI — GitHub Actions just runs `make ci`, no copy-paste.
+# Smoke excluded: needs a live backend with a real token + public WEBHOOK_URL.
+.PHONY: ci
+ci: lint typecheck test-backend test-backend-dry-run
 
 .PHONY: test
-test: lint typecheck test-backend test-backend-dry-run
+test: ci
 
 # Pre-push git hook (.pre-commit-config.yaml) runs this. Smoke is excluded —
 # it needs a live backend, which a local push can't assume.
@@ -81,22 +109,32 @@ backend-docker-push: backend-docker-build
 	docker push ${BACKEND_IMAGE_LATEST}
 
 # Pulumi
+# Backend targeting only: point Pulumi at the state bucket + select/create the stack +
+# set stack config. Cheap and idempotent, so every infra op below depends on it — you
+# never have to remember to run it first. (Tooling install lives in `setup`.)
 .PHONY: infra-setup
 infra-setup:
 	$(PULUMI) login gs://${PULUMI_STATE_BUCKET}
 	# select-or-init in one shell (no second cd — $(PULUMI) already chdirs to infrastructure).
 	cd infrastructure && (uv run pulumi stack select prod || uv run pulumi stack init prod --secrets-provider=passphrase)
-	$(PULUMI) install
 	$(PULUMI) config set gcp:project ${GOOGLE_CLOUD_PROJECT}
 	$(PULUMI) config set gcp:region ${GOOGLE_CLOUD_REGION}
 
 .PHONY: infra-preview
-infra-preview:
+infra-preview: infra-setup
 	$(PULUMI) preview
 
+# Preview + capture to infrastructure/preview.txt for the PR comment (INFRA workflow).
+.PHONY: infra-diff
+infra-diff: infra-setup
+	$(PULUMI) preview --diff --non-interactive 2>&1 | tee preview.txt
+
 .PHONY: infra-apply
-infra-apply:
+infra-apply: infra-setup
 	$(PULUMI) up --yes --skip-preview
 
+# Full deploy: build+push image, then pulumi up. infra-setup is listed first (make
+# dedups it against infra-apply's prereq → runs once) so a bad login/stack fails fast,
+# before the docker build. Assumes `make setup` already ran on this box/container.
 .PHONY: cd
-cd: backend-docker-push infra-apply
+cd: infra-setup backend-docker-push infra-apply

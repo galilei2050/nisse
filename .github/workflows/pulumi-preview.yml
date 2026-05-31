@@ -1,0 +1,53 @@
+name: INFRA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+      - '.github/workflows/pulumi-preview.yml'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+env:
+  # Project/region/state-bucket are baked into the Makefile (single project) — only the
+  # passphrase is a secret. GCP auth comes from the SERVICE_ACCOUNT key below.
+  PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+
+jobs:
+  infra_preview:
+    name: Preview Changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cloud SDK auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: make setup
+      - name: Pulumi preview
+        run: make infra-diff   # infra-diff depends on infra-setup (login + stack)
+      - name: Comment PR with preview
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const preview = fs.readFileSync('infrastructure/preview.txt', 'utf8');
+            const body = preview.length > 65000
+              ? preview.slice(0, 65000) + '\n\n... (truncated)'
+              : preview;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## Pulumi Preview\n```\n' + body + '\n```',
+            });
