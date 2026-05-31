@@ -64,6 +64,11 @@ smoke-test:
 .PHONY: test
 test: lint typecheck test-backend test-backend-dry-run
 
+# Pre-push git hook (.pre-commit-config.yaml) runs this. Smoke is excluded —
+# it needs a live backend, which a local push can't assume.
+.PHONY: pre-push
+pre-push: test
+
 # Docker
 .PHONY: backend-docker-build
 backend-docker-build:
