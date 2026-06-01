@@ -86,8 +86,11 @@ ci: lint typecheck test-backend test-backend-dry-run
 .PHONY: test
 test: ci
 
-# Pre-push git hook (.pre-commit-config.yaml). Mirrors clarity's pre-push-check:
-# full ci + a real-bot smoke boot before pushing.
+# Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
+# full ci + a real-bot smoke boot on push (mirrors clarity's pre-push-check).
+.PHONY: pre-commit
+pre-commit: lint-fix
+
 .PHONY: pre-push
 pre-push: ci smoke-test
 

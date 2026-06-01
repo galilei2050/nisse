@@ -1,0 +1,46 @@
+# Secrets / local env
+.env
+.env.local
+
+# Pulumi stack config (may hold secrets) — keep only the base Pulumi.yaml
+infrastructure/Pulumi.*.yaml
+!infrastructure/Pulumi.yaml
+infrastructure/preview.txt
+
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Virtualenvs
+.venv/
+venv/
+**/.venv/
+infrastructure/.venv/
+
+# Git (unnecessary for builds)
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# IDE
+.idea/
+.vscode/
+.kdev4/
+
+# Tests / agent scratch / docs
+tests/
+.claude/
+tmp/
+.plan/
+.work/
+.sessions/
+TODO.md
+
+node_modules/
