@@ -19,7 +19,7 @@ env:
 
 jobs:
   infra_preview:
-    name: Preview Changes
+    name: preview
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
