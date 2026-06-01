@@ -1,0 +1,35 @@
+name: BUILDER REFRESH
+
+# Weekly dependency refresh. GitHub's only job here is to open a PR that bumps uv.lock —
+# merging it lands a new uv.lock on main, which fires the GCP `builder-image` trigger to
+# re-bake the CD builder image (see infrastructure/build_triggers.py). No image work here.
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  uv_upgrade:
+    name: uv lock --upgrade
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - name: Upgrade locked dependencies
+        run: uv lock --upgrade
+      - name: Open PR with the bumped lockfile
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/uv-upgrade
+          add-paths: uv.lock
+          commit-message: "chore: uv lock --upgrade"
+          title: "chore: weekly uv dependency upgrade"
+          body: |
+            Automated weekly `uv lock --upgrade`.
+
+            Merging this re-bakes the CD builder image: the new uv.lock fires the GCP
+            `builder-image` trigger (infrastructure/build_triggers.py → cloudbuild.infra.yaml).

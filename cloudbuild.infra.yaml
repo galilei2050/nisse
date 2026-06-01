@@ -1,0 +1,18 @@
+# Rebuilds the CD builder image. Fired by the `builder-image` trigger when its inputs
+# change on main — infrastructure/docker/**, pyproject.toml or uv.lock (see
+# infrastructure/build_triggers.py). Keeps builder:latest fresh so the deploy build
+# (cloudbuild.yaml) stays fast and installs nothing.
+#
+# The weekly builder-refresh GitHub Action opens a `uv lock --upgrade` PR; merging it lands
+# a new uv.lock on main, which fires this trigger and re-bakes the image with updated deps.
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - 'make builder-image-push'
+    env:
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID'

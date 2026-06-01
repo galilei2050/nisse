@@ -2,11 +2,12 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  # The CD toolchain (docker, gcloud, pulumi, uv, make) is baked into builder:latest
-  # (infrastructure/docker/Dockerfile.builder, pushed via `make builder-image-push`),
-  # so this step just runs the same `make setup && make cd` you'd run locally — no flaky
-  # runtime apt-get/curl. `setup` preps project deps (uv sync, pulumi plugins); `cd` does
-  # infra-setup → build+push image → pulumi up.
+  # Everything heavy is baked into builder:latest (docker, gcloud + docker-auth, pulumi,
+  # uv + warmed dep cache — see infrastructure/docker/Dockerfile.builder). So this step
+  # installs nothing: `uv sync` only rematerializes .venv from the baked cache (Cloud Build
+  # wipes /workspace, so the venv can't be baked) with no downloads, then `make cd` runs
+  # infra-setup → build+push image → pulumi up. --no-dev drops mypy/ruff/pytest/pre-commit;
+  # pulumi + pulumi-gcp are prod deps (via baski) and stay.
   - name: 'us-docker.pkg.dev/$PROJECT_ID/docker/builder:latest'
     id: 'cd'
     entrypoint: 'bash'
@@ -14,7 +15,7 @@ steps:
       - '-c'
       - |
         set -e
-        make setup
+        uv sync --frozen --no-dev
         make cd
     secretEnv: ['PULUMI_CONFIG_PASSPHRASE']
 
