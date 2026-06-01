@@ -6,12 +6,15 @@ endif
 
 SHELL := /bin/bash
 SHORT_COMMIT_SHA := $(shell git rev-parse --short HEAD)
+BUILD_DATE := $(shell date +%Y%m%d)
 export GOOGLE_CLOUD_PROJECT := nisse2050
 export GOOGLE_CLOUD_REGION := us-central1
 export PULUMI_STATE_BUCKET := nisse2050-pulumi
 export DOCKER_REPOSITORY_ROOT := us-docker.pkg.dev/${GOOGLE_CLOUD_PROJECT}/docker
 export BACKEND_IMAGE := ${DOCKER_REPOSITORY_ROOT}/backend:${SHORT_COMMIT_SHA}
 export BACKEND_IMAGE_LATEST := ${DOCKER_REPOSITORY_ROOT}/backend:latest
+export BUILDER_IMAGE := ${DOCKER_REPOSITORY_ROOT}/builder:latest
+export BUILDER_IMAGE_DATED := ${DOCKER_REPOSITORY_ROOT}/builder:${BUILD_DATE}
 export PATH := $(HOME)/.pulumi/bin:$(PATH)   # $(HOME) — make doesn't expand ~ inside PATH
 
 # Pulumi runs from infrastructure/ but shares the root .venv.
@@ -96,6 +99,19 @@ pre-commit: lint-fix
 pre-push: ci smoke-test
 
 # Docker
+# Builder image — the CD toolchain (docker, gcloud, pulumi, uv, make) baked once. Run
+# `make builder-image-push` when infrastructure/docker/Dockerfile.builder changes; the
+# Cloud Build trigger then deploys from builder:latest (see cloudbuild.yaml).
+.PHONY: builder-image-build
+builder-image-build:
+	@echo "Building builder image ${BUILDER_IMAGE}"
+	docker build -t ${BUILDER_IMAGE} -t ${BUILDER_IMAGE_DATED} -f infrastructure/docker/Dockerfile.builder .
+
+.PHONY: builder-image-push
+builder-image-push: builder-image-build
+	docker push ${BUILDER_IMAGE}
+	docker push ${BUILDER_IMAGE_DATED}
+
 .PHONY: backend-docker-build
 backend-docker-build:
 	@echo "Building image ${BACKEND_IMAGE}"

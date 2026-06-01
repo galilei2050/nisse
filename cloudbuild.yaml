@@ -2,23 +2,18 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  # `make cd` needs docker + gcloud + uv + pulumi + make in one container. No stock image
-  # has all of them: cloud-sdk:latest ships gcloud/make/git/curl but NOT docker or uv, so
-  # we add those two (the docker daemon is provided by Cloud Build; we just need the CLI).
-  # Then `make cd` does everything (infra-setup → build+push → pulumi up). Single source
-  # of truth: nothing here the Makefile can't do locally.
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
+  # The CD toolchain (docker, gcloud, pulumi, uv, make) is baked into builder:latest
+  # (infrastructure/docker/Dockerfile.builder, pushed via `make builder-image-push`),
+  # so this step just runs the same `make setup && make cd` you'd run locally — no flaky
+  # runtime apt-get/curl. `setup` preps project deps (uv sync, pulumi plugins); `cd` does
+  # infra-setup → build+push image → pulumi up.
+  - name: 'us-docker.pkg.dev/$PROJECT_ID/docker/builder:latest'
     id: 'cd'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         set -e
-        apt-get update && apt-get install -y --no-install-recommends docker.io
-        # Install uv into /usr/local/bin (already on PATH) so make + its `uv run` children
-        # find it — no PATH juggling. UV_INSTALL_DIR is the installer's documented override.
-        export UV_INSTALL_DIR=/usr/local/bin
-        curl -LsSf https://astral.sh/uv/install.sh | sh
         make setup
         make cd
     secretEnv: ['PULUMI_CONFIG_PASSPHRASE']
