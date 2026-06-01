@@ -16,8 +16,9 @@ steps:
         set -e
         apt-get update && apt-get install -y --no-install-recommends docker.io
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        # uv → ~/.local/bin, pulumi (installed by `make setup`) → ~/.pulumi/bin; both on PATH
-        # with $HOME expanded (the Makefile's literal ~/.pulumi/bin isn't shell-expanded).
+        # uv → ~/.local/bin, pulumi (installed by `make setup`) → ~/.pulumi/bin; both on PATH.
+        # Use $$HOME (escaped) so Cloud Build leaves it for bash instead of treating it as a
+        # substitution; the Makefile's literal ~/.pulumi/bin isn't shell-expanded on its own.
         export PATH="$$HOME/.local/bin:$$HOME/.pulumi/bin:$$PATH"
         gcloud auth configure-docker us-docker.pkg.dev --quiet
         make setup
