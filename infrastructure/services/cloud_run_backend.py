@@ -3,23 +3,17 @@
 import pulumi_gcp as gcp
 from baski.infra.run import (
     CloudRunServiceConfig,
+    create_cloud_run_secret_env,
     create_cloud_run_with_monitoring,
     repo_short_sha,
 )
-
 from delivery import docker_repository_url
 from iam import cloud_run_service_account
-from secret_manager import telegram_token
 
-telegram_token_env = gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
-    name="TELEGRAM_TOKEN",
-    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
-        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
-            secret=telegram_token.secret_id,
-            version="latest",
-        ),
-    ),
-)
+# Secret managed outside Pulumi — baski's helper references it via Secret.get (a read, not
+# a managed resource). Create the TELEGRAM_TOKEN secret + a version and grant the cloud-run
+# SA secretmanager.secretAccessor manually.
+telegram_token_env = create_cloud_run_secret_env("TELEGRAM_TOKEN", "backend")
 
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(

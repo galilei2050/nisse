@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Three jobs so the GitHub UI shows exactly which check failed. Each job only
+# provisions the env and delegates to a Makefile target — no CI logic lives here.
+# `make ci` runs the same three locally.
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make lint
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make typecheck
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    # test-backend-dry-run boots the server, which reads these at import time
+    # (baski treats an empty value as unset). Sourced from repo config, not
+    # hardcoded — dry-run never connects, but the values must be non-empty.
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make setup
+      - run: make test-backend
+      - run: make test-backend-dry-run

@@ -2,26 +2,25 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    id: 'docker-login'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - 'gcloud auth configure-docker us-docker.pkg.dev --quiet'
-
-  # Single source of truth: cloudbuild does nothing the Makefile can't do locally.
-  # `make cd` builds + pushes the image, then runs pulumi up.
-  - name: 'ghcr.io/astral-sh/uv:python3.12-bookworm'
+  # `make cd` needs docker + gcloud + uv + pulumi + make in one container. No stock image
+  # has all of them: cloud-sdk:latest ships gcloud/make/git/curl but NOT docker or uv, so
+  # we add those two (the docker daemon is provided by Cloud Build; we just need the CLI).
+  # Then `make cd` does everything (infra-setup → build+push → pulumi up). Single source
+  # of truth: nothing here the Makefile can't do locally.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:latest'
     id: 'cd'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         set -e
-        apt-get update && apt-get install -y --no-install-recommends git make curl
-        curl -fsSL https://get.pulumi.com | sh
-        export PATH="$$HOME/.pulumi/bin:$$PATH"
-        uv sync
+        apt-get update && apt-get install -y --no-install-recommends docker.io
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        # uv → ~/.local/bin, pulumi (installed by `make setup`) → ~/.pulumi/bin; both on PATH
+        # with $HOME expanded (the Makefile's literal ~/.pulumi/bin isn't shell-expanded).
+        export PATH="$$HOME/.local/bin:$$HOME/.pulumi/bin:$$PATH"
+        gcloud auth configure-docker us-docker.pkg.dev --quiet
+        make setup
         make cd
     secretEnv: ['PULUMI_CONFIG_PASSPHRASE']
 
