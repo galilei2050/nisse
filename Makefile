@@ -25,6 +25,7 @@ setup:
 	uv sync
 	$(PULUMI) install                         # Pulumi resource plugins (gcp) — dep prep, no stack needed
 	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+	gcloud auth configure-docker us-docker.pkg.dev --quiet   # docker push → Artifact Registry
 
 # Local dev / smoke — polling. Single instance: one bot token can't have two
 # pollers, so stop any running one first. Token from env TELEGRAM_TOKEN.

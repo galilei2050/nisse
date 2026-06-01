@@ -21,6 +21,10 @@ backend = create_cloud_run_with_monitoring(
         image=docker_repository_url.apply(lambda url: f"{url}/backend:{repo_short_sha('..')}"),
         envs=[
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name="CLOUD", value="1"),
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                name="WEBHOOK_URL",
+                value="https://backend-675179615608.us-central1.run.app/webhook",
+            ),
             telegram_token_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
