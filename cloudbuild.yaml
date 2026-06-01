@@ -15,6 +15,9 @@ steps:
       - |
         set -e
         apt-get update && apt-get install -y --no-install-recommends docker.io
+        # Install uv into /usr/local/bin (already on PATH) so make + its `uv run` children
+        # find it — no PATH juggling. UV_INSTALL_DIR is the installer's documented override.
+        export UV_INSTALL_DIR=/usr/local/bin
         curl -LsSf https://astral.sh/uv/install.sh | sh
         make setup
         make cd
