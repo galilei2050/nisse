@@ -1,5 +1,6 @@
 """TelegramServer entry point — builds shared deps + assistant and mounts the chat router."""
 
+import logging
 import sys
 from collections.abc import Iterable
 from contextlib import AsyncExitStack
@@ -82,4 +83,7 @@ class NisseBot(TelegramServer):
 
 
 if __name__ == "__main__":
+    # aiogram's per-update "Update id=… is handled" INFO line bypasses our structured
+    # logger and floods the log; keep only its warnings and above.
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     sys.exit(NisseBot().run())
