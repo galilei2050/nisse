@@ -89,6 +89,29 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 - Pydantic in / Pydantic out between functions; raw dicts only for pipeline
   intermediates and logger labels. Keep `reply` / `execute` short orchestrators.
 
+## Direction: a self-extensible agent
+
+A standing goal that shapes the design: the agent grows its own capabilities at
+runtime, without a code deploy. Two independent vectors of extension:
+
+1. **Self-authored skills** — the agent learns *how to do a task* as a reusable
+   sequence of steps, then saves it as a skill it can replay later. E.g. "book a
+   restaurant" decomposes into: find restaurants in radius with good metrics →
+   ask the user for price range → book via the Google Maps link. The agent
+   captures that recipe once and reuses it. (This is the learned-skills mechanism
+   below, raised to a first-class design intent.)
+
+2. **Self-loading tools** — the tool catalog is extensible by data, not only by
+   code. Tools come in several *types*; the first type is an **HTTP-service tool**:
+   a config record in the DB describing a base URL, one of several auth methods,
+   and a set of HTTP endpoints (each endpoint = one callable action). A client
+   ingests an API's docs, writes the resulting schema row to the DB, and the tool
+   is picked up automatically — no Python, no redeploy.
+
+Both vectors share the same principle already in this doc: runtime-editable
+capability lives in **Mongo, never in code**. Rationale and design detail belong
+in `IDEAS.md`.
+
 ## Tool tiers (always-on vs loaded) — built in from the start
 
 - **Always-on** (registered by `assistant/toolset.py`, present every turn):
