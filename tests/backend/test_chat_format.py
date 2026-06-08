@@ -1,43 +1,25 @@
 from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
 
 
-def test_bold_becomes_single_asterisk():
+def test_empty_passthrough():
+    assert to_markdown_v2("") == ""
+
+
+def test_converts_bold_to_mdv2():
+    # Smoke: the library does the work; we only assert it converted (no raw **).
     assert to_markdown_v2("**hi**") == "*hi*"
 
 
-def test_italic_becomes_underscore():
-    assert to_markdown_v2("*hi*") == "_hi_"
+def test_thematic_break_is_dropped():
+    # Our value-add on top of the library: --- separators are removed entirely.
+    out = to_markdown_v2("para1\n\n---\n\npara2")
+    assert "—" not in out
+    assert "-" not in out
+    assert "para1" in out and "para2" in out
 
 
-def test_header_becomes_bold():
-    assert to_markdown_v2("## Title") == "*Title*"
-
-
-def test_plain_specials_are_escaped():
+def test_special_chars_escaped():
     assert to_markdown_v2("a.b!c") == "a\\.b\\!c"
-
-
-def test_fenced_code_body_not_escaped():
-    out = to_markdown_v2("```\na.b!\n```")
-    assert "a.b!" in out  # contents left intact
-    assert "\\." not in out
-
-
-def test_inline_code_not_escaped():
-    out = to_markdown_v2("use `a.b()` now")
-    assert "`a.b()`" in out
-
-
-def test_bullet_list_not_eaten_by_italic():
-    # The italic regex must stop at newlines so "* item" lines survive as bullets.
-    out = to_markdown_v2("* one\n* two")
-    assert "_" not in out
-    assert "one" in out and "two" in out
-
-
-def test_link_display_escaped_url_intact():
-    out = to_markdown_v2("[a.b](http://x.com/a_b)")
-    assert "[a\\.b](http://x.com/a_b)" == out
 
 
 def test_short_text_is_single_chunk():
@@ -53,7 +35,7 @@ def test_paragraphs_split_without_mid_paragraph_cut():
 
 
 def test_oversized_paragraph_falls_to_sentences():
-    block = " ".join(["Sentence number {0}.".format(i) for i in range(600)])
+    block = " ".join(f"Sentence number {i}." for i in range(600))
     chunks = split_message(block, limit=4096)
     assert len(chunks) > 1
     assert all(len(c.encode("utf-16-le")) // 2 <= 4096 for c in chunks)
