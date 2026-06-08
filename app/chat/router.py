@@ -5,6 +5,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import Message
 
 from app.assistant import Assistant
+from app.chat.progress import TelegramProgress
 
 _NON_TEXT_REPLY = "Send me a text message."
 
@@ -20,7 +21,8 @@ def build_router(*, assistant: Assistant) -> Router:
             await message.answer(_NON_TEXT_REPLY)
             return
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-        answer = await assistant.reply(text=message.text)
-        await message.answer(answer)
+        progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
+        answer = await assistant.reply(text=message.text, on_event=progress)
+        await progress.finish(answer)
 
     return router

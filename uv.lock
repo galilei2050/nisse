@@ -247,6 +247,7 @@ source = { editable = "../baski" }
 dependencies = [
     { name = "aiogram" },
     { name = "anthropic" },
+    { name = "anyio" },
     { name = "beautifulsoup4" },
     { name = "cryptography" },
     { name = "fastapi" },
@@ -280,6 +281,7 @@ dependencies = [
 requires-dist = [
     { name = "aiogram", specifier = ">=3" },
     { name = "anthropic" },
+    { name = "anyio" },
     { name = "beautifulsoup4" },
     { name = "cryptography" },
     { name = "fastapi" },

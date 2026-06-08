@@ -1,6 +1,6 @@
 """Assistant — composition root that turns a user message into an agent reply."""
 
-from baski.agents import Agent, AgentConfig
+from baski.agents import Agent, AgentConfig, Listener, noop
 
 NISSE_SYSTEM_PROMPT = (
     "You are Nisse, a personal AI assistant for a single owner. Be concise, direct, and "
@@ -19,8 +19,12 @@ class Assistant:
         self._config = config
         self._system_prompt = system_prompt
 
-    async def reply(self, *, text: str) -> str:
-        """Run the agent on one message and return its final text (stateless per call)."""
+    async def reply(self, *, text: str, on_event: Listener = noop) -> str:
+        """Run the agent on one message and return its final text (stateless per call).
+
+        `on_event` receives step events as the agent works — the chat router passes a
+        `TelegramProgress` listener so the user sees live progress.
+        """
         agent = Agent(config=self._config, system=self._system_prompt)
-        result = await agent.execute(text)
+        result = await agent.execute(text, on_event=on_event)
         return result.response or _NO_ANSWER

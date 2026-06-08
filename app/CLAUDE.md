@@ -9,6 +9,16 @@ Built on `baski`. The agent framework (`Agent` / `Tool` / `ToolBox` /
 `MessageHistory` / `KnowledgeTool` / `TraceCollector`) is ported from
 clarity-auto-care into `baski.agents` — import from there, do not vendor.
 
+**`Agent` (baski) is abstract; `Assistant` (this app) is concrete.** `baski.agents.Agent`
+is a transport-agnostic LLM loop — it knows tools, messages, and tracing, and
+nothing about Telegram, this user, or this product. All the concrete knowledge
+lives in `Assistant`: it knows it speaks through Telegram, who the owner is, which
+tools/skills are wired, and what the system prompt says. Keep that line clean —
+no Telegram type, chat id, or aiogram import ever reaches `baski`; conversely
+`Assistant` never reimplements the agent loop. If a feature is generic, it belongs
+in `baski.agents`; if it's "because we're a Telegram assistant for this user", it
+belongs in `Assistant`.
+
 Concepts, rationale, and source pointers mined from reference projects live in
 `IDEAS.md` — not here. This file is project structure only.
 
