@@ -97,6 +97,25 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
 
+## Dependency wiring — per-domain providers (no tools in backend.py)
+
+Wiring is layered so each domain owns its own clients and tools; `backend.py` only
+assembles providers, it never imports a tool or a domain client.
+
+- `shared/deps.py` — `CoreDeps`: shared low-level clients (logger, http, anthropic,
+  database, playwright, bucket_name), built once in `backend.py`.
+- `tools/<domain>/provider.py` — `def provide(deps: CoreDeps) -> list[Tool]`: the domain
+  builds its own mid-level clients (SerpApiClient, GmailClient, …) from `CoreDeps` and
+  returns its tools. A domain never imports `backend`.
+- `tools/__init__.py` — `PROVIDERS`: the registry. Add a domain = new `tools/<domain>/`
+  + one line in `PROVIDERS`; `backend.py` stays untouched.
+- `assistant/toolset.py` — `build_tools(deps)`: flattens every provider into the tool list.
+
+`backend.py` builds `CoreDeps` and calls `build_tools(deps)` — nothing else tool-related.
+A provider may type its param as a narrow `Protocol` (only the attrs it touches) for
+looser coupling and easy test fakes. Escalate to a DI container only if this gets
+unwieldy; plain registry + `CoreDeps` is the default.
+
 ## Memory — three tiers (≠ conversation transcript)
 
 `MessageHistory` (baski.agents) is the transcript / context window, not memory.
