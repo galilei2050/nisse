@@ -8,10 +8,11 @@ Only this side knows about aiogram, chat ids, and Telegram's flood limits.
 
 import contextlib
 import time
+from typing import assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from baski.agents import AgentEvent, Thinking, ToolFinished, ToolStarted
+from baski.agents import AgentEvent, Completed, Thinking, ToolFinished, ToolStarted, TurnStarted
 
 # Telegram rejects edits faster than ~1/sec per chat; match hermes' 0.5s cadence.
 _EDIT_INTERVAL_S = 0.5
@@ -43,16 +44,22 @@ class TelegramProgress:
 
     async def __call__(self, event: AgentEvent) -> None:
         """Consume one agent event and reflect it in the progress message."""
-        if isinstance(event, ToolStarted):
-            self._lines.append(f"🔧 {_pretty(event.name)}…")
-        elif isinstance(event, ToolFinished):
-            self._finish_tool(event)
-        elif isinstance(event, Thinking):
-            brief = _brief(event.text)
-            if brief:
+        match event:
+            case TurnStarted():
+                return  # a turn boundary — nothing to render on its own
+            case Completed():
+                return  # the final answer is rendered by finish(), called by the router
+            case ToolStarted(name=name):
+                self._lines.append(f"🔧 {_pretty(name)}…")
+            case ToolFinished():
+                self._finish_tool(event)
+            case Thinking(text=text):
+                brief = _brief(text)
+                if not brief:
+                    return
                 self._lines.append(f"💭 {brief}")
-        else:
-            return  # TurnStarted / Completed — nothing to show on their own
+            case _:
+                assert_never(event)
         await self._flush(force=False)
 
     async def finish(self, answer: str) -> None:
