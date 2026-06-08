@@ -26,3 +26,4 @@ RUN uv run --no-sync --no-dev playwright install --with-deps firefox
 ENV PATH="/app/.venv/bin:$PATH"
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["backend"]
+
