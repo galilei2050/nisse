@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: git clone --depth 1 --branch main https://github.com/galilei2050/baski.git ../baski
       - run: make setup
       - run: make lint
 
@@ -35,7 +34,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: git clone --depth 1 --branch main https://github.com/galilei2050/baski.git ../baski
       - run: make setup
       - run: make typecheck
 
@@ -54,7 +52,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: git clone --depth 1 --branch main https://github.com/galilei2050/baski.git ../baski
       - run: make setup
       - run: make test-backend
       - run: make test-backend-dry-run
