@@ -11,13 +11,14 @@ structure; this file is the "why / where to look deeper" companion.
 > place. Verify each claim against the cited source before relying on it (the cites
 > were cross-checked once, but code moves). Actual nisse decisions live in `CLAUDE.md`.
 
-**Repos** (cloned to `/tmp/<name>*` during research — re-clone if gone):
+**Repos** — shallow clones live at `.references/<name>/` (gitignored; re-clone with
+`git clone --depth 1 <url> .references/<name>` if missing):
 - `hermes` — github.com/nousresearch/hermes-agent  (Python; closest agent-internals match)
 - `openwebui` — github.com/open-webui/open-webui  (Python backend; mine backend only)
 - `chatui` — github.com/huggingface/chat-ui  (TS; ideas, not code)
 - `openclaw` — github.com/openclaw/openclaw  (TS; messaging-first, closest problem match)
 
-Pointer format: _src:_ `repo: path/to/file`.
+Pointer format: _src:_ `repo: path/to/file` → resolves to `.references/repo/path/to/file`.
 
 ---
 

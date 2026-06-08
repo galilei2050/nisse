@@ -16,13 +16,12 @@ WORKDIR /app
 
 # Lock first, source after: keeps the dependency layer cached across code edits.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --no-sources --no-dev --no-install-project
 
 COPY . ./
-RUN uv sync --frozen --no-dev && chmod +x entrypoint.sh
+RUN uv sync --no-sources --no-dev && chmod +x entrypoint.sh
 
-# Firefox for the web-browse tool — baski's PlaywrightClient launches Firefox at startup.
-RUN uv run --no-dev playwright install --with-deps firefox
+RUN uv run --no-sync --no-dev playwright install --with-deps firefox
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENTRYPOINT ["/app/entrypoint.sh"]

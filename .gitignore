@@ -30,3 +30,6 @@ tmp/
 .claude/worktrees/
 
 node_modules/
+
+# Reference clones of the projects cited in app/IDEAS.md (prior art, not versioned here)
+.references/
