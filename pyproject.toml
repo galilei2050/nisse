@@ -8,7 +8,7 @@ license = "AGPL-3.0-or-later"
 authors = [{ name = "Vladimir Baskakov" }]
 
 dependencies = [
-    "baski",
+    "baski @ git+https://github.com/galilei2050/baski.git@main",
     "anthropic",
     "pymongo>=4.9",
 ]
@@ -23,7 +23,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-baski = { git = "https://github.com/galilei2050/baski.git", branch = "main" }
+baski = { path = "../baski", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -29,23 +29,14 @@ setup:
 	$(PULUMI) install                         # Pulumi resource plugins (gcp) — dep prep, no stack needed
 	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 	gcloud auth configure-docker us-docker.pkg.dev --quiet   # docker push → Artifact Registry
-	if [ -d ../baski ]; then uv pip install -e ../baski; fi   # editable overlay for local dev; skipped in CI (no sibling baski)
-
-# Local dev: install baski editable so its source changes are picked up live. The committed
-# source in pyproject.toml stays git (cloud builds from it); this overlay only affects the
-# local venv. check-baski + the commit-time `uv sync` keep the committed state honest.
-.PHONY: dev
-dev:
-	uv pip install -e ../baski
 
 # Local dev / smoke — polling. Single instance: one bot token can't have two
 # pollers, so stop any running one first. Token from env TELEGRAM_TOKEN.
-# --no-sync preserves the editable baski overlay (a plain `uv run` re-syncs to the git pin).
 .PHONY: backend-run
-backend-run: dev
+backend-run:
 	@pkill -f '[a]pp.backend' 2>/dev/null; true   # bracket avoids pkill matching its own recipe shell
 	@mkdir -p ~/Logs tmp
-	nohup uv run --no-sync python -m app.backend > ~/Logs/nisse-backend.log 2>&1 < /dev/null & disown
+	nohup uv run python -m app.backend > ~/Logs/nisse-backend.log 2>&1 < /dev/null & disown
 	@ln -sf ~/Logs/nisse-backend.log tmp/backend.log
 	@echo "Backend (polling) started — logs: tmp/backend.log"
 
@@ -101,14 +92,13 @@ test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
 # full ci + a real-bot smoke boot on push (mirrors clarity's pre-push-check).
-# Fail the commit if the local baski has uncommitted work — the committed uv.lock pins a
-# baski commit, so "forgot to commit baski" would lock nisse to code that isn't on the remote.
 .PHONY: check-baski
 check-baski:
-	@git -C ../baski diff --quiet HEAD || { echo "ERROR: ../baski has uncommitted changes — commit & push baski first"; exit 1; }
+	@git -C ../baski fetch -q origin main
+	@test "$$(git -C ../baski rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
+	@git -C ../baski diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
+	@test "$$(git -C ../baski rev-parse HEAD)" = "$$(git -C ../baski rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
 
-# `uv sync` re-pins uv.lock to the git baski (dropping the local editable overlay) so the
-# committed lock always matches the cloud build. Re-run `make dev` afterwards to keep editing.
 .PHONY: pre-commit
 pre-commit: check-baski lint-fix
 	uv sync
