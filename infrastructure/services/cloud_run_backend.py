@@ -39,7 +39,7 @@ backend = create_cloud_run_with_monitoring(
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,
-            limits={"cpu": "1", "memory": "512Mi"},
+            limits={"cpu": "1", "memory": "2Gi"},
         ),
         service_account_email=cloud_run_service_account.email,
         notification_channels=[],
