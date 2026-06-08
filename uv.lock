@@ -243,9 +243,10 @@ wheels = [
 [[package]]
 name = "baski"
 version = "0.5.0"
-source = { git = "https://github.com/galilei2050/baski.git?branch=main#37addd03e5ac0e4c09cafafae5e69b4e8be28e7d" }
+source = { git = "https://github.com/galilei2050/baski.git?branch=main#9f758b13f95db363f51ac75428ff868566f17e02" }
 dependencies = [
     { name = "aiogram" },
+    { name = "anthropic" },
     { name = "beautifulsoup4" },
     { name = "cryptography" },
     { name = "fastapi" },
