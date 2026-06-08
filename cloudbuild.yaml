@@ -10,6 +10,9 @@ steps:
   - name: 'us-docker.pkg.dev/$PROJECT_ID/docker/builder:latest'
     id: 'cd'
     entrypoint: 'bash'
+    # Resolve baski from its git URL (as CI/Docker do), ignoring the local editable path
+    # source — the builder box has no sibling ../baski for `uv sync` to find.
+    env: ['UV_NO_SOURCES=1']
     args:
       - '-c'
       - |
