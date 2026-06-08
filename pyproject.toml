@@ -9,6 +9,8 @@ authors = [{ name = "Vladimir Baskakov" }]
 
 dependencies = [
     "baski",
+    "anthropic",
+    "pymongo>=4.9",
 ]
 
 [dependency-groups]

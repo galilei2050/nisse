@@ -21,6 +21,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . ./
 RUN uv sync --frozen --no-dev && chmod +x entrypoint.sh
 
+# Firefox for the web-browse tool — baski's PlaywrightClient launches Firefox at startup.
+RUN uv run --no-dev playwright install --with-deps firefox
+
 ENV PATH="/app/.venv/bin:$PATH"
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["backend"]
