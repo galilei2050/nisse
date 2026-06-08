@@ -14,6 +14,8 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from baski.agents import AgentEvent, Completed, Thinking, ToolFinished, ToolStarted, TurnStarted
 
+from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
+
 # Telegram rejects edits faster than ~1/sec per chat; match hermes' 0.5s cadence.
 _EDIT_INTERVAL_S = 0.5
 _MAX_LINES = 20
@@ -63,13 +65,32 @@ class TelegramProgress:
         await self._flush(force=False)
 
     async def finish(self, answer: str) -> None:
-        """Replace the live progress with the final answer (edit, not a new message)."""
-        if self._message_id is None:
-            await self._bot.send_message(chat_id=self._chat_id, text=answer)
-            return
-        # TelegramBadRequest if the answer is identical to the last progress edit — nothing to change.
-        with contextlib.suppress(TelegramBadRequest):
-            await self._bot.edit_message_text(text=answer, chat_id=self._chat_id, message_id=self._message_id)
+        """Deliver the final answer as MarkdownV2, reusing the progress message and splitting if needed."""
+        chunks = split_message(to_markdown_v2(answer))
+        for i, chunk in enumerate(chunks):
+            # First chunk edits the live progress message in place; the rest are new messages.
+            await self._deliver(chunk, edit=i == 0 and self._message_id is not None)
+
+    async def _deliver(self, text: str, *, edit: bool) -> None:
+        """Send or edit one chunk — MarkdownV2 first, clean plain text on parse failure."""
+        try:
+            await self._put(text, edit=edit, parse_mode="MarkdownV2")
+        except TelegramBadRequest:
+            # Malformed entities, or "message is not modified" on edit — fall back to plain text.
+            with contextlib.suppress(TelegramBadRequest):
+                await self._put(strip_markdown_v2(text), edit=edit, parse_mode=None)
+
+    async def _put(self, text: str, *, edit: bool, parse_mode: str | None) -> None:
+        """Edit the progress message or send a new one with the given parse mode."""
+        if edit:
+            await self._bot.edit_message_text(
+                text=text,
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+                parse_mode=parse_mode,
+            )
+        else:
+            await self._bot.send_message(chat_id=self._chat_id, text=text, parse_mode=parse_mode)
 
     def _finish_tool(self, event: ToolFinished) -> None:
         """Mark the most recent in-flight line for this tool as done."""
