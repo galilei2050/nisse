@@ -29,7 +29,7 @@ setup:
 	$(PULUMI) install                         # Pulumi resource plugins (gcp) — dep prep, no stack needed
 	uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 	gcloud auth configure-docker us-docker.pkg.dev --quiet   # docker push → Artifact Registry
-	uv pip install -e ../baski   # editable baski overlay for local dev (last: uv run above re-syncs)
+	if [ -d ../baski ]; then uv pip install -e ../baski; fi   # editable overlay for local dev; skipped in CI (no sibling baski)
 
 # Local dev: install baski editable so its source changes are picked up live. The committed
 # source in pyproject.toml stays git (cloud builds from it); this overlay only affects the
