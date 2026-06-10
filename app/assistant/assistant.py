@@ -27,4 +27,15 @@ class Assistant:
         """
         agent = Agent(config=self._config, system=self._system_prompt)
         result = await agent.execute(text, on_event=on_event)
-        return result.response or _NO_ANSWER
+        if not result.response:
+            self._config.logger.warning(
+                "Agent produced no user-facing text; sending fallback",
+                labels={
+                    "traceId": result.trace_id,
+                    "turnCount": result.turn_count,
+                    "toolCallCount": result.tool_call_count,
+                    "outputTokens": result.total_output_tokens,
+                },
+            )
+            return _NO_ANSWER
+        return result.response

@@ -12,8 +12,10 @@ from aiogram import Router
 from anthropic import AsyncAnthropic
 from baski.agents import AgentConfig
 from baski.clients.playwright_client import PlaywrightClient
+from baski.clients.scheduler import CloudTasksConfig
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
+from google.cloud import tasks_v2
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -37,6 +39,17 @@ class NisseBot(TelegramServer):
     def outer_middlewares(self) -> Iterable[Any]:
         """Gate every message through the owner allow-list before any handler runs."""
         return [AllowlistMiddleware()]
+
+    def cloud_tasks_config(self) -> CloudTasksConfig:
+        """Cloud Tasks settings for the inbound-update queue; tasks are OIDC-signed as the cloud-run SA."""
+        project = str(get_env("GOOGLE_CLOUD_PROJECT"))
+        return CloudTasksConfig(
+            client=tasks_v2.CloudTasksAsyncClient(),
+            project_id=project,
+            location=str(get_env("GOOGLE_CLOUD_REGION")),
+            queue=str(get_env("CLOUD_TASKS_QUEUE")),
+            invoker_sa_email=f"cloud-run@{project}.iam.gserviceaccount.com",
+        )
 
     @cached_property
     def assistant(self) -> Assistant:

@@ -92,6 +92,13 @@ Supporting patterns:
 - **Skills as data + progressive disclosure** — only a `<available_skills>` manifest (name+desc)
   in the prompt; body loaded on demand via one `view_skill(id)` tool. = our learned-skills + tiers.
   _src:_ `openwebui: models/skills.py` + `tools/builtin.py` (view_skill); `openclaw: skills/<name>/SKILL.md` frontmatter.
+- **Self-loading tool = wiring is data, credentials are NOT** — the auto part is *schema/wiring*
+  (API docs → baseURL + auth-method + endpoints → Mongo row → callable, no Python/redeploy). The
+  *credential* (api-key, OAuth client, ToS, billing) is an identity/legal step you provision ONCE
+  by hand — never automate it (security boundary). Config records *which* auth method + *which*
+  secret to reference, not the secret. **Corollary:** self-loading fits simple REST + api-key/bearer
+  only. OAuth/consent-flow services (Google) are too heavy for a config row → they stay **code skills
+  (`tools/google/`)**, not self-loaded data tools. Don't try to auto-load Google.
 - **MCP as optional tool source** — auto-discover external MCP server tools → schemas; sanitize
   names `^[a-zA-Z0-9_-]{1,64}$`, suffix on collision, cache list 60s, isolate per-server failures.
   _src:_ `chatui: src/lib/server/mcp/tools.ts`.
@@ -111,6 +118,27 @@ Supporting patterns:
   _src:_ `chatui: src/lib/utils/tree/buildSubtree.ts`.
 - **Title/tag prompt** — cosmetic in source, but repurposable as a cheap continue-vs-new classifier.
   _src:_ `openwebui: backend/open_webui/config.py` (tag-gen template).
+
+## Self-improvement — which layers are realistically ours
+
+Frozen model → `behaviour = f(system_prompt, tools, loaded_context)`. Self-improvement =
+the agent writes to a persistent store that constructs the *next* agent. The agent stays a
+stateless function; the "self" that improves is the store (Mongo), never the running code.
+Layers, ranked by payoff/safety for nisse:
+
+| Layer | What changes | Safe? | Where it lives |
+|---|---|---|---|
+| 1. Persistent memory (facts about the owner) | data (Mongo) | ✅ | `memory/` (LongTermHot always-injected, LongTerm via recall) |
+| 2. Profile / preferences (CLAUDE.md pattern) | text in prompt | ✅ | curator prompt overlay → `assistant/prompt.py` |
+| 3. Learned skills as data, progressive disclosure | data (Mongo) | ✅ | `toolset.py` loads specs; `view_skill` body on demand |
+| 4. Self-loading tools (HTTP-service config rows) | data (Mongo) | ✅ | tool catalog by data, no redeploy |
+| 5a. New code skills / `Tool` subclass | codebase (dev-time, Claude Code + review) | ✅ | `skills/<x>/`, git-versioned |
+| 5b. Bot rewrites its own running code (DGM-grade) | executable code | ❌ don't | — sandbox+verifier+redeploy; not deployable for a personal bot |
+
+Engine = the nightly **curator** (below), fed by `baski` traces (GCS + Mongo `traces`).
+Ceiling: better at *our context / procedures / tool-selection*, not fundamentally smarter
+(frozen model). Risk: drift / self-confirming loops → append-only versioning + rollback +
+owner in the loop (already the curator's safety invariants).
 
 ## Self-improvement (curator)
 
