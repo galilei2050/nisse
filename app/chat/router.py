@@ -3,11 +3,13 @@
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
 from aiogram.types import Message
+from baski.agents import AgentRefusalError
 
 from app.assistant import Assistant
 from app.chat.progress import TelegramProgress
 
 _NON_TEXT_REPLY = "Send me a text message."
+_REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
 
 
 def build_router(*, assistant: Assistant) -> Router:
@@ -22,7 +24,11 @@ def build_router(*, assistant: Assistant) -> Router:
             return
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
-        answer = await assistant.reply(text=message.text, on_event=progress)
+        try:
+            answer = await assistant.reply(text=message.text, on_event=progress)
+        except AgentRefusalError:
+            await progress.finish(_REFUSAL_REPLY)
+            return
         await progress.finish(answer)
 
     return router

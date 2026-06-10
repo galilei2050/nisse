@@ -3,6 +3,7 @@
 import pulumi_gcp as gcp
 from baski.infra.run import (
     CloudRunServiceConfig,
+    create_cloud_run_env,
     create_cloud_run_secret_env,
     create_cloud_run_with_monitoring,
     repo_short_sha,
@@ -16,26 +17,20 @@ anthropic_api_key_env = create_cloud_run_secret_env("ANTHROPIC_API_KEY", "backen
 mongodb_uri_env = create_cloud_run_secret_env("MONGODB_URI", "backend")
 serpapi_api_key_env = create_cloud_run_secret_env("SERPAPI_API_KEY", "backend")
 
-private_bucket_name_env = gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
-    name="PRIVATE_BUCKET_NAME",
-    value="nisse2050-private",
-)
-
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(
         service_name="backend",
         image=docker_repository_url.apply(lambda url: f"{url}/backend:{repo_short_sha('..')}"),
+        # GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_REGION are injected by create_cloud_run_with_monitoring.
         envs=[
-            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(name="CLOUD", value="1"),
-            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
-                name="WEBHOOK_URL",
-                value="https://backend-675179615608.us-central1.run.app/webhook",
-            ),
+            create_cloud_run_env("CLOUD", "1"),
+            create_cloud_run_env("WEBHOOK_URL", "https://backend-675179615608.us-central1.run.app/webhook"),
+            create_cloud_run_env("CLOUD_TASKS_QUEUE", "tg-update-queue"),
+            create_cloud_run_env("PRIVATE_BUCKET_NAME", "nisse2050-private"),
             telegram_token_env,
             anthropic_api_key_env,
             mongodb_uri_env,
             serpapi_api_key_env,
-            private_bucket_name_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,

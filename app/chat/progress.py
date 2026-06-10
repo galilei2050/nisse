@@ -12,7 +12,7 @@ from typing import assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from baski.agents import AgentEvent, Completed, Thinking, ToolFinished, ToolStarted, TurnStarted
+from baski.agents import AgentEvent, Completed, Message, Thinking, ToolFinished, ToolStarted, TurnStarted
 
 from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
 
@@ -47,10 +47,8 @@ class TelegramProgress:
     async def __call__(self, event: AgentEvent) -> None:
         """Consume one agent event and reflect it in the progress message."""
         match event:
-            case TurnStarted():
-                return  # a turn boundary — nothing to render on its own
-            case Completed():
-                return  # the final answer is rendered by finish(), called by the router
+            case TurnStarted() | Completed():
+                return  # turn boundary / final answer (rendered by finish()) — nothing to render here
             case ToolStarted(name=name):
                 self._lines.append(f"🔧 {_pretty(name)}…")
             case ToolFinished():
@@ -60,6 +58,8 @@ class TelegramProgress:
                 if not brief:
                     return
                 self._lines.append(f"💭 {brief}")
+            case Message(text=text):
+                self._lines.append(f"💬 {text}")
             case _:
                 assert_never(event)
         await self._flush(force=False)
