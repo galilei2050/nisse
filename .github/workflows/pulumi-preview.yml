@@ -16,6 +16,8 @@ env:
   # Project/region/state-bucket are baked into the Makefile (single project) — only the
   # passphrase is a secret. GCP auth is keyless via WIF (no SA key), see the auth step.
   PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+  # Resolve baski from its git URL (as prod/Docker does), ignoring the local editable path source.
+  UV_NO_SOURCES: "1"
 
 jobs:
   infra_preview:
