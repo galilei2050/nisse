@@ -11,6 +11,8 @@ from baski.infra.run import (
 from delivery import docker_repository_url
 from iam import cloud_run_service_account
 
+from .cloud_tasks import TG_UPDATE_QUEUE
+
 # Each secret + a version is created and granted to the cloud-run SA manually (outside Pulumi).
 telegram_token_env = create_cloud_run_secret_env("TELEGRAM_TOKEN", "backend")
 anthropic_api_key_env = create_cloud_run_secret_env("ANTHROPIC_API_KEY", "backend")
@@ -25,7 +27,7 @@ backend = create_cloud_run_with_monitoring(
         envs=[
             create_cloud_run_env("CLOUD", "1"),
             create_cloud_run_env("WEBHOOK_URL", "https://backend-675179615608.us-central1.run.app/webhook"),
-            create_cloud_run_env("CLOUD_TASKS_QUEUE", "tg-update-queue"),
+            create_cloud_run_env("CLOUD_TASKS_QUEUE", TG_UPDATE_QUEUE),
             create_cloud_run_env("PRIVATE_BUCKET_NAME", "nisse2050-private"),
             telegram_token_env,
             anthropic_api_key_env,

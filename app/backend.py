@@ -41,14 +41,14 @@ class NisseBot(TelegramServer):
         return [AllowlistMiddleware()]
 
     def cloud_tasks_config(self) -> CloudTasksConfig:
-        """Cloud Tasks settings for the inbound-update queue; SA per `cloud-tasks-invoker@<project>`."""
+        """Cloud Tasks settings for the inbound-update queue; tasks are OIDC-signed as the cloud-run SA."""
         project = str(get_env("GOOGLE_CLOUD_PROJECT"))
         return CloudTasksConfig(
             client=tasks_v2.CloudTasksAsyncClient(),
             project_id=project,
             location=str(get_env("GOOGLE_CLOUD_REGION")),
             queue=str(get_env("CLOUD_TASKS_QUEUE")),
-            invoker_sa_email=f"cloud-tasks-invoker@{project}.iam.gserviceaccount.com",
+            invoker_sa_email=f"cloud-run@{project}.iam.gserviceaccount.com",
         )
 
     @cached_property
