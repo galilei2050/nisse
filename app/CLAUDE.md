@@ -5,8 +5,8 @@ message comes in, gets transcribed, goes into `Assistant.reply()`, the agent
 decides which tools/sub-agents to call, the reply goes back out. Everything
 else (memory, scheduling, search, Google Suite) is a **tool** the agent calls.
 
-Built on `baski`. The agent framework (`Agent` / `Tool` / `ToolBox` /
-`MessageHistory` / `KnowledgeTool` / `TraceCollector`) is ported from
+Built on `baski`. The agent framework (`Agent` / `Tool` / `ToolSet` /
+`MessageHistory` / `ShortTermMemory` / `TraceCollector`) is ported from
 clarity-auto-care into `baski.agents` — import from there, do not vendor.
 
 **`Agent` (baski) is abstract; `Assistant` (this app) is concrete.** `baski.agents.Agent`
@@ -39,7 +39,8 @@ app/
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
   assistant/        the main agent — composition root
-    assistant.py    Assistant.reply(user_id, text) -> str; builds Agent + ToolBox
+    assistant.py    Assistant.reply(conversation_id, text) -> str; chat mode over persisted history
+    history.py      MongoMessageHistory — per-conversation transcript persisted to Mongo (`conversations`)
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 
@@ -151,8 +152,9 @@ unwieldy; plain registry + `CoreDeps` is the default.
 
 ## Memory — three tiers (≠ conversation transcript)
 
-`MessageHistory` (baski.agents) is the transcript / context window, not memory.
-Memory is curated knowledge reached only through `KnowledgeTool`:
+`MessageHistory` (baski.agents) is the transcript / context window, not memory. In chat
+mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversation.
+Memory is curated knowledge reached only through `ShortTermMemory`:
 
 - **ShortTerm** — per-Turn scratchpad; lives during one `Assistant.reply()`, wiped
   after the reply. Not persisted.
@@ -207,6 +209,6 @@ overlay; learned skills = specs loaded by `toolset.py` alongside `skills/`.
 
 `telegram.server.TelegramServer` · `telegram.receptionist.Receptionist` ·
 `telegram.history.ChatHistory` · `telegram.storage.UsersStorage` ·
-`server.AppConfig` / `Logger` · `agents.{Agent,Tool,ToolBox,MessageHistory,
-KnowledgeTool,TraceCollector}` · `clients.{SerpAPIClient,PlaywrightClient}` ·
+`server.AppConfig` / `Logger` · `agents.{Agent,Tool,ToolSet,MessageHistory,
+ShortTermMemory,TraceCollector}` · `clients.{SerpAPIClient,PlaywrightClient}` ·
 `primitives.{datetime,json,unique_id}` · `pattern.retry` · `map_async`.

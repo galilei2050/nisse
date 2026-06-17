@@ -25,7 +25,7 @@ def build_router(*, assistant: Assistant) -> Router:
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
-            answer = await assistant.reply(text=message.text, on_event=progress)
+            answer = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
         except AgentRefusalError:
             await progress.finish(_REFUSAL_REPLY)
             return
