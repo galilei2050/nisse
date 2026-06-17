@@ -10,7 +10,6 @@ from typing import Any
 import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
-from baski.agents import AgentConfig
 from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import CloudTasksConfig
 from baski.env import get_env
@@ -22,7 +21,6 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
-from app.assistant.toolset import build_tools
 from app.shared import CoreDeps
 
 
@@ -53,15 +51,8 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def assistant(self) -> Assistant:
-        """Composition root: a stateless agent built per reply from a shared config."""
-        config = AgentConfig(
-            logger=self.deps.logger,
-            tools=build_tools(self.deps),
-            anthropic_client=self.deps.anthropic,
-            database=self.deps.database,
-            bucket_name=self.deps.bucket_name,
-        )
-        return Assistant(config=config)
+        """The bot's Assistant, built from shared deps."""
+        return Assistant(deps=self.deps)
 
     @cached_property
     def deps(self) -> CoreDeps:
