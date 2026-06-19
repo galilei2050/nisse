@@ -15,6 +15,16 @@ NISSE_SYSTEM_PROMPT = (
 _NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 
 
+def _humanize_tokens(n: int) -> str:
+    """Compact token count for the reply footer: 12_400 → '12.4k', 64_000 → '64k'."""
+    return f"{n / 1000:.1f}k".replace(".0k", "k")
+
+
+def _footer(result: AgentExecuteResult) -> str:
+    """One-line cost + current context-size note appended to every answer."""
+    return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
+
+
 class Assistant:
     """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`)."""
 
@@ -71,4 +81,4 @@ class Assistant:
                 },
             )
             return _NO_ANSWER
-        return result.response
+        return result.response + _footer(result)
