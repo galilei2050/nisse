@@ -85,7 +85,13 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 
 - **Tool** = subclass `baski.agents.Tool`; declare `name / one_line /
   description / input_schema`; implement `async execute(**kwargs) -> str`.
-  One-shot, stateless, returns a string.
+  One-shot, returns a string. Most tools are stateless; a tool that **persists state
+  across replies** (anything backed by Mongo — memory today) is the exception and MUST be
+  **scoped to the `conversation_id`** so one chat can never read or write another's data.
+  baski is conversation-agnostic (generic framework, no persistence) — the scope is bound
+  *here*, by `Assistant._build_agent`, which constructs the per-conversation store and passes
+  it to the stateful tools. Wire stateless tools via the `tools/<domain>` providers
+  (`build_tools(deps)`); wire conversation-scoped tools in `_build_agent(conversation_id=…)`.
 - **Skill** = a tool bundle (and optionally a sub-agent) the toolset can load.
   Two kinds: **code skills** = a new `skills/<x>/` + one line in `skills/__init__.py`
   (dev-authored, git-versioned); **learned skills** = data specs (name + prompt +
@@ -159,7 +165,9 @@ mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversa
 - **ShortTerm** — per-Turn scratchpad (baski `ShortTermMemory`, `store_memory` tool);
   lives during one `Assistant.reply()`, wiped after the reply. Not persisted.
 - **LongTerm** — durable owner-facts in Mongo (`memory/`), shipped now: a flat store
-  + three tools (`remember` / `read_memory` / `forget`). The titled index is always
+  + three tools (`remember` / `read_memory` / `forget`). **Scoped per `conversation_id`** —
+  `MemoryStore(database, conversation_id=…)` filters every read/write to one chat, so
+  memories never cross conversations. The titled index is always
   injected (read tool's `user_message()`); bodies fetched on demand by `public_id`.
   Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
   body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing

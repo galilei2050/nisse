@@ -54,10 +54,12 @@ class MemorySource(BaseModel):
 class Memory(NisseDbModel):
     """One durable memory: a titled fact/preference/event with provenance and body.
 
-    `public_id` is the short agent-facing key (≠ the DB `id`); audit timestamps and the
-    soft-delete marker come from NisseDbModel.
+    Scoped to one `conversation_id` (the chat it was learned in) — memories never cross
+    conversations. `public_id` is the short agent-facing key (≠ the DB `id`); audit
+    timestamps and the soft-delete marker come from NisseDbModel.
     """
 
+    conversation_id: int
     public_id: str = Field(default_factory=_new_public_id)
     title: str
     category: MemoryCategory
@@ -66,37 +68,42 @@ class Memory(NisseDbModel):
 
 
 class MemoryStore:
-    """CRUD over the `memories` collection, addressed by the short public id."""
+    """CRUD over the `memories` collection, scoped to one conversation and addressed by public id."""
 
-    def __init__(self, database: AsyncDatabase) -> None:
-        """Bind to the shared database's memories collection."""
+    def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
+        """Bind to the memories collection for one conversation; every query is scoped to it."""
         self._collection = database[_COLLECTION]
+        self._conversation_id = conversation_id
 
-    async def ensure_indexes(self) -> None:
+    @staticmethod
+    async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique index on public_id — the agent-facing key. Idempotent; call once at startup."""
-        await self._collection.create_index("public_id", unique=True)
+        await database[_COLLECTION].create_index("public_id", unique=True)
 
     async def list(self) -> list[Memory]:
-        """Every live memory (not soft-deleted), for the always-injected index."""
-        return [Memory.model_validate(doc) async for doc in self._collection.find({"deleted_at": None})]
+        """Every live memory in this conversation (not soft-deleted), for the always-injected index."""
+        query = {"conversation_id": self._conversation_id, "deleted_at": None}
+        return [Memory.model_validate(doc) async for doc in self._collection.find(query)]
 
     async def get(self, public_id: str) -> Memory | None:
-        """One live memory by its public id, or None if missing or soft-deleted."""
-        doc = await self._collection.find_one({"public_id": public_id, "deleted_at": None})
+        """One live memory by its public id within this conversation, or None if missing/deleted."""
+        doc = await self._collection.find_one(
+            {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None}
+        )
         return Memory.model_validate(doc) if doc else None
 
     async def add(self, *, title: str, category: MemoryCategory, source: MemorySource, body: str) -> Memory:
-        """Store a new memory; Mongo assigns `_id`, we keep the short public_id."""
-        memory = Memory(title=title, category=category, source=source, body=body)
+        """Store a new memory in this conversation; Mongo assigns `_id`, we keep the short public_id."""
+        memory = Memory(conversation_id=self._conversation_id, title=title, category=category, source=source, body=body)
         result = await self._collection.insert_one(memory.model_dump(exclude={"id"}))
         memory.id = str(result.inserted_id)
         return memory
 
     async def soft_delete(self, public_id: str) -> bool:
-        """Mark a memory deleted (keep the doc); True if a live one was found."""
+        """Mark a memory deleted (keep the doc); True if a live one was found in this conversation."""
         now = datetime.now()
         result = await self._collection.update_one(
-            {"public_id": public_id, "deleted_at": None},
+            {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
             {"$set": {"deleted_at": now, "updated_at": now}},
         )
         return result.modified_count > 0

@@ -74,7 +74,7 @@ typecheck:
 # Functional tests — pure, no running backend. Part of `make test` / CI.
 .PHONY: test-backend
 test-backend:
-	uv run pytest tests/backend/
+	uv run pytest tests/backend/ tests/memory/
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
 # Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot

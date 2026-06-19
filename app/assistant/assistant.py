@@ -41,10 +41,13 @@ class Assistant:
 
     async def setup(self) -> None:
         """One-time startup: ensure the memory store's indexes exist."""
-        await MemoryStore(self._deps.database).ensure_indexes()
+        await MemoryStore.ensure_indexes(self._deps.database)
 
-    def _build_agent(self, history: MongoMessageHistory, store: MemoryStore, on_event: Listener) -> Agent:
-        """Assemble the agent for one reply over the given conversation history and memory."""
+    def _build_agent(self, *, conversation_id: int, history: MongoMessageHistory, on_event: Listener) -> Agent:
+        """Assemble the agent for one reply; stateful tools are bound to this conversation_id."""
+        # Long-term memory persists across replies, so its store MUST be scoped to the chat —
+        # never let one conversation's memories leak into another's. See app/CLAUDE.md "Tool =".
+        store = MemoryStore(self._deps.database, conversation_id=conversation_id)
         toolset = ToolSet(logger=self._deps.logger)
         for tool in self._tools:
             toolset.add(tool)
@@ -80,8 +83,7 @@ class Assistant:
         with history:
             history.add_user_text(text)
 
-        store = MemoryStore(self._deps.database)
-        agent = self._build_agent(history, store, on_event)
+        agent = self._build_agent(conversation_id=conversation_id, history=history, on_event=on_event)
         result = await agent.execute()
         await history.save()
         return result
