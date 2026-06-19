@@ -25,7 +25,7 @@ Pointer format: _src:_ `repo: path/to/file` → resolves to `.references/repo/pa
 ## Memory — three tiers (decided for nisse)
 
 - **ShortTerm** — per-Turn working scratchpad. Lives during one `Assistant.reply()`,
-  wiped when the reply is ready (today's in-memory KnowledgeTool accumulation).
+  wiped when the reply is ready (today's in-memory ShortTermMemory accumulation).
 - **LongTermHot** — small curated core, **always injected in every chat/turn** as a
   frozen snapshot in the volatile prompt tier. Durable in Mongo; curator keeps it tight.
 - **LongTerm** — large durable fact store (Mongo + rebuildable vector index). NOT
@@ -68,7 +68,7 @@ Supporting patterns:
 - **Bounded loop** — hard cap on iterations (`for loop < 10`) as a fail-loud runaway guard.
   _src:_ `chatui: src/lib/server/textGeneration/mcp/runMcpFlow.ts`.
 - **Parallel exec, re-ordered to call order, error fed back as `tool_result`** (don't swallow).
-  _src:_ `chatui: .../mcp/toolInvocation.ts`. (baski.ToolBox already runs parallel.)
+  _src:_ `chatui: .../mcp/toolInvocation.ts`. (baski.ToolSet already runs parallel.)
 - **Think-block hygiene** — strip `<think>` from the assistant message resubmitted with tool_calls.
   _src:_ `chatui: .../mcp/runMcpFlow.ts`.
 - **Tool-call repair** for weak/non-native models (promote text tool-calls → native). LATER.
@@ -194,6 +194,49 @@ owner in the loop (already the curator's safety invariants).
   _src:_ `chatui: src/lib/server/textGeneration/index.ts` (mergeAsyncGenerators).
 - **event_emitter / event_call** — status edits ("transcribing… searching…") + inline-keyboard confirms;
   map the socket sink onto Telegram sendMessage/editMessageText. _src:_ `openwebui: socket/main.py`.
+
+## Google Cloud Agent Platform (GCAP) — vendor prior art
+
+The Gemini Enterprise Agent Platform (ex–Vertex AI Agent Engine). Read as a vendor's
+*menu*, not a target — nisse already has its own spine (`baski.agents` loop, Mongo,
+Cloud Run, Cloud Tasks/Scheduler, 3-tier memory + curator, Gemini judge). GCAP is
+built for fleets of enterprise agents; nisse is one owner-only bot. Verdict per piece:
+
+**Reuse (low lock-in, real value):**
+- **Cloud Trace via OpenTelemetry** — the one clear win. OTel is a standard sink (no lock-in).
+  Not free: it's re-instrumenting baski `TraceCollector` spans to OTel, then you get a trace
+  viewer (vs only GCS+Mongo). ADK wires it with `--trace_to_cloud`. _src:_ docs `adk.dev/integrations/cloud-trace/`.
+- **MCP as a tool source** — confirms our hybrid `baski.Tool` + MCP direction. No change.
+- **Cloud Tasks / Cloud Scheduler** — Google's own agent-scheduling pattern *is* our
+  `scheduling/router.py`. Already landed; confirmation only.
+
+**Crib the design, NOT the service:**
+- **Memory Bank** (managed long-term memory: LLM-extract → embed → kNN retrieve, scoped by
+  **"memory topics"** + `user_id`). Overlaps our LongTerm + `recall.py` + curator. **Crib "memory
+  topics"** as curator categories; don't adopt the service. _Verified mid-2026 (facts move fast — recheck):_
+  it is **GA, billed since 2026-02-11 (~$0.25/1k events)** — NOT the 2025 preview. TTL exists
+  (`ttl_hours`). Underlying memory-pipeline model is **not** publicly swappable (Google stack;
+  your *agent* model can be Claude, the extractor can't). Memory-revisions / `revision_ttl` /
+  direct non-session write-API: **unverified — no public docs found**; don't bank on them.
+  The reject does NOT rest on those stale cons — see recall-index axis below. _src:_ docs `…/scale/memory-bank/setup`.
+- **Recall index = Atlas, not a second system.** The dual-store projection (decided: "vector index
+  = disposable projection rebuilt from truth") is a real role → three candidates: (a) **Atlas
+  `$vectorSearch` + Atlas Search (kw/FTS)** — *winner*: projection lives beside truth in the one
+  system we already run, rebuilt in place, curator stays sole writer; (b) Vertex AI Vector Search —
+  a 2nd system holding a copy of truth; (c) Memory-Bank upload-mode — same 2nd-copy problem +
+  partly-undocumented write path. Reject Memory-Bank-as-index because Atlas already does it, not "in principle".
+- **Evaluation Service / Multi-Turn AutoRaters / Example Store** — trajectory-eval + autorater
+  framing matches our `judge/` + `evals/`. Crib the multi-turn-rater concept; our Gemini judge is simpler.
+
+**Explicitly NOT (enterprise-fleet machinery a single bot doesn't need):**
+- **Agent Engine / Agent Runtime** (`reasoningEngines`) — proprietary non-self-hostable runtime; we run Cloud Run + baski.
+- **ADK as a framework** — competes with `baski.agents`; its session/memory/tool patterns we already have. Crib, don't adopt.
+- **Agent Gateway** — ingress/egress policy mesh for fleets; our owner-only `access.py` is the whole surface.
+- **Agentspace / Agent Builder / Agent Studio** — low-code enterprise canvas; irrelevant to a code-first repo.
+- **A2A protocol** — cross-vendor agent interop; our sub-agents are in-process. Revisit only if we expose/consume external agents.
+- **VertexAISessionService / managed Sessions** — session store; Mongo + baski `ChatHistory` + time+identity reset already do this.
+- **RAG Engine / Vertex AI Search / Vertex Vector Search** — single-user-overkill reject as openwebui RAG (below); the recall-index role is filled by Atlas (above), so even the bare Vector Search index is redundant.
+- **Code Execution sandbox** — = the "Programmatic Tool Calling — LATER" note above; parked.
 
 ## Explicitly NOT copying
 

@@ -83,28 +83,28 @@
           "rebase"
         ],
         "decision": "deny",
-        "reason": "Agent never rebases — commit forward or ask the user to rebase manually"
+        "reason": "Agent never rebases \u2014 commit forward or ask the user to rebase manually"
       },
       {
         "args": [
           "cherry-pick"
         ],
         "decision": "deny",
-        "reason": "Agent never cherry-picks — open a PR with the desired commits, or ask user"
+        "reason": "Agent never cherry-picks \u2014 open a PR with the desired commits, or ask user"
       },
       {
         "args": [
           "merge"
         ],
         "decision": "deny",
-        "reason": "Agent never merges — use PRs via `gh pr create`/merge UI"
+        "reason": "Agent never merges \u2014 use PRs via `gh pr create`/merge UI"
       },
       {
         "args": [
           "revert"
         ],
         "decision": "ask",
-        "reason": "Confirm revert — legitimate way to undo a bad commit"
+        "reason": "Confirm revert \u2014 legitimate way to undo a bad commit"
       },
       {
         "args": [
@@ -233,7 +233,7 @@
           "-A"
         ],
         "decision": "deny",
-        "reason": "`git add -A` stages everything in the working tree, which sneaks in secrets (.env), build artifacts, half-finished work, and files unrelated to the current change. INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. If you don't know what's changed, run `git status` first and add the relevant ones deliberately."
+        "reason": "`git add -A` stages everything in the working tree, which sneaks in secrets (.env), build artifacts, half-finished work, and files unrelated to the current change. INSTEAD: list files by path \u2014 `git add path/to/file1 path/to/file2`. If you don't know what's changed, run `git status` first and add the relevant ones deliberately."
       },
       {
         "args": [
@@ -249,7 +249,7 @@
           "."
         ],
         "decision": "deny",
-        "reason": "`git add .` stages everything under cwd, which sneaks in unintended files. INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. Run `git status` first if you need to see what's changed."
+        "reason": "`git add .` stages everything under cwd, which sneaks in unintended files. INSTEAD: list files by path \u2014 `git add path/to/file1 path/to/file2`. Run `git status` first if you need to see what's changed."
       },
       {
         "args": [
@@ -423,17 +423,17 @@
   "source": {
     "rules": [],
     "default": "deny",
-    "reason": "source is blocked. If the venv isn't active, ask the user to activate it — do not try workarounds."
+    "reason": "source is blocked. If the venv isn't active, ask the user to activate it \u2014 do not try workarounds."
   },
   ".": {
     "rules": [],
     "default": "deny",
-    "reason": "`.` (source builtin) is blocked — same as `source`."
+    "reason": "`.` (source builtin) is blocked \u2014 same as `source`."
   },
   "env": {
     "rules": [],
     "default": "deny",
-    "reason": "env is blocked — bypasses ACL via leading env-var assignments. Read env vars from inside your program, or ask the user."
+    "reason": "env is blocked \u2014 bypasses ACL via leading env-var assignments. Read env vars from inside your program, or ask the user."
   },
   "xargs": {
     "rules": [],
@@ -651,7 +651,7 @@
       }
     ],
     "default": "ask",
-    "reason": "gh subcommand not in allow-list — confirm. Merge/close/delete/release are user-only."
+    "reason": "gh subcommand not in allow-list \u2014 confirm. Merge/close/delete/release are user-only."
   },
   "rm": {
     "rules": [
@@ -669,7 +669,7 @@
       }
     ],
     "default": "deny",
-    "reason": "rm only allowed inside the project tree — system paths off-limits"
+    "reason": "rm only allowed inside the project tree \u2014 system paths off-limits"
   },
   "nc": {
     "rules": [],
@@ -748,7 +748,7 @@
       {
         "fn": "sed_inline_long",
         "decision": "deny",
-        "reason": "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely need a long regex replacement, split it into multiple short `sed -e` expressions or use Edit with the new content."
+        "reason": "`sed -i` expression too long (>300 chars) \u2014 use the Edit tool instead. Edit shows a diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely need a long regex replacement, split it into multiple short `sed -e` expressions or use Edit with the new content."
       }
     ],
     "default": "allow"
@@ -1213,7 +1213,7 @@
       }
     ],
     "default": "ask",
-    "reason": "docker subcommand not in allow-list — confirm."
+    "reason": "docker subcommand not in allow-list \u2014 confirm."
   },
   "fuser": {
     "rules": [],
@@ -1501,12 +1501,12 @@
       }
     ],
     "default": "ask",
-    "reason": "npm subcommand not in allow-list — confirm."
+    "reason": "npm subcommand not in allow-list \u2014 confirm."
   },
   "npx": {
     "rules": [],
     "default": "ask",
-    "reason": "Confirm npx — runs arbitrary package"
+    "reason": "Confirm npx \u2014 runs arbitrary package"
   },
   "gunzip": {
     "rules": [],
@@ -1549,7 +1549,7 @@
   "command": {
     "rules": [],
     "default": "deny",
-    "reason": "`command <X>` is the bash `command` builtin and it bypasses ACL. Do NOT prefix anything with `command` — write the bare command. Example: instead of `command git status`, write `git status`."
+    "reason": "`command <X>` is the bash `command` builtin and it bypasses ACL. Do NOT prefix anything with `command` \u2014 write the bare command. Example: instead of `command git status`, write `git status`."
   },
   "eval": {
     "rules": [],
@@ -1698,7 +1698,7 @@
           "login"
         ],
         "decision": "deny",
-        "reason": "User runs `gcloud auth login` interactively themselves — agent can't complete the browser flow"
+        "reason": "User runs `gcloud auth login` interactively themselves \u2014 agent can't complete the browser flow"
       },
       {
         "args": [
@@ -1847,6 +1847,16 @@
       }
     ],
     "default": "ask",
-    "reason": "gcloud subcommand not in read allow-list — confirm."
+    "reason": "gcloud subcommand not in read allow-list \u2014 confirm."
+  },
+  "uv": {
+    "rules": [
+      {
+        "args_glob": "publish*",
+        "decision": "deny",
+        "reason": "Never publish packages from the agent. Ask the user to run `uv publish`."
+      }
+    ],
+    "default": "allow"
   }
 }

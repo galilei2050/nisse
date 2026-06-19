@@ -16,6 +16,10 @@ Backend deploys to Cloud Run on GCP project `nisse2050`. Built on `baski` (https
 - Use Pydantic models for any data flowing between functions. Raw dicts only for pipeline intermediates and logger labels.
 - Keep `__call__`/`run` methods as 3-5 line orchestrators. Push concerns into private methods.
 
+## Docs
+
+Design notes and deeper docs live in `docs/`. Check there before implementing; filenames describe their topic.
+
 ## Commands
 
 - `make setup`       — venv + install deps
