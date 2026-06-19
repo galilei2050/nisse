@@ -60,7 +60,7 @@ class NisseBot(TelegramServer):
         return CoreDeps(
             logger=self.logger,
             http=httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)),
-            anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY"))),
+            anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0),
             database=self._database,
             playwright=PlaywrightClient(headless=True, logger=self.logger),
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),

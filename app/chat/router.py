@@ -10,6 +10,7 @@ from app.chat.progress import TelegramProgress
 
 _NON_TEXT_REPLY = "Send me a text message."
 _REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
+_ERROR_REPLY = "Something went wrong on my side — please try again."
 
 
 def build_router(*, assistant: Assistant) -> Router:
@@ -29,6 +30,9 @@ def build_router(*, assistant: Assistant) -> Router:
         except AgentRefusalError:
             await progress.finish(_REFUSAL_REPLY)
             return
+        except Exception:
+            await progress.finish(_ERROR_REPLY)
+            raise
         await progress.finish(answer)
 
     return router
