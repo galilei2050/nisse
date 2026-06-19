@@ -39,7 +39,9 @@ app/
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
   assistant/        the main agent — composition root
-    assistant.py    Assistant.reply(conversation_id, text) -> str; chat mode over persisted history
+    assistant.py    Assistant.reply(conversation_id, text) -> str; thin TG↔agent layer over the registry
+    conversations.py Conversations — registry: builds each chat's agent once and caches it
+    conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
     history.py      MongoMessageHistory — per-conversation transcript persisted to Mongo (`conversations`)
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills

@@ -1,11 +1,9 @@
-"""Assistant — composition root that turns a user message into an agent reply."""
+"""Assistant — the thin TG↔agent layer: turns a user message into an agent reply."""
 
-from baski.agents import Agent, AgentConfig, AgentExecuteResult, Listener, ToolSet, noop
-from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
+from baski.agents import AgentExecuteResult, Listener, noop
 
-from app.assistant.history import MongoMessageHistory
-from app.assistant.toolset import build_tools
-from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
+from app.assistant.conversations import Conversations
+from app.memory import MemoryStore
 from app.shared import CoreDeps
 
 NISSE_SYSTEM_PROMPT = (
@@ -18,7 +16,7 @@ _NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 
 
 class Assistant:
-    """Replies to a message within a persistent, per-conversation chat history."""
+    """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`)."""
 
     def __init__(
         self,
@@ -28,65 +26,31 @@ class Assistant:
         await_trace: bool = False,
         local_traces_dir: str | None = None,
     ) -> None:
-        """Build the domain tools from shared deps; hold the system prompt reused for every reply.
+        """Build the conversation registry from shared deps + the prebuilt domain tools.
 
         `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
         persistence and write the full trace to a local dir instead of GCS. Off in production.
         """
         self._deps = deps
-        self._tools = build_tools(deps)
-        self._system_prompt = system_prompt
-        self._await_trace = await_trace
-        self._local_traces_dir = local_traces_dir
+        self._conversations = Conversations(
+            deps=deps,
+            system_prompt=system_prompt,
+            await_trace=await_trace,
+            local_traces_dir=local_traces_dir,
+        )
 
     async def setup(self) -> None:
         """One-time startup: ensure the memory store's indexes exist."""
         await MemoryStore.ensure_indexes(self._deps.database)
 
-    def _build_agent(self, *, conversation_id: int, history: MongoMessageHistory, on_event: Listener) -> Agent:
-        """Assemble the agent for one reply; stateful tools are bound to this conversation_id."""
-        # Long-term memory persists across replies, so its store MUST be scoped to the chat —
-        # never let one conversation's memories leak into another's. See app/CLAUDE.md "Tool =".
-        store = MemoryStore(self._deps.database, conversation_id=conversation_id)
-        toolset = ToolSet(logger=self._deps.logger)
-        for tool in self._tools:
-            toolset.add(tool)
-        toolset.add(ShortTermMemory())
-        toolset.add(DeleteMessagesTool(history))
-        toolset.add(RememberTool(store))
-        toolset.add(RecallMemoryTool(store))  # reads the index live from the store each turn
-        toolset.add(ForgetTool(store))
-
-        config = AgentConfig(
-            logger=self._deps.logger,
-            toolset=toolset,
-            message_history=history,
-            anthropic_client=self._deps.anthropic,
-            database=self._deps.database,
-            bucket_name=self._deps.bucket_name,
-            system_prompt=self._system_prompt,
-            await_trace=self._await_trace,
-            local_traces_dir=self._local_traces_dir,
-        )
-        return Agent(config=config, on_event=on_event)
-
     async def run(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
-        """Append the message, run the agent over the conversation, persist history; return the raw result.
+        """Drive the conversation's reused agent over the new message; return the raw result.
 
         `reply()` wraps this into a user-facing string. Probe/tests call `run()` directly to read
         the result's `trace_id` (to inspect the persisted trace) and token counts.
         """
-        history = MongoMessageHistory(
-            logger=self._deps.logger, database=self._deps.database, conversation_id=conversation_id
-        )
-        await history.load()
-        with history:
-            history.add_user_text(text)
-
-        agent = self._build_agent(conversation_id=conversation_id, history=history, on_event=on_event)
-        result = await agent.execute()
-        await history.save()
-        return result
+        conversation = await self._conversations.get(conversation_id)
+        return await conversation.reply(text=text, on_event=on_event)
 
     async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> str:
         """Reply to a message within the persistent conversation; the chat router's entry point.
