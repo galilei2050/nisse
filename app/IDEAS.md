@@ -48,7 +48,18 @@ Supporting patterns:
   _src:_ `openclaw: docs/concepts/active-memory.md`.
 - **Recall-gated promotion** + temporal decay + MMR — promote short→long only after a
   fact is recalled ≥N times across ≥M queries above a score threshold; decay + MMR at read.
+  Concrete starting config from openclaw: weighted score (relevance .30, frequency .24,
+  diversity .15, recency .15, consolidation .10, concept .06), gates `minScore 0.75 /
+  recall≥3 / ≥2 unique queries`, decay half-life 14d (evergreen exempt). Start simpler
+  (count≥3 across≥2 queries) and add weights only if recall gets noisy.
   _src:_ `openclaw: extensions/memory-core/src/short-term-promotion.ts`, `src/memory/{temporal-decay,mmr}.ts`.
+- **Invalidate-on-contradiction (not append)** — when a new fact contradicts an existing one,
+  mark the old one invalid rather than storing both; retrieval then never surfaces stale prefs.
+  Stronger than decay alone for evolving user state. Lean: invalidate for user prefs, decay for the rest.
+  _src:_ Zep temporal-KG fact-invalidation (getzep.com; arxiv 2501.13956) — crib the rule, not the graph engine.
+- **Content-type tag on stored facts** — label each LongTerm fact `episodic | semantic | procedural`
+  so recall can filter by kind and the curator can promote the right ones. Cheap field; LangMem advises
+  mapping needs→types before storage. _src:_ `langchain.com/blog/langmem-sdk-launch`.
 - **Relevance-threshold on top-k** — drop below-threshold kNN hits so irrelevant facts
   aren't injected every turn. _src:_ `openwebui: routers/memories.py` (RELEVANCE_THRESHOLD).
 - **Write-discipline as prompt guidance** — store declarative facts not imperatives;

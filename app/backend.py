@@ -77,9 +77,10 @@ class NisseBot(TelegramServer):
         return AsyncExitStack()
 
     async def _on_startup(self) -> None:
-        """Open the HTTP client and headless browser before the first message."""
+        """Open the HTTP client and headless browser, and ensure memory indexes."""
         await self._resources.enter_async_context(self.deps.http)
         await self._resources.enter_async_context(self.deps.playwright)
+        await self.assistant.setup()
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""

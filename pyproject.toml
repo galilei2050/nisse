@@ -70,6 +70,8 @@ max-complexity = 8
 # so the implicit-namespace warning (INP001) is by design; `secret_id` is a GCP
 # resource name, not a credential (S106); re-export package inits need no docstring.
 "infrastructure/**" = ["INP001", "S106", "D104"]
+# probe.py is a manual CLI harness whose stdout IS its output — print is intended (T201).
+"app/probe.py" = ["T201"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

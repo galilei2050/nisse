@@ -31,7 +31,7 @@ app/
 
   shared/           cross-domain code — no domain logic of its own
     db.py           Mongo client / AsyncDatabase accessor
-    models.py       Pydantic bases — NisseDbModel for Mongo docs (_id ↔ id)
+    models.py       NisseDbModel for Mongo docs: `_id`↔`id` + audit fields (created_at/updated_at/deleted_at, soft-delete)
     providers.py    role → model_id presets (main · judge · curator · task)
 
   chat/             Telegram I/O — the ONLY aiogram Router
@@ -49,9 +49,10 @@ app/
     gemini.py       Gemini/Vertex impl — own client, own provider
     rubric.py       scoring criteria
 
-  memory/           the three memory tiers behind the knowledge tool
-    store.py        durable facts in MongoDB (LongTermHot + LongTerm); ShortTerm is per-run, in-memory
-    recall.py       Active Memory — bounded pre-reply recall over LongTerm
+  memory/           long-term memory: durable owner-facts + the remember/read/forget tools
+    store.py        Memory model + MemoryStore (Mongo `memories`, short-id CRUD)
+    tools.py        remember · read_memory · forget; index injected via the read tool's user_message()
+    recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
   scheduling/       deferred self-invocation (reminders, daily briefings)
     schedule.py     ScheduleTaskTool + fire-due-task → Assistant
@@ -154,16 +155,50 @@ unwieldy; plain registry + `CoreDeps` is the default.
 
 `MessageHistory` (baski.agents) is the transcript / context window, not memory. In chat
 mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversation.
-Memory is curated knowledge reached only through `ShortTermMemory`:
 
-- **ShortTerm** — per-Turn scratchpad; lives during one `Assistant.reply()`, wiped
-  after the reply. Not persisted.
-- **LongTermHot** — small curated core, always injected in every chat/turn (Mongo).
-- **LongTerm** — large durable store (Mongo); surfaced by Active Memory pre-reply
-  recall (`memory/recall.py`), not injected wholesale.
+- **ShortTerm** — per-Turn scratchpad (baski `ShortTermMemory`, `store_memory` tool);
+  lives during one `Assistant.reply()`, wiped after the reply. Not persisted.
+- **LongTerm** — durable owner-facts in Mongo (`memory/`), shipped now: a flat store
+  + three tools (`remember` / `read_memory` / `forget`). The titled index is always
+  injected (read tool's `user_message()`); bodies fetched on demand by `public_id`.
+  Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
+  body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing
+  `public_id` (what the model reads/echoes). `forget` is a **soft delete** — it sets
+  `deleted_at`; reads filter `{"deleted_at": None}`. The agent forgets a memory itself when
+  the dialogue shows it's stale.
 
-The curator promotes LongTerm→LongTermHot and expires stale facts. Rationale and
-source patterns: `IDEAS.md`.
+Every tool injects its always-present block via `Tool.user_message()` (baski) — the
+uniform seam ShortTerm, the memory index, and future skills all share.
+
+Future: a curated always-hot subset + Active Memory recall (`memory/recall.py`) + the
+curator promoting/expiring facts. Rationale and prior art: `IDEAS.md`.
+
+## Manual probe (end-to-end testing — any feature)
+
+`app/probe.py` runs the agent once, outside Telegram, and prints the three things to check
+on any feature — read from the agent's own trace:
+
+1. **Injected context** — the system prompt + the first-turn messages the agent received.
+   Confirm what reaches the model is what you expect.
+2. **Tool calls** — every tool invoked, with arguments. Confirm the agent calls the expected ones.
+3. **Answer** — the final reply is sensible.
+
+```
+make probe MSG="…" [U=<id>]      # one agent run; prints injected context, tool calls, answer
+make memories                    # dump the `memories` collection (live + soft-deleted)
+```
+
+Where to look, per run:
+- **Injected context** is the ground truth for what the model saw — read it first.
+- **`U=` is the conversation id.** Testing recall/contradiction? Use a *fresh* `U=`: in the same
+  conversation the fact is still in the transcript, so the agent answers from there and the
+  long-term path never runs. A fresh `U=` has an empty transcript but the same global memory store.
+- The probe shows what the agent *did*; `make memories` shows the durable *result* in Mongo.
+
+Needs the same env as `make backend-run` (loaded from `.env`); it makes real API/DB calls and
+writes to the real DB — use a throwaway `U=`. Write expectations **before** running. The memory
+cases (scripted + natural-conversation, expectation-first) live in `docs/memory-test-cases.md`;
+future features get their own cases doc on the same pattern.
 
 ## Scheduling (self-invocation)
 

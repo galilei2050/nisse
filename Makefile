@@ -44,6 +44,17 @@ backend-run:
 test-backend-dry-run:
 	uv run python -m app.backend --dry-run
 
+# Manual end-to-end probe — one Assistant.reply(); prints injected context, tool calls, answer.
+# Real API/DB calls; throwaway user. `make probe MSG="…" [U=42]`. See docs/memory-test-cases.md.
+.PHONY: probe
+probe:
+	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
+
+# Companion to probe: dump the long-term `memories` collection (live + soft-deleted).
+.PHONY: memories
+memories:
+	uv run python scripts/show_memories.py
+
 .PHONY: lint
 lint:
 	uv run ruff format --check app/ infrastructure/
