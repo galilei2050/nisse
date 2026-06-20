@@ -54,11 +54,13 @@ def _block_type(block: object) -> str | None:
     return getattr(block, "type", None)
 
 
-def _has_text_answer(turn: Turn) -> bool:
-    """True if the turn has at least one assistant message with a text block (a user-facing answer)."""
+def _has_text(turn: Turn) -> bool:
+    """True if the turn has any conversational text — a user question or an assistant reply.
+
+    A turn with text is part of the visible conversation and is kept. A turn with none is pure
+    tool machinery (only tool_use/tool_result blocks) and is the only kind that gets pruned.
+    """
     for msg in turn.messages:
-        if msg["role"] != "assistant":
-            continue
         content = msg["content"]
         if isinstance(content, str):
             return True
@@ -73,8 +75,10 @@ class MongoMessageHistory(MessageHistory):
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
     Call `load()` before the first reply to restore the active transcript, then `save()` after
     each reply. `save()` persists every turn to Mongo first (so the full history is always
-    recoverable), then soft-deletes the turns with no user-facing answer and drops them from
-    the active transcript. Turn content is never modified — whole turns are kept or soft-deleted.
+    recoverable), then soft-deletes only the intermediate tool turns (no conversational text)
+    and drops them from the active transcript. User questions and assistant answers always stay
+    in context; durable facts the agent wants to remember go to long-term memory, not here.
+    Turn content is never modified — whole turns are kept or soft-deleted.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
@@ -106,17 +110,18 @@ class MongoMessageHistory(MessageHistory):
         self._next_turn_id = max(doc["turn_id"] for doc in docs)
 
     async def save(self) -> None:
-        """Persist every turn to Mongo, then soft-delete the ones with no user-facing answer.
+        """Persist every turn to Mongo, then soft-delete intermediate tool turns.
 
         Two phases, in order, so the full history is always recoverable:
         1. Upsert every active turn as a full document — content serialised as-is, never modified.
-           A turn with no assistant text answer is written with `deleted_at` already set, so even
-           a turn pruned the moment it was created lands in Mongo and can be restored.
-        2. Drop those pruned turns from the active in-memory transcript so the next reply's context
-           excludes them. Their documents remain in Mongo.
+           An intermediate tool turn (no conversational text — only tool_use/tool_result) is
+           written with `deleted_at` already set, so even a turn pruned the moment it was created
+           lands in Mongo and can be restored.
+        2. Drop those pruned tool turns from the active in-memory transcript so the next reply's
+           context excludes the bulky tool payloads. User questions and assistant answers stay.
         """
         now = datetime.now()
-        prunable = {turn.id for turn in self.turns if not _has_text_answer(turn)}
+        prunable = {turn.id for turn in self.turns if not _has_text(turn)}
 
         for turn in self.turns:
             deleted_at = now if turn.id in prunable else None
