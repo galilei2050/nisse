@@ -55,6 +55,12 @@ probe:
 memories:
 	uv run python scripts/show_memories.py
 
+# Companion to probe: dump one conversation's `conversation_turns` (active + soft-deleted).
+# `make turns U=<conversation_id>`. See docs/history-test-cases.md.
+.PHONY: turns
+turns:
+	uv run python scripts/show_turns.py $(U)
+
 .PHONY: lint
 lint:
 	uv run ruff format --check app/ infrastructure/
@@ -78,7 +84,8 @@ test-backend:
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
 # Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
-# running. Needs a real TELEGRAM_TOKEN; not in GitHub `ci` (no token there).
+# running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
+# CLAUDE.md "Local vs prod"), so this never disturbs the prod webhook. Not in GitHub `ci`.
 .PHONY: smoke-test
 smoke-test: backend-run backend-wait
 	uv run pytest tests/smoke/

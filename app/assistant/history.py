@@ -1,87 +1,157 @@
-"""Persistent conversation transcript — a MessageHistory backed by MongoDB."""
+"""Persistent conversation transcript — a MessageHistory backed by MongoDB.
 
-from anthropic.types import MessageParam
+Schema: one Mongo document per turn in `conversation_turns`, modelled by `ConversationTurn`.
+Standard audit fields (id/created_at/updated_at/deleted_at) come from NisseDbModel.
+Turns are saved as-is and never modified; `deleted_at` is the only field that changes after insert.
+"""
+
+from anthropic.types import MessageParam, TextBlock
 from baski.agents import MessageHistory
 from baski.agents.message_history import Turn
+from baski.primitives import datetime
 from baski.server import Logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pymongo.asynchronous.database import AsyncDatabase
 
-_COLLECTION = "conversations"
+from app.shared.models import NisseDbModel
+
+_COLLECTION = "conversation_turns"
 
 
 def _dump_block(block: object) -> object:
-    """JSON-safe a content block: anthropic SDK blocks are pydantic, tool results are dicts."""
+    """JSON-safe a content block: Anthropic SDK blocks are Pydantic models, tool results are dicts."""
     return block.model_dump(mode="json", exclude_none=True) if isinstance(block, BaseModel) else block
 
 
-def _dump_message(message: MessageParam) -> object:
-    """Serialize one message to a JSON-safe doc; content is a list of blocks (or a string)."""
+def _dump_message(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
+    """Return a JSON-safe copy of a MessageParam with SDK block objects replaced by plain dicts."""
     content = message["content"]
     if isinstance(content, str):
-        return {"role": message["role"], "content": content}
-    return {"role": message["role"], "content": [_dump_block(b) for b in content]}
+        return MessageParam(role=message["role"], content=content)
+    return MessageParam(role=message["role"], content=[_dump_block(b) for b in content])  # type: ignore[misc]  # list[object] → content union at runtime (SDK blocks → plain dicts)
 
 
-def _is_tool_block(block: object) -> bool:
-    """True for a tool_use/tool_result block — SDK object (assistant) or raw dict (tool result)."""
-    kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-    return kind in ("tool_use", "tool_result")
+class ConversationTurn(NisseDbModel):
+    """One agent turn persisted to Mongo — all messages for one reply cycle.
+
+    Lifecycle: a data record — one document per turn per conversation. `turn_id` is baski's
+    sequential Turn.id and, together with `conversation_id`, forms the upsert key. Audit timestamps
+    and the soft-delete marker (`deleted_at`) come from NisseDbModel. Content is never modified;
+    only `deleted_at` is stamped when a turn is pruned from the active transcript.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    conversation_id: int
+    turn_id: int  # baski Turn.id — sequential int, upsert key with conversation_id
+    messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
 
 
-def _turn_has_tools(turn: Turn) -> bool:
-    """True if any message in the turn carries a tool_use/tool_result block."""
-    return any(
-        _is_tool_block(b) for m in turn.messages for b in (m["content"] if isinstance(m["content"], list) else [])
-    )
+def _is_text_block(block: object) -> bool:
+    """True if a content block is a text block.
+
+    A fresh assistant block is an SDK `TextBlock` (isinstance is type-checked by mypy); a block
+    loaded from Mongo or built by `add_user_text` is a `TextBlockParam` dict whose discriminator
+    is `type: "text"` (Anthropic models it as a `Literal`, not a runtime enum).
+    """
+    if isinstance(block, TextBlock):
+        return True
+    return isinstance(block, dict) and block.get("type") == "text"
+
+
+def _has_text(turn: Turn) -> bool:
+    """True if the turn has any conversational text — a user question or an assistant reply.
+
+    A turn with text is part of the visible conversation and is kept. A turn with none is pure
+    tool machinery (only tool_use/tool_result blocks) and is the only kind that gets pruned.
+    """
+    for msg in turn.messages:
+        content = msg["content"]
+        if isinstance(content, str):
+            return True
+        if any(_is_text_block(b) for b in content):
+            return True
+    return False
 
 
 class MongoMessageHistory(MessageHistory):
-    """MessageHistory whose turns persist to MongoDB, one document per conversation.
+    """MessageHistory whose turns persist to MongoDB as `ConversationTurn` documents.
 
-    Lifecycle: per-conversation — built with its `Conversation` and reused across replies. The agent
-    loop mutates turns in memory (base class). Call `load()` before the loop to restore a prior
-    conversation and `save()` after it to persist the new state — including any truncation/deletion
-    the agent did, so context stays bounded across replies.
+    Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
+    Call `load()` before the first reply to restore the active transcript, then `save()` after
+    each reply. `save()` persists every turn to Mongo first (so the full history is always
+    recoverable), then soft-deletes only the intermediate tool turns (no conversational text)
+    and drops them from the active transcript. User questions and assistant answers always stay
+    in context; durable facts the agent wants to remember go to long-term memory, not here.
+    Turn content is never modified — whole turns are kept or soft-deleted.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
-        """Bind the history to one conversation's document."""
+        """Bind the history to one conversation."""
         super().__init__(logger=logger)
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
 
+    @staticmethod
+    async def ensure_indexes(database: AsyncDatabase) -> None:
+        """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
+        col = database[_COLLECTION]
+        await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
+        await col.create_index([("conversation_id", 1), ("deleted_at", 1)])
+
     async def load(self) -> None:
-        """Restore persisted turns for this conversation (no-op for a new one)."""
-        doc = await self._collection.find_one({"_id": self._conversation_id})
-        if doc is None:
-            return
-        self.turns = [Turn(id=turn["id"], messages=list(turn["messages"])) for turn in doc["turns"]]
-        self._next_turn_id = doc["next_turn_id"]
+        """Restore active turns for this conversation and advance the turn-id counter past all turns.
 
-    def prune_tool_turns(self) -> None:
-        """Drop tool-call turns from the transcript, keeping only the most recent one.
-
-        Tool results (search/browse blobs) are the bulk of the context and re-derivable; durable
-        owner facts already live in long-term memory. Called after each reply, before persisting:
-        keep the last tool turn so an immediate follow-up can still reference it, drop the older
-        ones — bounding context without the agent having to manage it.
+        Active turns (deleted_at=None) rebuild the in-memory transcript. The `_next_turn_id` counter
+        is set from the highest turn_id EVER used — including soft-deleted turns — so baski's
+        `__enter__` never re-issues a soft-deleted turn's id and collides on the unique index.
         """
-        tool_turn_ids = [t.id for t in self.turns if _turn_has_tools(t)]
-        if len(tool_turn_ids) <= 1:
-            return
-        drop = set(tool_turn_ids[:-1])
-        self.turns = [t for t in self.turns if t.id not in drop]
-        self.logger.info(
-            "Pruned tool turns before persist",
-            labels={"dropped": sorted(drop), "keptLastToolTurn": tool_turn_ids[-1]},
+        active = await self._collection.find(
+            {"conversation_id": self._conversation_id, "deleted_at": None},
+            sort=[("turn_id", 1)],
+        ).to_list(length=None)
+        # Read messages directly from raw Mongo docs — bypassing TypedDict validation so plain
+        # dicts from Mongo are not re-wrapped in Pydantic ValidatorIterator objects that would
+        # break the Anthropic SDK serializer when the agent formats messages for the API.
+        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in active]
+
+        newest = await self._collection.find_one(
+            {"conversation_id": self._conversation_id},
+            sort=[("turn_id", -1)],
         )
+        self._next_turn_id = newest["turn_id"] if newest else 0
 
     async def save(self) -> None:
-        """Persist the current turns for this conversation."""
-        doc = {
-            "_id": self._conversation_id,
-            "turns": [{"id": turn.id, "messages": [_dump_message(m) for m in turn.messages]} for turn in self.turns],
-            "next_turn_id": self._next_turn_id,
-        }
-        await self._collection.replace_one({"_id": self._conversation_id}, doc, upsert=True)
+        """Persist every turn to Mongo, then soft-delete intermediate tool turns.
+
+        Two phases, in order, so the full history is always recoverable:
+        1. Upsert every active turn as a full document — content serialised as-is, never modified.
+           An intermediate tool turn (no conversational text — only tool_use/tool_result) is
+           written with `deleted_at` already set, so even a turn pruned the moment it was created
+           lands in Mongo and can be restored.
+        2. Drop those pruned tool turns from the active in-memory transcript so the next reply's
+           context excludes the bulky tool payloads. User questions and assistant answers stay.
+        """
+        now = datetime.now()
+        prunable = {turn.id for turn in self.turns if not _has_text(turn)}
+
+        for turn in self.turns:
+            deleted_at = now if turn.id in prunable else None
+            await self._collection.update_one(
+                {"conversation_id": self._conversation_id, "turn_id": turn.id},
+                {
+                    "$set": {
+                        "conversation_id": self._conversation_id,
+                        "turn_id": turn.id,
+                        "messages": [_dump_message(m) for m in turn.messages],
+                        "updated_at": now,
+                        "deleted_at": deleted_at,
+                    },
+                    "$setOnInsert": {"created_at": now},  # only on first insert, not on updates
+                },
+                upsert=True,
+            )
+
+        self.turns = [turn for turn in self.turns if turn.id not in prunable]
+        if prunable:
+            self.logger.info("Soft-deleted turns with no user-facing answer", labels={"deleted": sorted(prunable)})
