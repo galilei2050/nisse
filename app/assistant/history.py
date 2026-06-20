@@ -5,7 +5,7 @@ Standard audit fields (id/created_at/updated_at/deleted_at) come from NisseDbMod
 Turns are saved as-is and never modified; `deleted_at` is the only field that changes after insert.
 """
 
-from anthropic.types import MessageParam
+from anthropic.types import MessageParam, TextBlock
 from baski.agents import MessageHistory
 from baski.agents.message_history import Turn
 from baski.primitives import datetime
@@ -47,11 +47,16 @@ class ConversationTurn(NisseDbModel):
     messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
 
 
-def _block_type(block: object) -> str | None:
-    """Return the type field of a content block (dict or SDK object)."""
-    if isinstance(block, dict):
-        return block.get("type")
-    return getattr(block, "type", None)
+def _is_text_block(block: object) -> bool:
+    """True if a content block is a text block.
+
+    A fresh assistant block is an SDK `TextBlock` (isinstance is type-checked by mypy); a block
+    loaded from Mongo or built by `add_user_text` is a `TextBlockParam` dict whose discriminator
+    is `type: "text"` (Anthropic models it as a `Literal`, not a runtime enum).
+    """
+    if isinstance(block, TextBlock):
+        return True
+    return isinstance(block, dict) and block.get("type") == "text"
 
 
 def _has_text(turn: Turn) -> bool:
@@ -64,7 +69,7 @@ def _has_text(turn: Turn) -> bool:
         content = msg["content"]
         if isinstance(content, str):
             return True
-        if any(_block_type(b) == "text" for b in content):
+        if any(_is_text_block(b) for b in content):
             return True
     return False
 
@@ -95,19 +100,26 @@ class MongoMessageHistory(MessageHistory):
         await col.create_index([("conversation_id", 1), ("deleted_at", 1)])
 
     async def load(self) -> None:
-        """Restore active turns (deleted_at=None) for this conversation; no-op for a new one."""
-        cursor = self._collection.find(
+        """Restore active turns for this conversation and advance the turn-id counter past all turns.
+
+        Active turns (deleted_at=None) rebuild the in-memory transcript. The `_next_turn_id` counter
+        is set from the highest turn_id EVER used — including soft-deleted turns — so baski's
+        `__enter__` never re-issues a soft-deleted turn's id and collides on the unique index.
+        """
+        active = await self._collection.find(
             {"conversation_id": self._conversation_id, "deleted_at": None},
             sort=[("turn_id", 1)],
-        )
-        docs = await cursor.to_list(length=None)
-        if not docs:
-            return
+        ).to_list(length=None)
         # Read messages directly from raw Mongo docs — bypassing TypedDict validation so plain
         # dicts from Mongo are not re-wrapped in Pydantic ValidatorIterator objects that would
         # break the Anthropic SDK serializer when the agent formats messages for the API.
-        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in docs]
-        self._next_turn_id = max(doc["turn_id"] for doc in docs)
+        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in active]
+
+        newest = await self._collection.find_one(
+            {"conversation_id": self._conversation_id},
+            sort=[("turn_id", -1)],
+        )
+        self._next_turn_id = newest["turn_id"] if newest else 0
 
     async def save(self) -> None:
         """Persist every turn to Mongo, then soft-delete intermediate tool turns.
