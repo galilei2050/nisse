@@ -56,18 +56,21 @@ app/
     tools.py        remember · read_memory · forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
-  scheduling/       deferred self-invocation (reminders, daily briefings)
-    schedule.py     ScheduleTaskTool + fire-due-task → Assistant
-    router.py       HTTP trigger Cloud Tasks/Scheduler hits when a task is due
+  scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
+    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
+    tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
+    dispatch.py     Scheduling holder + enqueue_fire (reuses baski CloudTasksScheduler)
+    runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
+    router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
 
-  tools/            leaf tools — one Tool each, thin wrapper over one API
-    perplexity.py
-    serp.py         SerpAPI: google / youtube / yelp / maps
-    google/         Google Suite: gmail.py · calendar.py · tasks.py · drive.py
+  tools/            (future) nisse-specific leaf Tool classes — one per file, thin wrapper over one API
+    serp.py / google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
+    Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Web search +
+    browse use baski's GoogleSearchTool/WebBrowseTool directly, wired in `_build_web_tools()`.
     (+ external MCP servers as an optional secondary tool source — hybrid)
 
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)
@@ -91,9 +94,13 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   across replies** (anything backed by Mongo — memory today) is the exception and MUST be
   **scoped to the `conversation_id`** so one chat can never read or write another's data.
   baski is conversation-agnostic (generic framework, no persistence) — the scope is bound
-  *here*, by `Assistant._build_agent`, which constructs the per-conversation store and passes
-  it to the stateful tools. Wire stateless tools via the `tools/<domain>` providers
-  (`build_tools(deps)`); wire conversation-scoped tools in `_build_agent(conversation_id=…)`.
+  *here*, by `Conversations._build_<domain>_tools(conversation_id)`, which constructs the
+  per-conversation store and passes it to the stateful tools (see "Dependency wiring" below).
+  **A tool talks only to a narrow domain SERVICE, never to raw clients/transport.** Inject a
+  service that hides the wiring behind intent-named methods — e.g. scheduling tools get a
+  `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + callback URL. Passing a
+  client bundle (scheduler+endpoint) into a tool leaks the transport into the tool and couples it
+  to how the work is dispatched; the service is the seam that keeps the tool ignorant of that.
 - **Skill** = a tool bundle (and optionally a sub-agent) the toolset can load.
   Two kinds: **code skills** = a new `skills/<x>/` + one line in `skills/__init__.py`
   (dev-authored, git-versioned); **learned skills** = data specs (name + prompt +
@@ -108,6 +115,9 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   it; don't pre-share. It holds primitives (db, base models, providers), not logic.
 - Pydantic in / Pydantic out between functions; raw dicts only for pipeline
   intermediates and logger labels. Keep `reply` / `execute` short orchestrators.
+- **Every class docstring states its lifecycle** — *long-lived* (singleton / per-conversation,
+  built once and reused) vs *short-lived* (per-reply glue, or a per-record data model) — so it's
+  clear at a glance what's cached and what's rebuilt each time.
 
 ## Direction: a self-extensible agent
 
@@ -134,30 +144,42 @@ in `IDEAS.md`.
 
 ## Tool tiers (always-on vs loaded) — built in from the start
 
-- **Always-on** (registered by `assistant/toolset.py`, present every turn):
-  knowledge/memory, context management (`delete_messages`), `schedule_task`.
+- **Always-on** (assembled in `Conversations._build`, present every turn):
+  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule` (webhook mode).
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
 
-## Dependency wiring — per-domain providers (no tools in backend.py)
+## Dependency wiring — assemble tools inline in `Conversations._build`
 
-Wiring is layered so each domain owns its own clients and tools; `backend.py` only
-assembles providers, it never imports a tool or a domain client.
+`CoreDeps` (`shared/deps.py`) holds the low-level clients that carry **network + auth**, built
+once in `backend.py`: logger, http, anthropic, database, playwright, bucket_name, and the Cloud
+Tasks `scheduler` + `schedule_endpoint` (both `None` in polling). Everything else — per-domain
+mid-level clients, conversation-scoped stores, services, and the tools — is assembled **on the
+stack** in `Conversations._build`, from `CoreDeps` alone.
 
-- `shared/deps.py` — `CoreDeps`: shared low-level clients (logger, http, anthropic,
-  database, playwright, bucket_name), built once in `backend.py`.
-- `tools/<domain>/provider.py` — `def provide(deps: CoreDeps) -> list[Tool]`: the domain
-  builds its own mid-level clients (SerpApiClient, GmailClient, …) from `CoreDeps` and
-  returns its tools. A domain never imports `backend`.
-- `tools/__init__.py` — `PROVIDERS`: the registry. Add a domain = new `tools/<domain>/`
-  + one line in `PROVIDERS`; `backend.py` stays untouched.
-- `assistant/toolset.py` — `build_tools(deps)`: flattens every provider into the tool list.
+**The pattern: one `_build_<domain>_tools()` per domain.** Each takes what it needs (`self._deps`,
+`conversation_id`) and returns `list[Tool]`; `_build` adds them all. To add a tool domain, write a
+new `_build_<domain>_tools()` and call it — nothing else changes.
 
-`backend.py` builds `CoreDeps` and calls `build_tools(deps)` — nothing else tool-related.
-A provider may type its param as a narrow `Protocol` (only the attrs it touches) for
-looser coupling and easy test fakes. Escalate to a DI container only if this gets
-unwieldy; plain registry + `CoreDeps` is the default.
+```python
+def _build_memory_tools(self, conversation_id):      # store scoped to the chat
+    store = MemoryStore(self._deps.database, conversation_id=conversation_id)
+    return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
+
+def _build_scheduling_tools(self, conversation_id):  # webhook mode only — [] when no scheduler
+    scheduler, endpoint = self._deps.scheduler, self._deps.schedule_endpoint
+    if scheduler is None or endpoint is None:
+        return []
+    service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+    store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
+    return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+```
+
+No provider registry, no `build_tools` flatten — that indirection was ceremony. A network client
+that needs config/auth (Cloud Tasks) goes in `CoreDeps`; the cheap per-conversation assembly lives
+in `_build`. Bimodality (cloud has Cloud Tasks, polling doesn't) is one honest `None` field in
+`CoreDeps`, not an optional threaded through `Assistant`/`Conversations`.
 
 ## Memory — three tiers (≠ conversation transcript)
 
@@ -210,14 +232,22 @@ writes to the real DB — use a throwaway `U=`. Write expectations **before** ru
 cases (scripted + natural-conversation, expectation-first) live in `docs/memory-test-cases.md`;
 future features get their own cases doc on the same pattern.
 
-## Scheduling (self-invocation)
+## Scheduling (self-invocation) — webhook mode only
 
-1. Agent calls `schedule_task` → writes a `ScheduledTask` to **MongoDB** with the
-   fire time + enough context to resume.
-2. **Cloud Tasks** (one-off) / **Cloud Scheduler** (recurring, cron) hits
-   `scheduling/router.py` when due → reconstructs a minimal context →
-   `Assistant.reply()` → pushes a Telegram message. Idempotent by task id (a
-   re-delivery must not double-send). Google Tasks is only a user-facing mirror.
+Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), and `cancel_schedule` (cancels by id; its `user_message` injects the active-schedule list each turn). The two creation tools store a
+`ScheduledTask` (conversation-scoped) and enqueue ONE Cloud Task per occurrence with `schedule_time`
+(push, no poller) — reusing baski's `CloudTasksScheduler`, no Cloud Scheduler resource.
+
+- **Time is the agent's job.** The agent gives an absolute UTC `fire_at`; if it doesn't know the
+  owner's city/timezone it asks (and remembers it) — nisse invents no timezone. `fire_at` is
+  normalized to UTC seconds so it round-trips Mongo's ms datetimes and the claim matches exactly.
+- **Fire** (`POST /schedule/fire`, mounted via `add_webhook_routes`): `ScheduleRunner.fire` →
+  **atomic CAS-claim** (`claim`: PENDING→RUNNING for this public_id+fire_at — the single idempotency
+  point under Cloud Tasks' at-least-once delivery) → recurring: advance + re-enqueue the next
+  occurrence BEFORE running → `Assistant.reply(conversation_id)` (same agent as a live turn) →
+  `bot.send_message` → ONCE: mark DONE. A duplicate delivery loses the claim and no-ops.
+- **No app-level OIDC check** on the route — same protection as baski's `/tasks/update` worker
+  (Cloud Tasks OIDC + Cloud Run ingress). Polling mode wires no scheduling tools (no public callback).
 
 ## Judge / evaluation (Gemini grades Opus)
 

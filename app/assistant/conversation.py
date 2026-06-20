@@ -11,8 +11,9 @@ from app.assistant.history import MongoMessageHistory
 class Conversation:
     """One chat's long-lived agent (+ history, scratchpad) and the orchestration to run one reply.
 
-    Built once per conversation and reused — baski's loop preserves context across `execute()`
-    calls. The lock serializes replies, since the agent's history is shared mutable state.
+    Lifecycle: long-lived — one per conversation, built once and reused across every reply (baski's
+    loop preserves context across `execute()` calls). The lock serializes replies, since the agent's
+    history is shared mutable state.
     """
 
     def __init__(self, *, agent: Agent, history: MongoMessageHistory, short_term: ShortTermMemory) -> None:

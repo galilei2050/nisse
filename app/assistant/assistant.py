@@ -26,7 +26,10 @@ def _footer(result: AgentExecuteResult) -> str:
 
 
 class Assistant:
-    """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`)."""
+    """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`).
+
+    Lifecycle: long-lived — one per bot (cached_property in NisseBot), reused for every message.
+    """
 
     def __init__(
         self,
@@ -36,7 +39,7 @@ class Assistant:
         await_trace: bool = False,
         local_traces_dir: str | None = None,
     ) -> None:
-        """Build the conversation registry from shared deps + the prebuilt domain tools.
+        """Build the conversation registry from shared deps.
 
         `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
         persistence and write the full trace to a local dir instead of GCS. Off in production.

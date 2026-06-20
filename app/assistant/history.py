@@ -26,9 +26,10 @@ def _dump_message(message: MessageParam) -> object:
 class MongoMessageHistory(MessageHistory):
     """MessageHistory whose turns persist to MongoDB, one document per conversation.
 
-    The agent loop mutates turns in memory (base class). Call `load()` before the loop to
-    restore a prior conversation and `save()` after it to persist the new state — including
-    any truncation/deletion the agent did, so context stays bounded across replies.
+    Lifecycle: per-conversation — built with its `Conversation` and reused across replies. The agent
+    loop mutates turns in memory (base class). Call `load()` before the loop to restore a prior
+    conversation and `save()` after it to persist the new state — including any truncation/deletion
+    the agent did, so context stays bounded across replies.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
