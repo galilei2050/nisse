@@ -99,9 +99,11 @@ class MongoMessageHistory(MessageHistory):
         docs = await cursor.to_list(length=None)
         if not docs:
             return
-        turns = [ConversationTurn.model_validate(doc) for doc in docs]
-        self.turns = [Turn(id=t.turn_id, messages=list(t.messages)) for t in turns]
-        self._next_turn_id = max(t.turn_id for t in turns)
+        # Read messages directly from raw Mongo docs — bypassing TypedDict validation so plain
+        # dicts from Mongo are not re-wrapped in Pydantic ValidatorIterator objects that would
+        # break the Anthropic SDK serializer when the agent formats messages for the API.
+        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in docs]
+        self._next_turn_id = max(doc["turn_id"] for doc in docs)
 
     def prune_tool_turns(self) -> list[int]:
         """Remove pure tool-call turns (no assistant text answer) from the active transcript.
@@ -139,13 +141,17 @@ class MongoMessageHistory(MessageHistory):
             )
 
         for turn in self.turns:
-            doc = ConversationTurn(
-                conversation_id=self._conversation_id,
-                turn_id=turn.id,
-                messages=[_dump_message(m) for m in turn.messages],
-            )
             await self._collection.update_one(
                 {"conversation_id": self._conversation_id, "turn_id": turn.id},
-                {"$set": doc.model_dump(exclude={"id"})},
+                {
+                    "$set": {
+                        "conversation_id": self._conversation_id,
+                        "turn_id": turn.id,
+                        "messages": [_dump_message(m) for m in turn.messages],
+                        "updated_at": now,
+                        "deleted_at": None,
+                    },
+                    "$setOnInsert": {"created_at": now},  # only on first insert, not updates
+                },
                 upsert=True,
             )
