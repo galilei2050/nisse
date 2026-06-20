@@ -14,10 +14,10 @@ from pymongo.asynchronous.database import AsyncDatabase
 class CoreDeps:
     """Shared clients the conversation assembles every tool from.
 
-    Holds the low-level clients that carry network connections + auth, built once. A tool's
-    per-conversation store/service is assembled from these in `Conversations._build_*_tools`.
-    `scheduler` / `schedule_endpoint` are the Cloud Tasks wiring — both None in polling mode
-    (no public fire callback), set together in webhook mode.
+    Lifecycle: long-lived, one per process (built once in `backend.py`). Holds the low-level clients
+    that carry network connections + auth; a tool's per-conversation store/service is assembled from
+    these in `Conversations._build_*_tools`. `scheduler` is always present — real `CloudTasksScheduler`
+    in webhook mode, a `LoggingScheduler` in polling/probe — so no branch guards the scheduling tools.
     """
 
     logger: Logger
@@ -26,5 +26,5 @@ class CoreDeps:
     database: AsyncDatabase
     playwright: PlaywrightClient
     bucket_name: str
-    scheduler: Scheduler | None
-    schedule_endpoint: str | None
+    scheduler: Scheduler
+    schedule_endpoint: str

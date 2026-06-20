@@ -30,6 +30,7 @@ from baski.server import Logger
 from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
+from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps
 
 if TYPE_CHECKING:
@@ -89,8 +90,8 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             database=database,
             playwright=playwright,
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
-            scheduler=None,  # probe runs outside webhook mode — no Cloud Tasks
-            schedule_endpoint=None,
+            scheduler=LoggingScheduler(logger),  # probe has no Cloud Tasks — log the enqueue instead
+            schedule_endpoint="http://localhost/schedule/fire",
         )
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
         await assistant.setup()

@@ -13,7 +13,10 @@ from app.shared import CoreDeps
 
 
 class Conversations:
-    """Builds and caches one `Conversation` per conversation_id; reused for every later reply."""
+    """Builds and caches one `Conversation` per conversation_id; reused for every later reply.
+
+    Lifecycle: long-lived — one registry for the bot (holds the per-conversation cache).
+    """
 
     def __init__(
         self,
@@ -84,10 +87,11 @@ class Conversations:
         return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
 
     def _build_scheduling_tools(self, conversation_id: int) -> list[Tool]:
-        """Reminders/routines — webhook mode only; polling has no public fire callback (no Cloud Tasks)."""
-        scheduler, endpoint = self._deps.scheduler, self._deps.schedule_endpoint
-        if scheduler is None or endpoint is None:
-            return []
-        service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+        """Reminders/routines — built in every mode.
+
+        The scheduler is always present (a LoggingScheduler in polling/probe), so these tools always
+        exist; only in webhook mode does a fire actually call back and run.
+        """
+        service = SchedulingService(scheduler=self._deps.scheduler, endpoint=self._deps.schedule_endpoint)
         store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
         return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]

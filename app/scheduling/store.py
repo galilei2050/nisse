@@ -6,6 +6,8 @@ Two access shapes (the runner has only a task id, no conversation_id):
 """
 
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from enum import StrEnum
 
 from baski.primitives import datetime
@@ -42,8 +44,9 @@ def _new_public_id() -> str:
 class ScheduledTask(NisseDbModel):
     """One scheduled self-invocation, bound to the conversation it fires into.
 
-    `fire_at` is the next (UTC) occurrence; for RECURRING it advances by `repeat_every_hours`
-    after each fire. `instruction` is fed to the agent at fire time as a normal user turn.
+    Lifecycle: a data record — one Mongo document, transient in memory. `fire_at` is the next (UTC)
+    occurrence; for RECURRING it advances by `repeat_every_hours` after each fire. `instruction` is
+    fed to the agent at fire time as a normal user turn.
     """
 
     conversation_id: int
@@ -65,7 +68,11 @@ class ScheduledTask(NisseDbModel):
 
 
 class ScheduleStore:
-    """Conversation-scoped CRUD over `scheduled_tasks`, for the agent's tools."""
+    """Conversation-scoped CRUD over `scheduled_tasks`, for the agent's tools.
+
+    Lifecycle: per-conversation — built in `_build_scheduling_tools` and held by that chat's tools.
+    (The fire path uses the module-level `claim`/`reschedule`/`mark_done`, which have only a task id.)
+    """
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
         """Bind to the collection for one conversation; every query is scoped to it."""
@@ -119,19 +126,33 @@ class ScheduleStore:
 # ── Fire path (global, trusted): the runner has only a public_id + the occurrence's fire_at. ──
 
 
-async def claim(database: AsyncDatabase, *, public_id: str, fire_at: datetime.datetime) -> ScheduledTask | None:
-    """Atomically claim one occurrence for execution: PENDING→RUNNING for this public_id+fire_at.
+@asynccontextmanager
+async def claim(
+    database: AsyncDatabase, *, public_id: str, fire_at: datetime.datetime
+) -> AsyncIterator[ScheduledTask | None]:
+    """Claim one occurrence for execution as a context manager: PENDING→RUNNING for this public_id+fire_at.
 
-    The single source of idempotency under Cloud Tasks' at-least-once delivery: only the first
-    delivery of an occurrence flips PENDING→RUNNING and gets the task back; every duplicate
-    (already RUNNING/DONE, or advanced to a later fire_at) matches nothing and gets None.
+    The single source of idempotency under Cloud Tasks' at-least-once delivery: only the first delivery
+    of an occurrence flips PENDING→RUNNING and yields the task; every duplicate (already RUNNING/DONE,
+    or advanced to a later fire_at) matches nothing and yields None. If the body raises, the claim is
+    released back to PENDING (when still RUNNING for this occurrence) so the retry can re-run it — a
+    crash mid-fire never leaks a task stuck in RUNNING.
     """
     doc = await database[_COLLECTION].find_one_and_update(
         {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.PENDING, "deleted_at": None},
         {"$set": {"status": ScheduleStatus.RUNNING, "updated_at": datetime.now()}},
         return_document=ReturnDocument.AFTER,
     )
-    return ScheduledTask.model_validate(doc) if doc else None
+    task = ScheduledTask.model_validate(doc) if doc else None
+    try:
+        yield task
+    except BaseException:
+        if task is not None:
+            await database[_COLLECTION].update_one(
+                {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.RUNNING},
+                {"$set": {"status": ScheduleStatus.PENDING, "updated_at": datetime.now()}},
+            )
+        raise
 
 
 async def reschedule(database: AsyncDatabase, *, public_id: str, fire_at: datetime.datetime) -> None:

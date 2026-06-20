@@ -16,7 +16,10 @@ _NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 
 
 class Assistant:
-    """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`)."""
+    """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`).
+
+    Lifecycle: long-lived — one per bot (cached_property in NisseBot), reused for every message.
+    """
 
     def __init__(
         self,

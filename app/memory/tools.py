@@ -48,7 +48,7 @@ _FORGET_GUIDANCE = (
 
 
 class RememberTool(Tool):
-    """Persist durable knowledge to long-term memory, surviving across all future conversations."""
+    """Persist durable knowledge to long-term memory. Lifecycle: per-conversation (in its toolset)."""
 
     name = "remember"
     one_line = "Save a durable fact/preference/event about the owner"
@@ -81,7 +81,7 @@ class RememberTool(Tool):
 
 
 class RecallMemoryTool(Tool):
-    """Read the full body of a remembered item, and inject the always-present memory index."""
+    """Read a remembered item body + inject the memory index. Lifecycle: per-conversation (in its toolset)."""
 
     name = "read_memory"
     one_line = "Read the full body of a remembered item by its public_id"
@@ -119,7 +119,7 @@ class RecallMemoryTool(Tool):
 
 
 class ForgetTool(Tool):
-    """Delete a long-term memory that has gone stale or wrong."""
+    """Delete a long-term memory that has gone stale or wrong. Lifecycle: per-conversation (in its toolset)."""
 
     name = "forget"
     one_line = "Delete a memory that is stale or wrong"

@@ -23,7 +23,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
-from app.scheduling import ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
+from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
 
 
@@ -54,10 +54,7 @@ class NisseBot(TelegramServer):
 
     def add_webhook_routes(self, app: FastAPI) -> None:
         """Mount the scheduling fire endpoint Cloud Tasks calls when a task is due (webhook mode)."""
-        scheduler, endpoint = self.deps.scheduler, self.deps.schedule_endpoint
-        if scheduler is None or endpoint is None:
-            return
-        service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+        service = SchedulingService(scheduler=self.deps.scheduler, endpoint=self.deps.schedule_endpoint)
         runner = ScheduleRunner(assistant=self.assistant, bot=self.bot, database=self._database, scheduling=service)
         build_fire_route(app, runner)
 
@@ -73,8 +70,8 @@ class NisseBot(TelegramServer):
         Cloud Tasks `scheduler` + `schedule_endpoint` are wired only in webhook mode; in polling
         there's no public fire callback, so both stay None and scheduling tools aren't built.
         """
-        scheduler: Scheduler | None = None
-        schedule_endpoint: str | None = None
+        scheduler: Scheduler = LoggingScheduler(self.logger)  # polling/probe: log instead of enqueue
+        schedule_endpoint = "http://localhost/schedule/fire"  # unused by LoggingScheduler
         if self.args["cloud"]:
             scheduler = CloudTasksScheduler(self.cloud_tasks_config())
             base = urlparse(self.args["webhook_url"])

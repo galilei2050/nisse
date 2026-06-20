@@ -38,7 +38,7 @@ def _new_public_id() -> str:
 
 
 class MemorySource(BaseModel):
-    """Provenance of a memory: the owner, an external source, or the agent itself."""
+    """Provenance of a memory: the owner, an external source, or the agent itself. Lifecycle: a value object."""
 
     kind: SourceKind
     ref: str | None = None  # url / name when kind == "external"
@@ -54,9 +54,9 @@ class MemorySource(BaseModel):
 class Memory(NisseDbModel):
     """One durable memory: a titled fact/preference/event with provenance and body.
 
-    Scoped to one `conversation_id` (the chat it was learned in) — memories never cross
-    conversations. `public_id` is the short agent-facing key (≠ the DB `id`); audit
-    timestamps and the soft-delete marker come from NisseDbModel.
+    Lifecycle: a data record — one Mongo document. Scoped to one `conversation_id` (the chat it was
+    learned in) — memories never cross conversations. `public_id` is the short agent-facing key (≠ the
+    DB `id`); audit timestamps and the soft-delete marker come from NisseDbModel.
     """
 
     conversation_id: int
@@ -68,7 +68,10 @@ class Memory(NisseDbModel):
 
 
 class MemoryStore:
-    """CRUD over the `memories` collection, scoped to one conversation and addressed by public id."""
+    """CRUD over the `memories` collection, scoped to one conversation and addressed by public id.
+
+    Lifecycle: per-conversation — built in `_build_memory_tools` and held by that chat's tools.
+    """
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
         """Bind to the memories collection for one conversation; every query is scoped to it."""

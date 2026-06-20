@@ -25,7 +25,7 @@ def _normalize(when: datetime.datetime) -> datetime.datetime:
 
 
 class RemindTool(Tool):
-    """Schedule a one-shot reminder to fire at a future time."""
+    """Schedule a one-shot reminder. Lifecycle: per-conversation (in its toolset)."""
 
     name = "remind"
     one_line = "Schedule a one-shot reminder at a future UTC time"
@@ -57,7 +57,7 @@ class RemindTool(Tool):
 
 
 class RoutineTool(Tool):
-    """Schedule a recurring routine that repeats on a fixed hourly interval."""
+    """Schedule a recurring routine. Lifecycle: per-conversation (in its toolset)."""
 
     name = "schedule_routine"
     one_line = "Schedule a recurring routine (e.g. every morning)"
@@ -98,7 +98,7 @@ _SCHEDULES_HEADER = "YOUR ACTIVE SCHEDULES — cancel one with cancel_schedule(p
 
 
 class CancelScheduleTool(Tool):
-    """Cancel a scheduled reminder/routine, and inject the always-present list of active ones."""
+    """Cancel a schedule + inject the active-schedule list. Lifecycle: per-conversation (in its toolset)."""
 
     name = "cancel_schedule"
     one_line = "Cancel a scheduled reminder or recurring routine by id"
