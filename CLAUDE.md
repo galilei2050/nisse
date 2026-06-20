@@ -19,6 +19,7 @@ Local dev and prod are **different Telegram bots with different `TELEGRAM_TOKEN`
 - Env vars are read at module-import time (fail-fast on missing secrets). Wrap reads in a `get_X()` helper for testability.
 - Use Pydantic models for any data flowing between functions. Raw dicts only for pipeline intermediates and logger labels.
 - Keep `__call__`/`run` methods as 3-5 line orchestrators. Push concerns into private methods.
+- **Updating `CLAUDE.md` is part of every task.** When a change alters structure, conventions, or a documented fact, update the relevant `CLAUDE.md` in the same task — a task isn't done if the docs now lie. Keep it meaning + instructions, never a copy of discoverable code.
 
 ## Docs
 
