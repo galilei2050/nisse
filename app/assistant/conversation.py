@@ -36,6 +36,5 @@ class Conversation:
             with self._history:
                 self._history.add_user_text(text)
             result = await self._agent.execute()
-            pruned = self._history.prune_tool_turns()
-            await self._history.save(deleted_turn_ids=pruned)
+            await self._history.save()
         return result

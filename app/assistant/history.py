@@ -72,9 +72,9 @@ class MongoMessageHistory(MessageHistory):
 
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
     Call `load()` before the first reply to restore the active transcript, then `save()` after
-    each reply to persist new turns and soft-delete pruned ones. Turns are stored as-is;
-    `prune_tool_turns()` only removes pure tool-call turns (no text answer) from the active
-    in-memory transcript and returns their IDs for `save()` to stamp `deleted_at`.
+    each reply. `save()` persists every turn to Mongo first (so the full history is always
+    recoverable), then soft-deletes the turns with no user-facing answer and drops them from
+    the active transcript. Turn content is never modified — whole turns are kept or soft-deleted.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
@@ -105,42 +105,21 @@ class MongoMessageHistory(MessageHistory):
         self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in docs]
         self._next_turn_id = max(doc["turn_id"] for doc in docs)
 
-    def prune_tool_turns(self) -> list[int]:
-        """Remove pure tool-call turns (no assistant text answer) from the active transcript.
+    async def save(self) -> None:
+        """Persist every turn to Mongo, then soft-delete the ones with no user-facing answer.
 
-        Turns with a user-facing text response are kept entirely — content is never modified.
-        Turns with only tool_use/tool_result blocks are dropped from memory and will be
-        soft-deleted in the next save(). Full documents stay in Mongo; recovery is always possible.
-
-        Returns the list of turn IDs to soft-delete (empty if nothing to prune).
-        """
-        to_delete = [t.id for t in self.turns if not _has_text_answer(t)]
-        if not to_delete:
-            return []
-        self.turns = [t for t in self.turns if _has_text_answer(t)]
-        self.logger.info("Pruned tool-only turns before persist", labels={"deleted": to_delete})
-        return to_delete
-
-    async def save(self, *, deleted_turn_ids: list[int] | None = None) -> None:
-        """Persist active turns as ConversationTurn documents; soft-delete the given turn IDs.
-
-        Active turns are upserted with their full, unmodified messages (serialised to plain
-        dicts via `_dump_message` for Mongo compatibility). Soft-deleted turns have `deleted_at`
-        stamped once and are never removed from the collection.
+        Two phases, in order, so the full history is always recoverable:
+        1. Upsert every active turn as a full document — content serialised as-is, never modified.
+           A turn with no assistant text answer is written with `deleted_at` already set, so even
+           a turn pruned the moment it was created lands in Mongo and can be restored.
+        2. Drop those pruned turns from the active in-memory transcript so the next reply's context
+           excludes them. Their documents remain in Mongo.
         """
         now = datetime.now()
-
-        if deleted_turn_ids:
-            await self._collection.update_many(
-                {
-                    "conversation_id": self._conversation_id,
-                    "turn_id": {"$in": deleted_turn_ids},
-                    "deleted_at": None,
-                },
-                {"$set": {"deleted_at": now, "updated_at": now}},
-            )
+        prunable = {turn.id for turn in self.turns if not _has_text_answer(turn)}
 
         for turn in self.turns:
+            deleted_at = now if turn.id in prunable else None
             await self._collection.update_one(
                 {"conversation_id": self._conversation_id, "turn_id": turn.id},
                 {
@@ -149,9 +128,13 @@ class MongoMessageHistory(MessageHistory):
                         "turn_id": turn.id,
                         "messages": [_dump_message(m) for m in turn.messages],
                         "updated_at": now,
-                        "deleted_at": None,
+                        "deleted_at": deleted_at,
                     },
-                    "$setOnInsert": {"created_at": now},  # only on first insert, not updates
+                    "$setOnInsert": {"created_at": now},  # only on first insert, not on updates
                 },
                 upsert=True,
             )
+
+        self.turns = [turn for turn in self.turns if turn.id not in prunable]
+        if prunable:
+            self.logger.info("Soft-deleted turns with no user-facing answer", labels={"deleted": sorted(prunable)})
