@@ -12,7 +12,7 @@ import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
 from baski.clients.playwright_client import PlaywrightClient
-from baski.clients.scheduler import CloudTasksConfig, CloudTasksScheduler, Scheduler
+from baski.clients.scheduler import CloudTasksConfig, Scheduler
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
 from fastapi import FastAPI
@@ -65,27 +65,51 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def deps(self) -> CoreDeps:
-        """Shared low-level clients the conversation assembles every tool from.
-
-        Cloud Tasks `scheduler` + `schedule_endpoint` are wired only in webhook mode; in polling
-        there's no public fire callback, so both stay None and scheduling tools aren't built.
-        """
-        scheduler: Scheduler = LoggingScheduler(self.logger)  # polling/probe: log instead of enqueue
-        schedule_endpoint = "http://localhost/schedule/fire"  # unused by LoggingScheduler
-        if self.args["cloud"]:
-            scheduler = CloudTasksScheduler(self.cloud_tasks_config())
-            base = urlparse(self.args["webhook_url"])
-            schedule_endpoint = f"{base.scheme}://{base.netloc}/schedule/fire"
+        """Shared low-level clients assembled from individual cached properties."""
         return CoreDeps(
             logger=self.logger,
-            http=httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)),
-            anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0),
+            http=self._http,
+            anthropic=self._anthropic,
             database=self._database,
-            playwright=PlaywrightClient(headless=True, logger=self.logger),
+            playwright=self._playwright,
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
-            scheduler=scheduler,
-            schedule_endpoint=schedule_endpoint,
+            scheduler=self._scheduler_dep,
+            schedule_endpoint=self._schedule_endpoint,
         )
+
+    @cached_property
+    def _http(self) -> httpx.AsyncClient:
+        """Shared async HTTP client."""
+        return httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0))
+
+    @cached_property
+    def _anthropic(self) -> AsyncAnthropic:
+        """Anthropic async client."""
+        return AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0)
+
+    @cached_property
+    def _playwright(self) -> PlaywrightClient:
+        """Headless browser client."""
+        return PlaywrightClient(headless=True, logger=self.logger)
+
+    @cached_property
+    def _scheduler_dep(self) -> Scheduler:
+        """Scheduler for outbound tasks (reminders/routines).
+
+        In webhook mode reuses baski's `_scheduler` (the webhook enqueuer) — same
+        CloudTasksAsyncClient, same queue. Creating a second CloudTasksScheduler via
+        cloud_tasks_config() would produce two gRPC async clients on the same event loop,
+        causing "Task was destroyed but it is pending!" errors.
+        """
+        return self._scheduler if self.args["cloud"] else LoggingScheduler(self.logger)
+
+    @cached_property
+    def _schedule_endpoint(self) -> str:
+        """Fire endpoint URL for Cloud Tasks (unused by LoggingScheduler in polling mode)."""
+        if not self.args["cloud"]:
+            return "http://localhost/schedule/fire"
+        base = urlparse(self.args["webhook_url"])
+        return f"{base.scheme}://{base.netloc}/schedule/fire"
 
     @cached_property
     def _database(self) -> AsyncDatabase:
@@ -99,8 +123,8 @@ class NisseBot(TelegramServer):
 
     async def _on_startup(self) -> None:
         """Open the HTTP client and headless browser, and ensure memory + schedule indexes."""
-        await self._resources.enter_async_context(self.deps.http)
-        await self._resources.enter_async_context(self.deps.playwright)
+        await self._resources.enter_async_context(self._http)
+        await self._resources.enter_async_context(self._playwright)
         await self.assistant.setup()
         await ScheduleStore.ensure_indexes(self._database)
 
