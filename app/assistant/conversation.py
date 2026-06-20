@@ -36,6 +36,6 @@ class Conversation:
             with self._history:
                 self._history.add_user_text(text)
             result = await self._agent.execute()
-            self._history.prune_tool_turns()
-            await self._history.save()
+            pruned = self._history.prune_tool_turns()
+            await self._history.save(pruned_turn_ids=pruned)
         return result
