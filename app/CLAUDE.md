@@ -221,36 +221,21 @@ Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), a
   (Cloud Tasks OIDC + Cloud Run ingress). The tools exist in every mode; only webhook mode has the
   public `/schedule/fire` callback, so only there does a fire actually run.
 
-## Judge / evaluation (Gemini grades Opus)
+## Judge / evaluation (Gemini grades Opus) — planned
 
-One provider-agnostic `Judge` in `app/judge/` (Gemini as first impl, with its own
-client — the main agent loop stays Anthropic-only). Two consumers share it:
+Provider-agnostic `Judge` in `app/judge/` (Gemini first, own client — the main loop stays
+Anthropic-only). Two consumers: an **inline gate** (`Assistant.reply()` scores its draft against a
+rubric, one refine pass below threshold; off by default — doubles cost/latency) and an **offline
+harness** (`evals/`, sibling to `tests/`: a scenario dataset replayed through `Assistant.reply()`
+and scored to catch regressions). Judge input = what `TraceCollector` records.
 
-- **Inline gate** — `Assistant.reply()` drafts an answer, the judge scores it
-  against the rubric; below threshold → one refine pass, then send. Off per turn
-  by default (config flag) — it doubles cost/latency.
-- **Offline harness** — top-level `evals/` (sibling to `tests/`, outside `app/`):
-  a scenario dataset + a runner that replays `Assistant.reply()` and scores each
-  with the judge. Run in CI / locally as skills grow, to catch regressions.
+## Self-maintenance (nightly curator) — planned
 
-Judge input is what `TraceCollector` records (input, final answer, tool calls);
-inline it scores the draft before the trace finalizes.
-
-## Self-maintenance (nightly curator)
-
-One background agent, **nightly only** (Cloud Scheduler → `curator/router.py`
-`/curate`); no per-turn reflection. It reviews the day's chats (may use `judge`)
-and does three jobs:
-
-- **Memory** — extract durable facts into long-term, refresh, expire stale ones.
-- **Learn skills** — when a repeated pattern emerges, write a learned-skill spec.
-- **Tune prompt** — edit the system-prompt overlay.
-
-It **auto-applies** — every mutation is an append-only versioned record in Mongo,
-so any change is revertible (rollback). Consequence baked into the layout above:
-runtime-editable state lives in **Mongo, never in code** — the curator never
-writes Python to the container. Effective prompt = base `prompt.py` + versioned
-overlay; learned skills = specs loaded by `toolset.py` alongside `skills/`.
+One background agent, nightly only (Cloud Scheduler → `/curate`); no per-turn reflection. It reviews
+the day's chats and does three jobs: extract/refresh/expire **memory**, write **learned-skill** specs
+for repeated patterns, and **tune the prompt** overlay. Every mutation is an append-only versioned
+Mongo record (revertible) — runtime-editable state lives in **Mongo, never in code**; effective
+prompt = base `prompt.py` + overlay, learned skills = specs loaded alongside `skills/`.
 
 ## baski building blocks (don't reinvent)
 
