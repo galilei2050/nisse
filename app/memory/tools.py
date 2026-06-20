@@ -30,7 +30,10 @@ _REMEMBER_GUIDANCE = (
     "not here; when unsure, skip (a missed fact costs one question; a saved scrap pollutes every turn). "
     "Check the index first — update or forget a stale entry, don't duplicate. category: fact = stable "
     'truth; preference = how they like things; event = something dated. SKIP e.g. "debugging the deploy '
-    'script", "flight BCN→LIS €78".'
+    'script", "flight BCN→LIS €78".\n'
+    "Your context is trimmed automatically: pure tool turns drop out after each reply, and older turns "
+    "are trimmed as the window fills. So a durable fact that surfaced from a tool result will NOT stay "
+    "in context — remember it here now, or it's gone next turn."
 )
 
 _INDEX_HEADER = (

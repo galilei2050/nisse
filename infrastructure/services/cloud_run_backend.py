@@ -44,6 +44,9 @@ backend = create_cloud_run_with_monitoring(
         location=gcp.config.region,
         ingress="INGRESS_TRAFFIC_ALL",
         min_instances=0,
+        # Correctness invariant, not just a cost cap: conversation turn-ids are minted in memory
+        # (app/assistant/history.py), so a second concurrent writer would silently clobber turns.
+        # Do not raise above 1 until turn-id allocation is made atomic.
         max_instances=1,
         # The worker runs a full agent turn per request; match the Cloud Tasks 30-min dispatch deadline.
         timeout="1800s",

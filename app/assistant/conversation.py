@@ -36,5 +36,14 @@ class Conversation:
             with self._history:
                 self._history.add_user_text(text)
             result = await self._agent.execute()
-            await self._history.save()
+            self._history.drop_tool_turns()
         return result
+
+    async def flush(self) -> None:
+        """Await the reply's durable history writes. Called after the answer is sent to the user.
+
+        Under the same lock as `reply()` so it never races a concurrent reply mutating the history's
+        write/drop bookkeeping — the answer is already sent, so this waits off the user's critical path.
+        """
+        async with self._lock:
+            await self._history.flush()
