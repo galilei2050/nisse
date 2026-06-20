@@ -23,6 +23,19 @@ def _dump_message(message: MessageParam) -> object:
     return {"role": message["role"], "content": [_dump_block(b) for b in content]}
 
 
+def _is_tool_block(block: object) -> bool:
+    """True for a tool_use/tool_result block — SDK object (assistant) or raw dict (tool result)."""
+    kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+    return kind in ("tool_use", "tool_result")
+
+
+def _turn_has_tools(turn: Turn) -> bool:
+    """True if any message in the turn carries a tool_use/tool_result block."""
+    return any(
+        _is_tool_block(b) for m in turn.messages for b in (m["content"] if isinstance(m["content"], list) else [])
+    )
+
+
 class MongoMessageHistory(MessageHistory):
     """MessageHistory whose turns persist to MongoDB, one document per conversation.
 
@@ -45,6 +58,24 @@ class MongoMessageHistory(MessageHistory):
             return
         self.turns = [Turn(id=turn["id"], messages=list(turn["messages"])) for turn in doc["turns"]]
         self._next_turn_id = doc["next_turn_id"]
+
+    def prune_tool_turns(self) -> None:
+        """Drop tool-call turns from the transcript, keeping only the most recent one.
+
+        Tool results (search/browse blobs) are the bulk of the context and re-derivable; durable
+        owner facts already live in long-term memory. Called after each reply, before persisting:
+        keep the last tool turn so an immediate follow-up can still reference it, drop the older
+        ones — bounding context without the agent having to manage it.
+        """
+        tool_turn_ids = [t.id for t in self.turns if _turn_has_tools(t)]
+        if len(tool_turn_ids) <= 1:
+            return
+        drop = set(tool_turn_ids[:-1])
+        self.turns = [t for t in self.turns if t.id not in drop]
+        self.logger.info(
+            "Pruned tool turns before persist",
+            labels={"dropped": sorted(drop), "keptLastToolTurn": tool_turn_ids[-1]},
+        )
 
     async def save(self) -> None:
         """Persist the current turns for this conversation."""
