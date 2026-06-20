@@ -7,6 +7,10 @@ Backend deploys to Cloud Run on GCP project `nisse2050`. Built on `baski` (https
 - `app/`        — FastAPI / TelegramServer backend. Entry point `python -m app.backend`.
 - `infrastructure/` — Pulumi IaC for GCP (Cloud Run, IAM, secrets binding).
 
+## Local vs prod — two separate bots
+
+Local dev and prod are **different Telegram bots with different `TELEGRAM_TOKEN`s** (prod's is a GCP secret bound to Cloud Run; local's is in `.env`). Prod runs in **webhook** mode; local (`make backend-run` / `smoke-test`) runs in **polling**. Because they're distinct bot identities, running the local poller never disturbs prod — Telegram only forbids webhook+polling on the *same* bot.
+
 ## Conventions
 
 - Foundation primitives (datetime, JSON, logging, server bases) come from `baski`. Do NOT vendor a copy here.

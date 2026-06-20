@@ -28,8 +28,11 @@ tmp/
 .sessions/
 .claude/settings.local.json
 .claude/worktrees/
+.claude/.acl-synced-version
+.playwright-mcp/
 
 node_modules/
 
 # Reference clones of the projects cited in app/IDEAS.md (prior art, not versioned here)
 .references/
+.scratch/

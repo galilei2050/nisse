@@ -78,7 +78,8 @@ test-backend:
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
 # Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
-# running. Needs a real TELEGRAM_TOKEN; not in GitHub `ci` (no token there).
+# running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
+# CLAUDE.md "Local vs prod"), so this never disturbs the prod webhook. Not in GitHub `ci`.
 .PHONY: smoke-test
 smoke-test: backend-run backend-wait
 	uv run pytest tests/smoke/
