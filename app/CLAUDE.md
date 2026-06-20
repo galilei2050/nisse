@@ -67,10 +67,10 @@ app/
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
 
-  tools/            leaf tools — one Tool each, thin wrapper over one API
-    perplexity.py
-    serp.py         SerpAPI: google / youtube / yelp / maps
-    google/         Google Suite: gmail.py · calendar.py · tasks.py · drive.py
+  tools/            (future) nisse-specific leaf Tool classes — one per file, thin wrapper over one API
+    serp.py / google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
+    Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Web search +
+    browse use baski's GoogleSearchTool/WebBrowseTool directly, wired in `_build_web_tools()`.
     (+ external MCP servers as an optional secondary tool source — hybrid)
 
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)
@@ -94,9 +94,8 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   across replies** (anything backed by Mongo — memory today) is the exception and MUST be
   **scoped to the `conversation_id`** so one chat can never read or write another's data.
   baski is conversation-agnostic (generic framework, no persistence) — the scope is bound
-  *here*, by `Assistant._build_agent`, which constructs the per-conversation store and passes
-  it to the stateful tools. Wire stateless tools via the `tools/<domain>` providers
-  (`build_tools(deps)`); wire conversation-scoped tools in `_build_agent(conversation_id=…)`.
+  *here*, by `Conversations._build_<domain>_tools(conversation_id)`, which constructs the
+  per-conversation store and passes it to the stateful tools (see "Dependency wiring" below).
   **A tool talks only to a narrow domain SERVICE, never to raw clients/transport.** Inject a
   service that hides the wiring behind intent-named methods — e.g. scheduling tools get a
   `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + callback URL. Passing a
@@ -142,30 +141,42 @@ in `IDEAS.md`.
 
 ## Tool tiers (always-on vs loaded) — built in from the start
 
-- **Always-on** (registered by `assistant/toolset.py`, present every turn):
+- **Always-on** (assembled in `Conversations._build`, present every turn):
   knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule` (webhook mode).
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
 
-## Dependency wiring — per-domain providers (no tools in backend.py)
+## Dependency wiring — assemble tools inline in `Conversations._build`
 
-Wiring is layered so each domain owns its own clients and tools; `backend.py` only
-assembles providers, it never imports a tool or a domain client.
+`CoreDeps` (`shared/deps.py`) holds the low-level clients that carry **network + auth**, built
+once in `backend.py`: logger, http, anthropic, database, playwright, bucket_name, and the Cloud
+Tasks `scheduler` + `schedule_endpoint` (both `None` in polling). Everything else — per-domain
+mid-level clients, conversation-scoped stores, services, and the tools — is assembled **on the
+stack** in `Conversations._build`, from `CoreDeps` alone.
 
-- `shared/deps.py` — `CoreDeps`: shared low-level clients (logger, http, anthropic,
-  database, playwright, bucket_name), built once in `backend.py`.
-- `tools/<domain>/provider.py` — `def provide(deps: CoreDeps) -> list[Tool]`: the domain
-  builds its own mid-level clients (SerpApiClient, GmailClient, …) from `CoreDeps` and
-  returns its tools. A domain never imports `backend`.
-- `tools/__init__.py` — `PROVIDERS`: the registry. Add a domain = new `tools/<domain>/`
-  + one line in `PROVIDERS`; `backend.py` stays untouched.
-- `assistant/toolset.py` — `build_tools(deps)`: flattens every provider into the tool list.
+**The pattern: one `_build_<domain>_tools()` per domain.** Each takes what it needs (`self._deps`,
+`conversation_id`) and returns `list[Tool]`; `_build` adds them all. To add a tool domain, write a
+new `_build_<domain>_tools()` and call it — nothing else changes.
 
-`backend.py` builds `CoreDeps` and calls `build_tools(deps)` — nothing else tool-related.
-A provider may type its param as a narrow `Protocol` (only the attrs it touches) for
-looser coupling and easy test fakes. Escalate to a DI container only if this gets
-unwieldy; plain registry + `CoreDeps` is the default.
+```python
+def _build_memory_tools(self, conversation_id):      # store scoped to the chat
+    store = MemoryStore(self._deps.database, conversation_id=conversation_id)
+    return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
+
+def _build_scheduling_tools(self, conversation_id):  # webhook mode only — [] when no scheduler
+    scheduler, endpoint = self._deps.scheduler, self._deps.schedule_endpoint
+    if scheduler is None or endpoint is None:
+        return []
+    service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+    store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
+    return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+```
+
+No provider registry, no `build_tools` flatten — that indirection was ceremony. A network client
+that needs config/auth (Cloud Tasks) goes in `CoreDeps`; the cheap per-conversation assembly lives
+in `_build`. Bimodality (cloud has Cloud Tasks, polling doesn't) is one honest `None` field in
+`CoreDeps`, not an optional threaded through `Assistant`/`Conversations`.
 
 ## Memory — three tiers (≠ conversation transcript)
 

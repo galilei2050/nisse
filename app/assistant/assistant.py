@@ -4,7 +4,6 @@ from baski.agents import AgentExecuteResult, Listener, noop
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
-from app.scheduling import SchedulingService
 from app.shared import CoreDeps
 
 NISSE_SYSTEM_PROMPT = (
@@ -19,20 +18,18 @@ _NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 class Assistant:
     """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`)."""
 
-    def __init__(  # noqa: PLR0913 — composition root: deps + prompt + 2 trace knobs + scheduling
+    def __init__(
         self,
         *,
         deps: CoreDeps,
         system_prompt: str = NISSE_SYSTEM_PROMPT,
         await_trace: bool = False,
         local_traces_dir: str | None = None,
-        scheduling: SchedulingService | None = None,
     ) -> None:
-        """Build the conversation registry from shared deps + the prebuilt domain tools.
+        """Build the conversation registry from shared deps.
 
         `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
         persistence and write the full trace to a local dir instead of GCS. Off in production.
-        `scheduling` wires the reminder tools; None in polling mode (no public fire callback).
         """
         self._deps = deps
         self._conversations = Conversations(
@@ -40,7 +37,6 @@ class Assistant:
             system_prompt=system_prompt,
             await_trace=await_trace,
             local_traces_dir=local_traces_dir,
-            scheduling=scheduling,
         )
 
     async def setup(self) -> None:

@@ -1,11 +1,12 @@
 """Conversations — registry that builds each chat's agent once and reuses it."""
 
 from baski.agents import Agent, AgentConfig, ToolSet
-from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
+from baski.agents.tool import Tool
+from baski.agents.tools import DeleteMessagesTool, GoogleSearchTool, ShortTermMemory, WebBrowseTool
+from baski.clients.serpapi_client import SerpApiClient
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
-from app.assistant.toolset import build_tools
 from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
 from app.shared import CoreDeps
@@ -14,22 +15,19 @@ from app.shared import CoreDeps
 class Conversations:
     """Builds and caches one `Conversation` per conversation_id; reused for every later reply."""
 
-    def __init__(  # noqa: PLR0913 — composition root: deps + prompt + 2 trace knobs + scheduling
+    def __init__(
         self,
         *,
         deps: CoreDeps,
         system_prompt: str,
         await_trace: bool = False,
         local_traces_dir: str | None = None,
-        scheduling: SchedulingService | None = None,
     ) -> None:
-        """Hold the shared deps + prebuilt tools; `scheduling` wires the reminder tools (webhook mode only)."""
+        """Hold the shared deps + reply settings used to assemble every conversation's agent."""
         self._deps = deps
-        self._tools = build_tools(deps)  # stateless domain tools, shared across conversations
         self._system_prompt = system_prompt
         self._await_trace = await_trace
         self._local_traces_dir = local_traces_dir
-        self._scheduling = scheduling
         self._conversations: dict[int, Conversation] = {}
 
     async def get(self, conversation_id: int) -> Conversation:
@@ -45,29 +43,22 @@ class Conversations:
         return conversation
 
     async def _build(self, conversation_id: int) -> Conversation:
-        """Assemble one chat's agent: history loaded from Mongo, stateful tools scoped to the chat."""
+        """Assemble one chat's agent inline from CoreDeps. Add a tool domain → a new `_build_*_tools`."""
         history = MongoMessageHistory(
             logger=self._deps.logger, database=self._deps.database, conversation_id=conversation_id
         )
         await history.load()
-        # Long-term memory persists across replies, so its store MUST be scoped to the chat —
-        # never let one conversation's memories leak into another's. See app/CLAUDE.md "Tool =".
-        store = MemoryStore(self._deps.database, conversation_id=conversation_id)
         short_term = ShortTermMemory()
 
         toolset = ToolSet(logger=self._deps.logger)
-        for tool in self._tools:
-            toolset.add(tool)
         toolset.add(short_term)
         toolset.add(DeleteMessagesTool(history))
-        toolset.add(RememberTool(store))
-        toolset.add(RecallMemoryTool(store))  # reads the index live from the store each turn
-        toolset.add(ForgetTool(store))
-        if self._scheduling is not None:  # webhook mode only — polling has no public fire callback
-            schedule_store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
-            toolset.add(RemindTool(schedule_store, self._scheduling))
-            toolset.add(RoutineTool(schedule_store, self._scheduling))
-            toolset.add(CancelScheduleTool(schedule_store))  # injects the active-schedule list each turn
+        for tool in [
+            *self._build_web_tools(),
+            *self._build_memory_tools(conversation_id),
+            *self._build_scheduling_tools(conversation_id),
+        ]:
+            toolset.add(tool)
 
         config = AgentConfig(
             logger=self._deps.logger,
@@ -81,3 +72,22 @@ class Conversations:
             local_traces_dir=self._local_traces_dir,
         )
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
+
+    def _build_web_tools(self) -> list[Tool]:
+        """Search + browsing (baski tools over a SerpAPI client built from shared deps)."""
+        serpapi = SerpApiClient(logger=self._deps.logger, http_client=self._deps.http)
+        return [GoogleSearchTool(serpapi_client=serpapi), WebBrowseTool(playwright_client=self._deps.playwright)]
+
+    def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
+        """Long-term memory — store scoped to the chat so memories never cross conversations."""
+        store = MemoryStore(self._deps.database, conversation_id=conversation_id)
+        return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
+
+    def _build_scheduling_tools(self, conversation_id: int) -> list[Tool]:
+        """Reminders/routines — webhook mode only; polling has no public fire callback (no Cloud Tasks)."""
+        scheduler, endpoint = self._deps.scheduler, self._deps.schedule_endpoint
+        if scheduler is None or endpoint is None:
+            return []
+        service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+        store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
+        return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]

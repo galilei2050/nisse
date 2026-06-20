@@ -12,7 +12,7 @@ import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
 from baski.clients.playwright_client import PlaywrightClient
-from baski.clients.scheduler import CloudTasksConfig, CloudTasksScheduler
+from baski.clients.scheduler import CloudTasksConfig, CloudTasksScheduler, Scheduler
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
 from fastapi import FastAPI
@@ -54,30 +54,31 @@ class NisseBot(TelegramServer):
 
     def add_webhook_routes(self, app: FastAPI) -> None:
         """Mount the scheduling fire endpoint Cloud Tasks calls when a task is due (webhook mode)."""
-        if self._scheduling is None:
+        scheduler, endpoint = self.deps.scheduler, self.deps.schedule_endpoint
+        if scheduler is None or endpoint is None:
             return
-        runner = ScheduleRunner(
-            assistant=self.assistant, bot=self.bot, database=self._database, scheduling=self._scheduling
-        )
+        service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
+        runner = ScheduleRunner(assistant=self.assistant, bot=self.bot, database=self._database, scheduling=service)
         build_fire_route(app, runner)
 
     @cached_property
     def assistant(self) -> Assistant:
-        """The bot's Assistant, built from shared deps + (in webhook mode) the scheduling wiring."""
-        return Assistant(deps=self.deps, scheduling=self._scheduling)
-
-    @cached_property
-    def _scheduling(self) -> SchedulingService | None:
-        """Cloud Tasks self-invocation wiring — only in webhook mode; polling has no public callback."""
-        if not self.args["cloud"]:
-            return None
-        base = urlparse(self.args["webhook_url"])
-        endpoint = f"{base.scheme}://{base.netloc}/schedule/fire"
-        return SchedulingService(scheduler=CloudTasksScheduler(self.cloud_tasks_config()), endpoint=endpoint)
+        """The bot's Assistant, built from shared deps."""
+        return Assistant(deps=self.deps)
 
     @cached_property
     def deps(self) -> CoreDeps:
-        """Shared low-level clients every domain's tools are built from."""
+        """Shared low-level clients the conversation assembles every tool from.
+
+        Cloud Tasks `scheduler` + `schedule_endpoint` are wired only in webhook mode; in polling
+        there's no public fire callback, so both stay None and scheduling tools aren't built.
+        """
+        scheduler: Scheduler | None = None
+        schedule_endpoint: str | None = None
+        if self.args["cloud"]:
+            scheduler = CloudTasksScheduler(self.cloud_tasks_config())
+            base = urlparse(self.args["webhook_url"])
+            schedule_endpoint = f"{base.scheme}://{base.netloc}/schedule/fire"
         return CoreDeps(
             logger=self.logger,
             http=httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)),
@@ -85,6 +86,8 @@ class NisseBot(TelegramServer):
             database=self._database,
             playwright=PlaywrightClient(headless=True, logger=self.logger),
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
+            scheduler=scheduler,
+            schedule_endpoint=schedule_endpoint,
         )
 
     @cached_property

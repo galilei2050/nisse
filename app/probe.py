@@ -89,6 +89,8 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             database=database,
             playwright=playwright,
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
+            scheduler=None,  # probe runs outside webhook mode — no Cloud Tasks
+            schedule_endpoint=None,
         )
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
         await assistant.setup()
