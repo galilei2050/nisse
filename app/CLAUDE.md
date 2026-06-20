@@ -63,14 +63,20 @@ app/
     runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
     router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
+  search/           SerpApi search tools — 10 leaf tools over baski's SerpApiClient
+    serp_tool.py    SerpTool base (params→request→render) + shared format_hits (token-lean Markdown)
+    tools.py        google_search · google_ai_mode · google_maps_search · google_news · google_events ·
+                    amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs
+                    (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
+
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
 
-  tools/            (future) nisse-specific leaf Tool classes — one per file, thin wrapper over one API
-    serp.py / google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
-    Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Web search +
-    browse use baski's GoogleSearchTool/WebBrowseTool directly, wired in `_build_web_tools()`.
+  tools/            (future) more nisse-specific leaf Tool classes — one per file, thin wrapper over one API
+    google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
+    Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Search lives in
+    `search/` (nisse SerpApi leaves); browse uses baski's WebBrowseTool — both wired in `_build_web_tools()`.
     (+ external MCP servers as an optional secondary tool source — hybrid)
 
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)

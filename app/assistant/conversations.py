@@ -2,13 +2,25 @@
 
 from baski.agents import Agent, AgentConfig, ToolSet
 from baski.agents.tool import Tool
-from baski.agents.tools import DeleteMessagesTool, GoogleSearchTool, ShortTermMemory, WebBrowseTool
+from baski.agents.tools import DeleteMessagesTool, ShortTermMemory, WebBrowseTool
 from baski.clients.serpapi_client import SerpApiClient
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
+from app.search import (
+    AmazonProductTool,
+    AmazonSearchTool,
+    GoogleAiModeTool,
+    GoogleEventsTool,
+    GoogleJobsTool,
+    GoogleMapsSearchTool,
+    GoogleNewsTool,
+    GoogleSearchTool,
+    YouTubeSearchTool,
+    YouTubeTranscriptTool,
+)
 from app.shared import CoreDeps
 
 
@@ -77,9 +89,21 @@ class Conversations:
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
 
     def _build_web_tools(self) -> list[Tool]:
-        """Search + browsing (baski tools over a SerpAPI client built from shared deps)."""
+        """Search + browsing: 10 SerpApi leaves from app.search, plus WebBrowse from baski."""
         serpapi = SerpApiClient(logger=self._deps.logger, http_client=self._deps.http)
-        return [GoogleSearchTool(serpapi_client=serpapi), WebBrowseTool(playwright_client=self._deps.playwright)]
+        return [
+            GoogleSearchTool(serpapi_client=serpapi),
+            GoogleAiModeTool(serpapi_client=serpapi),
+            GoogleMapsSearchTool(serpapi_client=serpapi),
+            GoogleNewsTool(serpapi_client=serpapi),
+            GoogleEventsTool(serpapi_client=serpapi),
+            AmazonSearchTool(serpapi_client=serpapi),
+            AmazonProductTool(serpapi_client=serpapi),
+            YouTubeSearchTool(serpapi_client=serpapi),
+            YouTubeTranscriptTool(serpapi_client=serpapi),
+            GoogleJobsTool(serpapi_client=serpapi),
+            WebBrowseTool(playwright_client=self._deps.playwright),
+        ]
 
     def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
         """Long-term memory — store scoped to the chat so memories never cross conversations."""
