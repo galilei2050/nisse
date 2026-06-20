@@ -1,10 +1,10 @@
 """Persistent conversation transcript — a MessageHistory backed by MongoDB.
 
 Schema: one document per turn in the `conversation_turns` collection:
-    {conversation_id, turn_id, messages, next_turn_id, pruned_at}
+    {conversation_id, turn_id, messages, next_turn_id, deleted_at}
 
-`pruned_at` is the soft-delete marker (None = active). `load()` reads only
-active turns (`pruned_at: None`). `prune_tool_turns()` marks old tool turns
+`deleted_at` is the soft-delete marker (None = active). `load()` reads only
+active turns (`deleted_at: None`). `prune_tool_turns()` marks old tool turns
 pruned in Mongo and strips their tool blocks from the in-memory copy so the
 final assistant text answer survives in the active transcript.
 """
@@ -73,7 +73,7 @@ class MongoMessageHistory(MessageHistory):
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
     Call `load()` before the first reply to restore the active transcript, then `save()`
     after each reply to persist new turns. `prune_tool_turns()` soft-deletes old tool turns
-    in Mongo (sets `pruned_at`) and strips their tool blocks from memory — the full history
+    in Mongo (sets `deleted_at`) and strips their tool blocks from memory — the full history
     is always recoverable; only the active context window changes.
     """
 
@@ -86,7 +86,7 @@ class MongoMessageHistory(MessageHistory):
     async def load(self) -> None:
         """Restore active (not pruned) turns for this conversation; no-op for a new one."""
         cursor = self._collection.find(
-            {"conversation_id": self._conversation_id, "pruned_at": None},
+            {"conversation_id": self._conversation_id, "deleted_at": None},
             sort=[("turn_id", 1)],
         )
         docs = await cursor.to_list(length=None)
@@ -126,23 +126,23 @@ class MongoMessageHistory(MessageHistory):
         )
         return sorted(to_prune)
 
-    async def save(self, *, pruned_turn_ids: list[int] | None = None) -> None:
+    async def save(self, *, deleted_turn_ids: list[int] | None = None) -> None:
         """Persist new turns and soft-delete pruned ones.
 
         Each turn is stored as a separate document keyed by (conversation_id, turn_id).
-        Pruned turns already in Mongo have `pruned_at` set; they are never removed.
+        Pruned turns already in Mongo have `deleted_at` set; they are never removed.
         """
         now = datetime.now()
 
         # Soft-delete pruned turns
-        if pruned_turn_ids:
+        if deleted_turn_ids:
             await self._collection.update_many(
                 {
                     "conversation_id": self._conversation_id,
-                    "turn_id": {"$in": pruned_turn_ids},
-                    "pruned_at": None,
+                    "turn_id": {"$in": deleted_turn_ids},
+                    "deleted_at": None,
                 },
-                {"$set": {"pruned_at": now}},
+                {"$set": {"deleted_at": now}},
             )
 
         # Upsert each active turn (new or updated stripped version)
@@ -152,7 +152,7 @@ class MongoMessageHistory(MessageHistory):
                 "turn_id": turn.id,
                 "messages": [_dump_message(m) for m in turn.messages],
                 "next_turn_id": self._next_turn_id,
-                "pruned_at": None,
+                "deleted_at": None,
             }
             await self._collection.update_one(
                 {"conversation_id": self._conversation_id, "turn_id": turn.id},
