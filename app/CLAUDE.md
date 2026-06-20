@@ -9,18 +9,14 @@ Built on `baski`. The agent framework (`Agent` / `Tool` / `ToolSet` /
 `MessageHistory` / `ShortTermMemory` / `TraceCollector`) is ported from
 clarity-auto-care into `baski.agents` — import from there, do not vendor.
 
-**`Agent` (baski) is abstract; `Assistant` (this app) is concrete.** `baski.agents.Agent`
-is a transport-agnostic LLM loop — it knows tools, messages, and tracing, and
-nothing about Telegram, this user, or this product. All the concrete knowledge
-lives in `Assistant`: it knows it speaks through Telegram, who the owner is, which
-tools/skills are wired, and what the system prompt says. Keep that line clean —
-no Telegram type, chat id, or aiogram import ever reaches `baski`; conversely
-`Assistant` never reimplements the agent loop. If a feature is generic, it belongs
-in `baski.agents`; if it's "because we're a Telegram assistant for this user", it
-belongs in `Assistant`.
+**`Agent` (baski) is abstract; `Assistant` (this app) is concrete.** `baski.agents.Agent` is a
+transport-agnostic LLM loop (tools, messages, tracing) — it knows nothing about Telegram, this
+user, or this product. `Assistant` holds all that: the Telegram channel, the owner, the wired
+tools/skills, the system prompt. Keep the line clean — no Telegram type, chat id, or aiogram import
+reaches `baski`, and `Assistant` never reimplements the loop. Generic → `baski.agents`;
+"because we're a Telegram assistant for this user" → `Assistant`.
 
-Concepts, rationale, and source pointers mined from reference projects live in
-`IDEAS.md` — not here. This file is project structure only.
+Concepts, rationale, and source pointers live in `IDEAS.md` — this file is project structure only.
 
 ## Layout
 
@@ -42,7 +38,7 @@ app/
     assistant.py    Assistant.reply(conversation_id, text) -> str; thin TG↔agent layer over the registry
     conversations.py Conversations — registry: builds each chat's agent once and caches it
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
-    history.py      MongoMessageHistory — per-conversation transcript persisted to Mongo (`conversations`)
+    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned)
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 
@@ -59,7 +55,7 @@ app/
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
     store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
     tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
-    dispatch.py     Scheduling holder + enqueue_fire (reuses baski CloudTasksScheduler)
+    service.py      SchedulingService.enqueue_fire (reuses baski CloudTasksScheduler) + LoggingScheduler stand-in
     runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
     router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
@@ -86,7 +82,8 @@ app/
                     (learned skills are data specs in Mongo, not code here)
 ```
 
-`hello/` is the throwaway placeholder router — replace it with `chat/`.
+`judge/`, `curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below
+describe them. Shipped today: `chat`, `assistant`, `memory`, `scheduling`, `search`, `shared`.
 
 ## Module shape
 
@@ -94,19 +91,14 @@ Same self-contained-module discipline as clarity, adapted: a module exports
 exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 `Assistant`, `tools`, or `skill`.
 
-- **Tool** = subclass `baski.agents.Tool`; declare `name / one_line /
-  description / input_schema`; implement `async execute(**kwargs) -> str`.
-  One-shot, returns a string. Most tools are stateless; a tool that **persists state
-  across replies** (anything backed by Mongo — memory today) is the exception and MUST be
-  **scoped to the `conversation_id`** so one chat can never read or write another's data.
-  baski is conversation-agnostic (generic framework, no persistence) — the scope is bound
-  *here*, by `Conversations._build_<domain>_tools(conversation_id)`, which constructs the
-  per-conversation store and passes it to the stateful tools (see "Dependency wiring" below).
-  **A tool talks only to a narrow domain SERVICE, never to raw clients/transport.** Inject a
-  service that hides the wiring behind intent-named methods — e.g. scheduling tools get a
-  `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + callback URL. Passing a
-  client bundle (scheduler+endpoint) into a tool leaks the transport into the tool and couples it
-  to how the work is dispatched; the service is the seam that keeps the tool ignorant of that.
+- **Tool** = subclass `baski.agents.Tool`; declare `name / one_line / description /
+  input_schema`; `async execute(**kwargs) -> str`. One-shot. Stateless by default; a tool that
+  **persists across replies** (Mongo-backed, e.g. memory) MUST be **scoped to `conversation_id`**
+  so chats never cross. baski is persistence-agnostic — the scope is bound *here* in
+  `Conversations._build_<domain>_tools(conversation_id)` (see Dependency wiring). **A tool talks to
+  a narrow domain SERVICE, never raw clients/transport** — scheduling tools get
+  `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + URL. The service is the
+  seam that keeps the tool ignorant of how work is dispatched.
 - **Skill** = a tool bundle (and optionally a sub-agent) the toolset can load.
   Two kinds: **code skills** = a new `skills/<x>/` + one line in `skills/__init__.py`
   (dev-authored, git-versioned); **learned skills** = data specs (name + prompt +
@@ -127,65 +119,37 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 
 ## Direction: a self-extensible agent
 
-A standing goal that shapes the design: the agent grows its own capabilities at
-runtime, without a code deploy. Two independent vectors of extension:
+Standing goal: the agent grows capabilities at runtime, no deploy. Two vectors:
 
-1. **Self-authored skills** — the agent learns *how to do a task* as a reusable
-   sequence of steps, then saves it as a skill it can replay later. E.g. "book a
-   restaurant" decomposes into: find restaurants in radius with good metrics →
-   ask the user for price range → book via the Google Maps link. The agent
-   captures that recipe once and reuses it. (This is the learned-skills mechanism
-   below, raised to a first-class design intent.)
+1. **Self-authored skills** — the agent captures *how to do a task* as a reusable step sequence
+   and replays it later (e.g. "book a restaurant" = find in radius with good metrics → ask price
+   range → book via the Maps link). The learned-skills mechanism below, as first-class intent.
+2. **Self-loading tools** — the catalog extends by data, not code. First type: an **HTTP-service
+   tool** — a DB record (base URL, auth method, endpoints = callable actions). A client ingests an
+   API's docs, writes the schema row, the tool appears automatically — no Python, no redeploy.
 
-2. **Self-loading tools** — the tool catalog is extensible by data, not only by
-   code. Tools come in several *types*; the first type is an **HTTP-service tool**:
-   a config record in the DB describing a base URL, one of several auth methods,
-   and a set of HTTP endpoints (each endpoint = one callable action). A client
-   ingests an API's docs, writes the resulting schema row to the DB, and the tool
-   is picked up automatically — no Python, no redeploy.
-
-Both vectors share the same principle already in this doc: runtime-editable
-capability lives in **Mongo, never in code**. Rationale and design detail belong
-in `IDEAS.md`.
+Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `IDEAS.md`.
 
 ## Tool tiers (always-on vs loaded) — built in from the start
 
 - **Always-on** (assembled in `Conversations._build`, present every turn):
-  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule` (webhook mode).
+  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule`.
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
 
 ## Dependency wiring — assemble tools inline in `Conversations._build`
 
-`CoreDeps` (`shared/deps.py`) holds the low-level clients that carry **network + auth**, built
-once in `backend.py`: logger, http, anthropic, database, playwright, bucket_name, and the Cloud
-Tasks `scheduler` + `schedule_endpoint` (both `None` in polling). Everything else — per-domain
-mid-level clients, conversation-scoped stores, services, and the tools — is assembled **on the
-stack** in `Conversations._build`, from `CoreDeps` alone.
+`CoreDeps` (`shared/deps.py`) holds the network+auth clients built once in `backend.py` (logger,
+http, anthropic, database, playwright, bucket, scheduler, schedule_endpoint). Everything else —
+per-domain stores, services, tools — is assembled on the stack in `Conversations._build` from
+`CoreDeps` alone.
 
-**The pattern: one `_build_<domain>_tools()` per domain.** Each takes what it needs (`self._deps`,
-`conversation_id`) and returns `list[Tool]`; `_build` adds them all. To add a tool domain, write a
-new `_build_<domain>_tools()` and call it — nothing else changes.
-
-```python
-def _build_memory_tools(self, conversation_id):      # store scoped to the chat
-    store = MemoryStore(self._deps.database, conversation_id=conversation_id)
-    return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
-
-def _build_scheduling_tools(self, conversation_id):  # webhook mode only — [] when no scheduler
-    scheduler, endpoint = self._deps.scheduler, self._deps.schedule_endpoint
-    if scheduler is None or endpoint is None:
-        return []
-    service = SchedulingService(scheduler=scheduler, endpoint=endpoint)
-    store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
-    return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
-```
-
-No provider registry, no `build_tools` flatten — that indirection was ceremony. A network client
-that needs config/auth (Cloud Tasks) goes in `CoreDeps`; the cheap per-conversation assembly lives
-in `_build`. Bimodality (cloud has Cloud Tasks, polling doesn't) is one honest `None` field in
-`CoreDeps`, not an optional threaded through `Assistant`/`Conversations`.
+**The pattern: one `_build_<domain>_tools(conversation_id)` per domain**, returning `list[Tool]`.
+To add a tool domain, write one and call it — nothing else changes. A stateful tool gets its
+conversation-scoped store built here; no provider registry, no flatten indirection. The scheduler
+is always present (a `LoggingScheduler` stand-in in polling/probe), so scheduling tools exist in
+every mode — only webhook mode actually fires the callback.
 
 ## Memory — three tiers (≠ conversation transcript)
 
@@ -223,22 +187,23 @@ on any feature — read from the agent's own trace:
 
 ```
 make probe MSG="…" [U=<id>]      # one agent run; prints injected context, tool calls, answer
-make memories                    # dump the `memories` collection (live + soft-deleted)
+make memories                    # dump `memories` (live + soft-deleted)
+make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
 ```
 
-Where to look, per run:
 - **Injected context** is the ground truth for what the model saw — read it first.
-- **`U=` is the conversation id.** Testing recall/contradiction? Use a *fresh* `U=`: in the same
-  conversation the fact is still in the transcript, so the agent answers from there and the
-  long-term path never runs. A fresh `U=` has an empty transcript but the same global memory store.
-- The probe shows what the agent *did*; `make memories` shows the durable *result* in Mongo.
+- **`U=` is the conversation id** (an int). Testing recall/contradiction? Use a *fresh* `U=`: in the
+  same conversation the fact is still in the transcript, so the long-term path never runs.
+- The probe shows what the agent *did*; `make memories`/`make turns` show the durable *result* in Mongo.
 
-Needs the same env as `make backend-run` (loaded from `.env`); it makes real API/DB calls and
-writes to the real DB — use a throwaway `U=`. Write expectations **before** running. The memory
-cases (scripted + natural-conversation, expectation-first) live in `docs/memory-test-cases.md`;
-future features get their own cases doc on the same pattern.
+Real API/DB calls (env from `.env`) — use a throwaway `U=`. Write expectations **before** running.
 
-## Scheduling (self-invocation) — webhook mode only
+**Testing is part of every task — the definition of done.** Each feature has an expectation-first
+cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`). A task isn't done until you
+have: added scenarios covering the new behavior, run them, AND re-run the related existing scenarios
+to confirm no regression. New feature → new cases doc on the same pattern.
+
+## Scheduling (self-invocation) — fires in webhook mode
 
 Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), and `cancel_schedule` (cancels by id; its `user_message` injects the active-schedule list each turn). The two creation tools store a
 `ScheduledTask` (conversation-scoped) and enqueue ONE Cloud Task per occurrence with `schedule_time`
@@ -253,7 +218,8 @@ Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), a
   occurrence BEFORE running → `Assistant.reply(conversation_id)` (same agent as a live turn) →
   `bot.send_message` → ONCE: mark DONE. A duplicate delivery loses the claim and no-ops.
 - **No app-level OIDC check** on the route — same protection as baski's `/tasks/update` worker
-  (Cloud Tasks OIDC + Cloud Run ingress). Polling mode wires no scheduling tools (no public callback).
+  (Cloud Tasks OIDC + Cloud Run ingress). The tools exist in every mode; only webhook mode has the
+  public `/schedule/fire` callback, so only there does a fire actually run.
 
 ## Judge / evaluation (Gemini grades Opus)
 
