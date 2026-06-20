@@ -85,3 +85,8 @@ class Assistant:
             )
             return _NO_ANSWER
         return result.response + _footer(result)
+
+    async def flush(self, *, conversation_id: int) -> None:
+        """Await the conversation's durable history writes — called after the answer is sent."""
+        conversation = await self._conversations.get(conversation_id)
+        await conversation.flush()

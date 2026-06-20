@@ -19,16 +19,26 @@ Write the expected Mongo end-state **before** running; then compare.
 ## Behavior under test
 
 - Each agentic turn = one document in `conversation_turns`, keyed by `(conversation_id, turn_id)` (unique).
-- `save()` persists **every** turn first (full history always recoverable), then soft-deletes
-  (sets `deleted_at`) only turns with **no conversational text** — pure tool turns whose messages
-  are only `tool_use`/`tool_result` — and drops them from the active in-memory transcript.
+- **Write-on-commit:** each turn is written to Mongo the moment it completes (`__exit__` fires a
+  fire-and-forget task). A pure tool turn (messages are only `tool_use`/`tool_result`, no text) is
+  written **already soft-deleted** (`deleted_at` set); `drop_tool_turns()` then removes it from the
+  active in-memory transcript so the next reply's context stays lean.
+- **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
+  writes, then soft-deletes turns dropped by `truncate()`/`delete_messages` — so trimming is durable
+  and dropped turns don't resurrect on the next `load()`.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
-- **Soft-deleted:** pure tool turns. Their full documents stay in Mongo — recoverable.
-- Turn **content is never modified** — whole turns are kept or soft-deleted.
+- **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —
+  recoverable.
+- Turn **content is written once and never modified** — only `deleted_at` changes after insert.
 - `turn_id` is a sequential int from baski; `load()` advances the counter past **every** turn
   (including soft-deleted) so an id is never reused → no unique-index collision.
 - Durable facts the agent wants later go to long-term memory (injected separately), not history.
+
+> The unit tests in `tests/assistant/test_history.py` cover these invariants (write-once, durable
+> truncate, durable delete, recoverable pure-tool prune) against a fake collection. The probe
+> scenarios below were last run against the **pre-rewrite** `save()` design — re-run them on the
+> next live probe to confirm end-to-end against real Mongo.
 
 **Note on model behavior:** Opus tends to *narrate* its tool calls ("I'll search for that…"), which
 puts a text block in the tool turn — so that turn is KEPT whole (with its tool payload). Pure tool

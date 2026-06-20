@@ -50,13 +50,17 @@ class ScheduleRunner:
                 await reschedule(self._database, public_id=public_id, fire_at=next_fire)
                 await self._scheduling.enqueue_fire(public_id=public_id, fire_at=next_fire)
 
-            answer = await self._assistant.reply(
-                conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"
-            )
-            await self._bot.send_message(chat_id=task.conversation_id, text=answer)
-
-            if task.kind is ScheduleKind.ONCE:
-                await mark_done(self._database, public_id=public_id)
+            try:
+                answer = await self._assistant.reply(
+                    conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"
+                )
+                await self._bot.send_message(chat_id=task.conversation_id, text=answer)
+                if task.kind is ScheduleKind.ONCE:
+                    await mark_done(self._database, public_id=public_id)
+            finally:
+                # Await the reply's fired history writes on every path (mirrors the chat router), so a
+                # failed fire never abandons completed turns; Cloud Tasks then retries the occurrence.
+                await self._assistant.flush(conversation_id=task.conversation_id)
 
     @staticmethod
     def _next_occurrence(fire_at: datetime.datetime, repeat_every_hours: int) -> datetime.datetime:

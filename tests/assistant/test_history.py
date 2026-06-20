@@ -1,0 +1,186 @@
+"""MongoMessageHistory: write-once persistence, durable trimming, recoverable prunes (no live DB).
+
+The fake collection models only the operations MongoMessageHistory uses. Turns are driven through
+the real context manager so `__exit__` fires the fire-and-forget write; `flush()` awaits it. The
+load-bearing test is `test_truncate_persists`: a turn dropped from context by `truncate()` must end
+up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud Run cold start).
+"""
+
+from types import SimpleNamespace
+
+from anthropic.types import Usage
+
+from app.assistant.history import MongoMessageHistory
+
+_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 64_000 → triggers truncate
+
+
+class _FakeCursor:
+    def __init__(self, docs: list[dict]) -> None:
+        self._docs = docs
+
+    async def to_list(self, length: int | None = None) -> list[dict]:
+        return list(self._docs)
+
+
+class _FakeCollection:
+    """In-memory stand-in keyed by (conversation_id, turn_id); records inserts to catch double-writes."""
+
+    def __init__(self) -> None:
+        self.docs: dict[tuple[int, int], dict] = {}
+        self.inserted_ids: list[int] = []
+
+    @staticmethod
+    def _match(doc: dict, flt: dict) -> bool:
+        for key, val in flt.items():
+            if isinstance(val, dict) and "$in" in val:
+                if doc.get(key) not in val["$in"]:
+                    return False
+            elif isinstance(val, dict) and "$nin" in val:
+                if doc.get(key) in val["$nin"]:
+                    return False
+            elif doc.get(key) != val:
+                return False
+        return True
+
+    @staticmethod
+    def _sorted(docs: list[dict], sort: list[tuple[str, int]] | None) -> list[dict]:
+        for key, direction in reversed(sort or []):
+            docs = sorted(docs, key=lambda d: d[key], reverse=direction == -1)
+        return docs
+
+    def find(self, flt: dict, sort: list[tuple[str, int]] | None = None) -> _FakeCursor:
+        return _FakeCursor(self._sorted([d for d in self.docs.values() if self._match(d, flt)], sort))
+
+    async def find_one(self, flt: dict, sort: list[tuple[str, int]] | None = None) -> dict | None:
+        matched = self._sorted([d for d in self.docs.values() if self._match(d, flt)], sort)
+        return matched[0] if matched else None
+
+    async def update_one(self, flt: dict, update: dict, upsert: bool = False) -> SimpleNamespace:
+        key = (flt["conversation_id"], flt["turn_id"])
+        doc = self.docs.get(key)
+        if doc is None:
+            assert upsert, "a turn should only ever be inserted"
+            self.docs[key] = {**update.get("$setOnInsert", {}), **update["$set"]}
+            self.inserted_ids.append(flt["turn_id"])
+            return SimpleNamespace(modified_count=0)
+        doc.update(update["$set"])
+        return SimpleNamespace(modified_count=1)
+
+    async def update_many(self, flt: dict, update: dict) -> SimpleNamespace:
+        n = 0
+        for doc in self.docs.values():
+            if self._match(doc, flt):
+                doc.update(update["$set"])
+                n += 1
+        return SimpleNamespace(modified_count=n)
+
+
+class _FakeDatabase:
+    def __init__(self, collection: _FakeCollection) -> None:
+        self._collection = collection
+
+    def __getitem__(self, _name: str) -> _FakeCollection:
+        return self._collection
+
+
+def _history(collection: _FakeCollection, conversation_id: int = 1) -> MongoMessageHistory:
+    logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+    return MongoMessageHistory(logger=logger, database=_FakeDatabase(collection), conversation_id=conversation_id)
+
+
+def _active_ids(collection: _FakeCollection) -> list[int]:
+    return sorted(d["turn_id"] for d in collection.docs.values() if d["deleted_at"] is None)
+
+
+def _add_user(hist: MongoMessageHistory, text: str = "hi") -> None:
+    with hist:
+        hist.add_user_text(text)
+
+
+def _add_answer(hist: MongoMessageHistory, text: str = "answer") -> None:
+    with hist:
+        hist.add_assistant([{"type": "text", "text": text}])
+
+
+def _add_tool_turn(hist: MongoMessageHistory, tool_id: str = "t1") -> None:
+    with hist:
+        hist.add_assistant([{"type": "tool_use", "id": tool_id, "name": "x", "input": {}}])
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": tool_id, "content": "payload"}])
+
+
+async def test_each_turn_written_exactly_once() -> None:
+    """Turns are inserted once on commit — no rewrites, no double-writes (solves write amplification)."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    await hist.flush()
+    _add_user(hist, "3")
+    await hist.flush()
+
+    assert sorted(col.inserted_ids) == [1, 2, 3]
+    assert len(col.inserted_ids) == 3  # each turn inserted exactly once
+
+
+async def test_truncate_persists_so_dropped_turns_do_not_resurrect() -> None:
+    """The load-bearing case: a turn dropped by truncate() is soft-deleted in Mongo, not resurrected."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    _add_answer(hist, "3")
+    await hist.flush()
+    assert _active_ids(col) == [1, 2, 3]
+
+    hist.truncate(_BIG_USAGE)  # over budget → drops the oldest turn (id 1) from context
+    await hist.flush()
+    assert _active_ids(col) == [2, 3]  # turn 1 soft-deleted in Mongo
+    assert col.docs[(1, 1)]["messages"]  # ...but content intact — recoverable
+
+    cold = _history(col)  # simulate a Cloud Run cold start
+    await cold.load()
+    assert [t.id for t in cold.turns] == [2, 3]  # turn 1 does NOT come back
+
+
+async def test_delete_turns_persists() -> None:
+    """delete_turns (the agent's delete_messages tool) is made durable on flush()."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    _add_answer(hist, "3")
+    await hist.flush()
+
+    removed = await hist.delete_turns([2])
+    assert removed == 1
+    await hist.flush()
+
+    cold = _history(col)
+    await cold.load()
+    assert [t.id for t in cold.turns] == [1, 3]
+
+
+async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
+    """A pure tool turn is written already soft-deleted and dropped from context, yet kept in full."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "question")
+    _add_tool_turn(hist)
+    _add_answer(hist, "answer")
+    await hist.flush()
+    hist.drop_tool_turns()
+
+    assert _active_ids(col) == [1, 3]
+    assert col.docs[(1, 2)]["deleted_at"] is not None  # tool turn soft-deleted
+    assert col.docs[(1, 2)]["messages"]  # but recoverable
+    assert [t.id for t in hist.turns] == [1, 3]  # dropped from the active transcript
+
+    cold = _history(col)
+    await cold.load()
+    assert [t.id for t in cold.turns] == [1, 3]

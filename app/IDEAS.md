@@ -245,7 +245,7 @@ built for fleets of enterprise agents; nisse is one owner-only bot. Verdict per 
 - **Agent Gateway** — ingress/egress policy mesh for fleets; our owner-only `access.py` is the whole surface.
 - **Agentspace / Agent Builder / Agent Studio** — low-code enterprise canvas; irrelevant to a code-first repo.
 - **A2A protocol** — cross-vendor agent interop; our sub-agents are in-process. Revisit only if we expose/consume external agents.
-- **VertexAISessionService / managed Sessions** — session store; Mongo + baski `ChatHistory` + time+identity reset already do this.
+- **VertexAISessionService / managed Sessions** — session store; Mongo + baski `ChatHistory` cover the storage. A time+identity reset (`/new`, idle reset) is the **planned** boundary layer, not yet built — see the Sessions section above.
 - **RAG Engine / Vertex AI Search / Vertex Vector Search** — single-user-overkill reject as openwebui RAG (below); the recall-index role is filled by Atlas (above), so even the bare Vector Search index is redundant.
 - **Code Execution sandbox** — = the "Programmatic Tool Calling — LATER" note above; parked.
 

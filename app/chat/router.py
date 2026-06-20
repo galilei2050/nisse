@@ -27,12 +27,15 @@ def build_router(*, assistant: Assistant) -> Router:
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
             answer = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
+            await progress.finish(answer)
         except AgentRefusalError:
             await progress.finish(_REFUSAL_REPLY)
-            return
         except Exception:
             await progress.finish(_ERROR_REPLY)
             raise
-        await progress.finish(answer)
+        finally:
+            # History writes were fired during the reply; await them now the answer is delivered (on
+            # every path), so Mongo latency never blocked the user but no completed turn is lost.
+            await assistant.flush(conversation_id=message.chat.id)
 
     return router

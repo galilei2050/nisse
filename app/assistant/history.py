@@ -1,13 +1,27 @@
-"""Persistent conversation transcript — a MessageHistory backed by MongoDB.
+"""Persistent conversation transcript — a `MessageHistory` implementation backed by MongoDB.
+
+A standalone implementation of baski's `MessageHistory` Protocol (not a subclass of the in-memory
+one): it owns both the in-memory active transcript and its durable Mongo backing.
+
+Durability model — write-as-you-go, await-after-send:
+- Each turn is written to Mongo the moment it completes (`__exit__` fires a fire-and-forget task).
+  So a crash mid-reply still leaves every finished turn on its way to disk.
+- The write tasks are collected; `flush()` awaits them. The chat router calls `flush()` AFTER the
+  answer is sent to the user, so Mongo latency never delays the reply.
+- A turn is written exactly once and never rewritten; `deleted_at` is the only field that changes
+  after insert (set when a turn is pruned, truncated, or deleted). Soft-deleted turns keep full
+  content — recoverable.
 
 Schema: one Mongo document per turn in `conversation_turns`, modelled by `ConversationTurn`.
-Standard audit fields (id/created_at/updated_at/deleted_at) come from NisseDbModel.
-Turns are saved as-is and never modified; `deleted_at` is the only field that changes after insert.
+Single-writer: turn ids are minted in memory, correct only at `max_instances=1` (see
+infrastructure/services/cloud_run_backend.py) with every entry point sharing one cached agent.
 """
 
-from anthropic.types import MessageParam, TextBlock
-from baski.agents import MessageHistory
-from baski.agents.message_history import Turn
+import asyncio
+from typing import Self
+
+from anthropic.types import ContentBlock, MessageParam, TextBlock, TextBlockParam, ToolResultBlockParam, Usage
+from baski.agents.message_history import MessageHistory, Turn
 from baski.primitives import datetime
 from baski.server import Logger
 from pydantic import BaseModel, ConfigDict
@@ -16,6 +30,9 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app.shared.models import NisseDbModel
 
 _COLLECTION = "conversation_turns"
+_MAX_TOKENS = 64_000
+_TRUNCATE_THRESHOLD = 0.9
+_TRUNCATE_PERCENTAGE = 0.3
 
 
 def _dump_block(block: object) -> object:
@@ -75,44 +92,134 @@ def _has_text(turn: Turn) -> bool:
 
 
 class MongoMessageHistory(MessageHistory):
-    """MessageHistory whose turns persist to MongoDB as `ConversationTurn` documents.
+    """A `MessageHistory` whose turns persist to MongoDB as `ConversationTurn` documents.
 
-    Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
-    Call `load()` before the first reply to restore the active transcript, then `save()` after
-    each reply. `save()` persists every turn to Mongo first (so the full history is always
-    recoverable), then soft-deletes only the intermediate tool turns (no conversational text)
-    and drops them from the active transcript. User questions and assistant answers always stay
-    in context; durable facts the agent wants to remember go to long-term memory, not here.
-    Turn content is never modified — whole turns are kept or soft-deleted.
+    Lifecycle: per-conversation — built with its `Conversation` and reused across replies. Call
+    `load()` before the first reply to restore the active transcript. During a reply each completed
+    turn is written fire-and-forget (`__exit__`); `flush()` awaits those writes after the answer is
+    sent. `drop_tool_turns()` removes pure tool turns from the active transcript between replies.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
-        """Bind the history to one conversation."""
-        super().__init__(logger=logger)
+        """Bind the history to one conversation and start with an empty in-memory transcript."""
+        self._logger = logger
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
+
+        # In-memory transcript + turn assembly (Protocol surface).
+        self.turns: list[Turn] = []
+        self.max_tokens = _MAX_TOKENS
+        self._next_turn_id = 0
+        self._current_turn: Turn | None = None
+        self._last_input_tokens = 0
+
+        # Durable write bookkeeping.
+        self._writes: list[asyncio.Task[None]] = []  # in-flight fire-and-forget turn inserts
+        self._dropped: set[int] = set()  # turn ids removed from context (truncate/delete) to soft-delete on flush
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
         col = database[_COLLECTION]
         await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
-        await col.create_index([("conversation_id", 1), ("deleted_at", 1)])
+        await col.create_index([("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+
+    # --- MessageHistory protocol: in-memory turn assembly ---
+
+    def __len__(self) -> int:
+        """Number of committed turns in the active transcript."""
+        return len(self.turns)
+
+    def __enter__(self) -> Self:
+        """Open a new turn, assigning the next sequential id."""
+        self._next_turn_id += 1
+        self._current_turn = Turn(id=self._next_turn_id)
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        """Commit the open turn and fire its durable write (fire-and-forget; awaited in flush())."""
+        turn = self._current_turn
+        self._current_turn = None
+        if turn and turn.messages:
+            self.turns.append(turn)
+            self._writes.append(asyncio.create_task(self._write_turn(turn)))
+
+    @property
+    def _turn(self) -> Turn:
+        """The open turn, raising if used outside the context manager."""
+        if self._current_turn is None:
+            raise RuntimeError("No active turn; use the history as a context manager first")
+        return self._current_turn
+
+    def add_assistant(self, content_blocks: list[ContentBlock]) -> None:
+        """Append the assistant's message (text/tool_use/thinking blocks) to the open turn."""
+        self._turn.messages.append(MessageParam(role="assistant", content=content_blocks))
+
+    def add_tool_results(self, results: list[ToolResultBlockParam]) -> None:
+        """Append the tool_result blocks for this round to the open turn."""
+        self._turn.messages.append(MessageParam(role="user", content=results))
+
+    def add_user_text(self, text: str) -> None:
+        """Append a plain user-text message to the open turn."""
+        self._turn.messages.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=text)]))
+
+    def format_for_api(self) -> list[MessageParam]:
+        """Render the transcript for the Anthropic API with [Turn N] markers and a context footer."""
+        result: list[MessageParam] = []
+        for turn in self.turns:
+            result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=f"[Turn {turn.id}]")]))
+            result.extend(turn.messages)
+
+        if self._last_input_tokens:
+            pct = int(self._last_input_tokens / self.max_tokens * 100)
+            remaining = self.max_tokens - self._last_input_tokens
+            result.append(
+                MessageParam(
+                    role="user",
+                    content=[
+                        TextBlockParam(type="text", text=f"[Context: {pct}% used — {remaining:,} tokens remaining]")
+                    ],
+                )
+            )
+        return result
+
+    def truncate(self, usage: Usage) -> None:
+        """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
+        self._last_input_tokens = usage.input_tokens
+        if usage.input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self.turns:
+            return
+        count = max(int(len(self.turns) * _TRUNCATE_PERCENTAGE), 1)
+        dropped, self.turns = self.turns[:count], self.turns[count:]
+        self._dropped.update(turn.id for turn in dropped)
+        self._logger.info(
+            "Truncated message history",
+            labels={"inputTokens": usage.input_tokens, "turnsRemoved": count, "turnsAfter": len(self.turns)},
+        )
+
+    async def delete_turns(self, turn_ids: list[int]) -> int:
+        """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
+        ids = set(turn_ids)
+        original = len(self.turns)
+        self.turns = [turn for turn in self.turns if turn.id not in ids]
+        removed = original - len(self.turns)
+        self._dropped.update(ids)
+        self._logger.info("Turns deleted by agent", labels={"turnIds": sorted(ids), "turnsRemoved": removed})
+        return removed
+
+    # --- persistence ---
 
     async def load(self) -> None:
-        """Restore active turns for this conversation and advance the turn-id counter past all turns.
+        """Restore active turns and advance the turn-id counter past every turn (incl. soft-deleted).
 
-        Active turns (deleted_at=None) rebuild the in-memory transcript. The `_next_turn_id` counter
-        is set from the highest turn_id EVER used — including soft-deleted turns — so baski's
-        `__enter__` never re-issues a soft-deleted turn's id and collides on the unique index.
+        The counter is set from the highest turn_id EVER used so `__enter__` never re-issues a
+        soft-deleted turn's id and collides on the unique index.
         """
         active = await self._collection.find(
             {"conversation_id": self._conversation_id, "deleted_at": None},
             sort=[("turn_id", 1)],
         ).to_list(length=None)
-        # Read messages directly from raw Mongo docs — bypassing TypedDict validation so plain
-        # dicts from Mongo are not re-wrapped in Pydantic ValidatorIterator objects that would
-        # break the Anthropic SDK serializer when the agent formats messages for the API.
+        # Read messages straight from raw Mongo docs — bypassing TypedDict validation so plain dicts
+        # are not re-wrapped in Pydantic ValidatorIterator objects that break the SDK serializer.
         self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in active]
 
         newest = await self._collection.find_one(
@@ -121,37 +228,50 @@ class MongoMessageHistory(MessageHistory):
         )
         self._next_turn_id = newest["turn_id"] if newest else 0
 
-    async def save(self) -> None:
-        """Persist every turn to Mongo, then soft-delete intermediate tool turns.
+    async def flush(self) -> None:
+        """Await the in-flight turn writes, then persist soft-deletes. Called after the reply is sent.
 
-        Two phases, in order, so the full history is always recoverable:
-        1. Upsert every active turn as a full document — content serialised as-is, never modified.
-           An intermediate tool turn (no conversational text — only tool_use/tool_result) is
-           written with `deleted_at` already set, so even a turn pruned the moment it was created
-           lands in Mongo and can be restored.
-        2. Drop those pruned tool turns from the active in-memory transcript so the next reply's
-           context excludes the bulky tool payloads. User questions and assistant answers stay.
+        Inserts are gathered FIRST so a soft-delete never races ahead of the insert it targets.
         """
-        now = datetime.now()
-        prunable = {turn.id for turn in self.turns if not _has_text(turn)}
+        writes, self._writes = self._writes, []
+        if writes:
+            # return_exceptions=True so every sibling write settles (no orphaned tasks) before we
+            # surface a failure; raising here leaves _dropped untouched below → retried next flush.
+            for result in await asyncio.gather(*writes, return_exceptions=True):
+                if isinstance(result, BaseException):
+                    raise result
 
-        for turn in self.turns:
-            deleted_at = now if turn.id in prunable else None
-            await self._collection.update_one(
-                {"conversation_id": self._conversation_id, "turn_id": turn.id},
-                {
-                    "$set": {
-                        "conversation_id": self._conversation_id,
-                        "turn_id": turn.id,
-                        "messages": [_dump_message(m) for m in turn.messages],
-                        "updated_at": now,
-                        "deleted_at": deleted_at,
-                    },
-                    "$setOnInsert": {"created_at": now},  # only on first insert, not on updates
-                },
-                upsert=True,
+        dropped, self._dropped = self._dropped, set()
+        if dropped:
+            now = datetime.now()
+            await self._collection.update_many(
+                {"conversation_id": self._conversation_id, "turn_id": {"$in": list(dropped)}, "deleted_at": None},
+                {"$set": {"deleted_at": now, "updated_at": now}},
             )
 
-        self.turns = [turn for turn in self.turns if turn.id not in prunable]
-        if prunable:
-            self.logger.info("Soft-deleted turns with no user-facing answer", labels={"deleted": sorted(prunable)})
+    def drop_tool_turns(self) -> None:
+        """Drop pure tool turns from the active transcript so the next reply's context stays lean.
+
+        Their Mongo docs were already written soft-deleted (see `_write_turn`), so this is an
+        in-memory prune only — no extra write, and the full turn stays recoverable in Mongo.
+        """
+        self.turns = [turn for turn in self.turns if _has_text(turn)]
+
+    async def _write_turn(self, turn: Turn) -> None:
+        """Insert one turn document, once. A pure tool turn is written already soft-deleted."""
+        now = datetime.now()
+        deleted_at = None if _has_text(turn) else now
+        await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "turn_id": turn.id},
+            {
+                "$set": {
+                    "conversation_id": self._conversation_id,
+                    "turn_id": turn.id,
+                    "messages": [_dump_message(m) for m in turn.messages],
+                    "updated_at": now,
+                    "deleted_at": deleted_at,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
