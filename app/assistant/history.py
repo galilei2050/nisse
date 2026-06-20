@@ -1,12 +1,8 @@
 """Persistent conversation transcript — a MessageHistory backed by MongoDB.
 
-Schema: one document per turn in the `conversation_turns` collection:
-    {conversation_id, turn_id, messages, next_turn_id, deleted_at}
-
-`deleted_at` is the soft-delete marker (None = active). `load()` reads only
-active turns (`deleted_at: None`). `prune_tool_turns()` marks old tool turns
-pruned in Mongo and strips their tool blocks from the in-memory copy so the
-final assistant text answer survives in the active transcript.
+Schema: one Mongo document per turn in `conversation_turns`, modelled by `ConversationTurn`.
+Standard audit fields (id/created_at/updated_at/deleted_at) come from NisseDbModel.
+Turns are saved as-is and never modified; `deleted_at` is the only field that changes after insert.
 """
 
 from anthropic.types import MessageParam
@@ -14,67 +10,71 @@ from baski.agents import MessageHistory
 from baski.agents.message_history import Turn
 from baski.primitives import datetime
 from baski.server import Logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from pymongo.asynchronous.database import AsyncDatabase
+
+from app.shared.models import NisseDbModel
 
 _COLLECTION = "conversation_turns"
 
 
 def _dump_block(block: object) -> object:
-    """JSON-safe a content block: anthropic SDK blocks are pydantic, tool results are dicts."""
+    """JSON-safe a content block: Anthropic SDK blocks are Pydantic models, tool results are dicts."""
     return block.model_dump(mode="json", exclude_none=True) if isinstance(block, BaseModel) else block
 
 
-def _dump_message(message: MessageParam) -> object:
-    """Serialize one message to a JSON-safe doc; content is a list of blocks (or a string)."""
+def _dump_message(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
+    """Return a JSON-safe copy of a MessageParam with SDK block objects replaced by plain dicts."""
     content = message["content"]
     if isinstance(content, str):
-        return {"role": message["role"], "content": content}
-    return {"role": message["role"], "content": [_dump_block(b) for b in content]}
+        return MessageParam(role=message["role"], content=content)
+    return MessageParam(role=message["role"], content=[_dump_block(b) for b in content])  # type: ignore[misc]  # list[object] → content union at runtime (SDK blocks → plain dicts)
 
 
-def _is_tool_block(block: object) -> bool:
-    """True for a tool_use/tool_result block — SDK object (assistant) or raw dict (tool result)."""
-    kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-    return kind in ("tool_use", "tool_result")
+class ConversationTurn(NisseDbModel):
+    """One agent turn persisted to Mongo — all messages for one reply cycle.
 
-
-def _turn_has_tools(turn: Turn) -> bool:
-    """True if any message in the turn carries a tool_use/tool_result block."""
-    return any(
-        _is_tool_block(b) for m in turn.messages for b in (m["content"] if isinstance(m["content"], list) else [])
-    )
-
-
-def _strip_tool_blocks(turn: Turn) -> Turn:
-    """Return a copy of the turn with tool_use/tool_result blocks removed, keeping text blocks.
-
-    A tool turn ends with an assistant message that contains the final text answer alongside
-    (or after) tool_use blocks. Stripping tool blocks preserves that answer in the transcript
-    so the agent still has context of what it said, without the bulky tool payloads.
-    Messages that become empty after stripping (e.g. a pure tool_results user message) are
-    dropped entirely.
+    Lifecycle: a data record — one document per turn per conversation. `turn_id` is baski's
+    sequential Turn.id and, together with `conversation_id`, forms the upsert key. Audit timestamps
+    and the soft-delete marker (`deleted_at`) come from NisseDbModel. Content is never modified;
+    only `deleted_at` is stamped when a turn is pruned from the active transcript.
     """
-    kept: list[MessageParam] = []
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    conversation_id: int
+    turn_id: int  # baski Turn.id — sequential int, upsert key with conversation_id
+    messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
+
+
+def _block_type(block: object) -> str | None:
+    """Return the type field of a content block (dict or SDK object)."""
+    if isinstance(block, dict):
+        return block.get("type")
+    return getattr(block, "type", None)
+
+
+def _has_text_answer(turn: Turn) -> bool:
+    """True if the turn has at least one assistant message with a text block (a user-facing answer)."""
     for msg in turn.messages:
+        if msg["role"] != "assistant":
+            continue
         content = msg["content"]
         if isinstance(content, str):
-            kept.append(msg)
-            continue
-        clean = [b for b in content if not _is_tool_block(b)]
-        if clean:
-            kept.append(MessageParam(role=msg["role"], content=clean))
-    return Turn(id=turn.id, messages=kept)
+            return True
+        if any(_block_type(b) == "text" for b in content):
+            return True
+    return False
 
 
 class MongoMessageHistory(MessageHistory):
-    """MessageHistory whose turns persist to MongoDB, one document per turn.
+    """MessageHistory whose turns persist to MongoDB as `ConversationTurn` documents.
 
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies.
-    Call `load()` before the first reply to restore the active transcript, then `save()`
-    after each reply to persist new turns. `prune_tool_turns()` soft-deletes old tool turns
-    in Mongo (sets `deleted_at`) and strips their tool blocks from memory — the full history
-    is always recoverable; only the active context window changes.
+    Call `load()` before the first reply to restore the active transcript, then `save()` after
+    each reply to persist new turns and soft-delete pruned ones. Turns are stored as-is;
+    `prune_tool_turns()` only removes pure tool-call turns (no text answer) from the active
+    in-memory transcript and returns their IDs for `save()` to stamp `deleted_at`.
     """
 
     def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
@@ -83,8 +83,15 @@ class MongoMessageHistory(MessageHistory):
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
 
+    @staticmethod
+    async def ensure_indexes(database: AsyncDatabase) -> None:
+        """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
+        col = database[_COLLECTION]
+        await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
+        await col.create_index([("conversation_id", 1), ("deleted_at", 1)])
+
     async def load(self) -> None:
-        """Restore active (not pruned) turns for this conversation; no-op for a new one."""
+        """Restore active turns (deleted_at=None) for this conversation; no-op for a new one."""
         cursor = self._collection.find(
             {"conversation_id": self._conversation_id, "deleted_at": None},
             sort=[("turn_id", 1)],
@@ -92,49 +99,35 @@ class MongoMessageHistory(MessageHistory):
         docs = await cursor.to_list(length=None)
         if not docs:
             return
-        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in docs]
-        # next_turn_id is stored on every turn doc; the highest wins
-        self._next_turn_id = max(doc["next_turn_id"] for doc in docs)
+        turns = [ConversationTurn.model_validate(doc) for doc in docs]
+        self.turns = [Turn(id=t.turn_id, messages=list(t.messages)) for t in turns]
+        self._next_turn_id = max(t.turn_id for t in turns)
 
     def prune_tool_turns(self) -> list[int]:
-        """Strip old tool-call turns from the active transcript, keeping only the most recent.
+        """Remove pure tool-call turns (no assistant text answer) from the active transcript.
 
-        Tool results (search/browse blobs) are bulky and re-derivable. We keep the most recent
-        tool turn so follow-up questions can reference it. Older tool turns are soft-deleted in
-        Mongo on the next `save()` — their final assistant text answers are preserved in the
-        stripped in-memory copy so context isn't completely lost.
+        Turns with a user-facing text response are kept entirely — content is never modified.
+        Turns with only tool_use/tool_result blocks are dropped from memory and will be
+        soft-deleted in the next save(). Full documents stay in Mongo; recovery is always possible.
 
-        Returns the list of turn IDs marked for pruning (empty if nothing to prune).
+        Returns the list of turn IDs to soft-delete (empty if nothing to prune).
         """
-        tool_turn_ids = [t.id for t in self.turns if _turn_has_tools(t)]
-        if len(tool_turn_ids) <= 1:
+        to_delete = [t.id for t in self.turns if not _has_text_answer(t)]
+        if not to_delete:
             return []
-        to_prune = set(tool_turn_ids[:-1])
-        new_turns: list[Turn] = []
-        for t in self.turns:
-            if t.id in to_prune:
-                stripped = _strip_tool_blocks(t)
-                if stripped.messages:
-                    new_turns.append(stripped)
-                # turns with zero messages after stripping are fully dropped from memory
-            else:
-                new_turns.append(t)
-        self.turns = new_turns
-        self.logger.info(
-            "Pruned tool turns before persist",
-            labels={"pruned": sorted(to_prune), "keptLastToolTurn": tool_turn_ids[-1]},
-        )
-        return sorted(to_prune)
+        self.turns = [t for t in self.turns if _has_text_answer(t)]
+        self.logger.info("Pruned tool-only turns before persist", labels={"deleted": to_delete})
+        return to_delete
 
     async def save(self, *, deleted_turn_ids: list[int] | None = None) -> None:
-        """Persist new turns and soft-delete pruned ones.
+        """Persist active turns as ConversationTurn documents; soft-delete the given turn IDs.
 
-        Each turn is stored as a separate document keyed by (conversation_id, turn_id).
-        Pruned turns already in Mongo have `deleted_at` set; they are never removed.
+        Active turns are upserted with their full, unmodified messages (serialised to plain
+        dicts via `_dump_message` for Mongo compatibility). Soft-deleted turns have `deleted_at`
+        stamped once and are never removed from the collection.
         """
         now = datetime.now()
 
-        # Soft-delete pruned turns
         if deleted_turn_ids:
             await self._collection.update_many(
                 {
@@ -142,20 +135,17 @@ class MongoMessageHistory(MessageHistory):
                     "turn_id": {"$in": deleted_turn_ids},
                     "deleted_at": None,
                 },
-                {"$set": {"deleted_at": now}},
+                {"$set": {"deleted_at": now, "updated_at": now}},
             )
 
-        # Upsert each active turn (new or updated stripped version)
         for turn in self.turns:
-            doc = {
-                "conversation_id": self._conversation_id,
-                "turn_id": turn.id,
-                "messages": [_dump_message(m) for m in turn.messages],
-                "next_turn_id": self._next_turn_id,
-                "deleted_at": None,
-            }
+            doc = ConversationTurn(
+                conversation_id=self._conversation_id,
+                turn_id=turn.id,
+                messages=[_dump_message(m) for m in turn.messages],
+            )
             await self._collection.update_one(
                 {"conversation_id": self._conversation_id, "turn_id": turn.id},
-                {"$set": doc},
+                {"$set": doc.model_dump(exclude={"id"})},
                 upsert=True,
             )
