@@ -55,6 +55,12 @@ probe:
 memories:
 	uv run python scripts/show_memories.py
 
+# Companion to probe: dump one conversation's `conversation_turns` (active + soft-deleted).
+# `make turns U=<conversation_id>`. See docs/history-test-cases.md.
+.PHONY: turns
+turns:
+	uv run python scripts/show_turns.py $(U)
+
 .PHONY: lint
 lint:
 	uv run ruff format --check app/ infrastructure/
