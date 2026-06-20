@@ -23,7 +23,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
-from app.scheduling import ScheduleRunner, ScheduleStore, Scheduling, build_fire_route
+from app.scheduling import ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
 
 
@@ -67,13 +67,13 @@ class NisseBot(TelegramServer):
         return Assistant(deps=self.deps, scheduling=self._scheduling)
 
     @cached_property
-    def _scheduling(self) -> Scheduling | None:
+    def _scheduling(self) -> SchedulingService | None:
         """Cloud Tasks self-invocation wiring — only in webhook mode; polling has no public callback."""
         if not self.args["cloud"]:
             return None
         base = urlparse(self.args["webhook_url"])
         endpoint = f"{base.scheme}://{base.netloc}/schedule/fire"
-        return Scheduling(scheduler=CloudTasksScheduler(self.cloud_tasks_config()), endpoint=endpoint)
+        return SchedulingService(scheduler=CloudTasksScheduler(self.cloud_tasks_config()), endpoint=endpoint)
 
     @cached_property
     def deps(self) -> CoreDeps:

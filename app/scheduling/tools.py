@@ -1,10 +1,11 @@
-"""The agent's scheduling tools: a one-shot `remind` and a recurring `schedule_routine`."""
+"""The agent's scheduling tools: create (`remind`/`schedule_routine`) and `cancel_schedule`."""
 
+from anthropic.types import MessageParam, TextBlockParam
 from baski.agents.tool import Tool
 from baski.primitives import datetime
 from pydantic import BaseModel, Field
 
-from app.scheduling.dispatch import Scheduling, enqueue_fire
+from app.scheduling.service import SchedulingService
 from app.scheduling.store import ScheduleKind, ScheduleStore
 
 # One line of the guidance the owner asked for: derive the timezone from the owner, don't guess it.
@@ -36,8 +37,8 @@ class RemindTool(Tool):
         fire_at: datetime.datetime = Field(description="When to fire, absolute UTC (ISO-8601)")
         instruction: str = Field(description="What to tell/do for the owner when it fires")
 
-    def __init__(self, store: ScheduleStore, scheduling: Scheduling) -> None:
-        """Hold the conversation-scoped store and the Cloud Tasks enqueuer."""
+    def __init__(self, store: ScheduleStore, scheduling: SchedulingService) -> None:
+        """Hold the conversation-scoped store and the scheduling service."""
         self._store = store
         self._scheduling = scheduling
 
@@ -47,7 +48,7 @@ class RemindTool(Tool):
         if fire_at <= datetime.now():
             return "fire_at is in the past — pass a future UTC time."
         task = await self._store.add(kind=ScheduleKind.ONCE, instruction=instruction, fire_at=fire_at)
-        await enqueue_fire(self._scheduling, public_id=task.public_id, fire_at=fire_at)
+        await self._scheduling.enqueue_fire(public_id=task.public_id, fire_at=fire_at)
         return f"Reminder {task.public_id} set for {fire_at.isoformat()}."
 
     def system_prompt(self) -> str:
@@ -69,8 +70,8 @@ class RoutineTool(Tool):
         repeat_every_hours: int = Field(description="Interval between fires in hours: 24=daily, 168=weekly", gt=0)
         instruction: str = Field(description="What to tell/do for the owner each time it fires")
 
-    def __init__(self, store: ScheduleStore, scheduling: Scheduling) -> None:
-        """Hold the conversation-scoped store and the Cloud Tasks enqueuer."""
+    def __init__(self, store: ScheduleStore, scheduling: SchedulingService) -> None:
+        """Hold the conversation-scoped store and the scheduling service."""
         self._store = store
         self._scheduling = scheduling
 
@@ -85,9 +86,45 @@ class RoutineTool(Tool):
             fire_at=first_fire_at,
             repeat_every_hours=repeat_every_hours,
         )
-        await enqueue_fire(self._scheduling, public_id=task.public_id, fire_at=first_fire_at)
+        await self._scheduling.enqueue_fire(public_id=task.public_id, fire_at=first_fire_at)
         return f"Routine {task.public_id} set, every {repeat_every_hours}h from {first_fire_at.isoformat()}."
 
     def system_prompt(self) -> str:
         """When/how to schedule a recurring routine."""
         return f"Use schedule_routine for a repeating routine (24h=daily). {_TIME_GUIDANCE}"
+
+
+_SCHEDULES_HEADER = "YOUR ACTIVE SCHEDULES — cancel one with cancel_schedule(public_id):"
+
+
+class CancelScheduleTool(Tool):
+    """Cancel a scheduled reminder/routine, and inject the always-present list of active ones."""
+
+    name = "cancel_schedule"
+    one_line = "Cancel a scheduled reminder or recurring routine by id"
+    description = "Stop a scheduled reminder/routine so it no longer fires (a recurring one stops repeating)."
+
+    class Input(BaseModel):
+        """Argument for cancelling one schedule."""
+
+        public_id: str = Field(description="The id shown in [brackets] in your active schedules")
+
+    def __init__(self, store: ScheduleStore) -> None:
+        """Hold the conversation-scoped store; the active list is read live from it each turn."""
+        self._store = store
+
+    async def execute(self, *, public_id: str) -> str:
+        """Cancel the schedule and confirm; recurring ones stop after this."""
+        return f"Cancelled {public_id}." if await self._store.cancel(public_id) else f"No active schedule {public_id}."
+
+    async def user_message(self) -> MessageParam | None:
+        """The always-injected list of still-armed schedules, read live so cancellations show up."""
+        tasks = await self._store.list()
+        if not tasks:
+            return None
+        lines = [_SCHEDULES_HEADER]
+        for t in tasks:
+            every = f" · every {t.repeat_every_hours}h" if t.repeat_every_hours else ""
+            when = t.fire_at.strftime("%Y-%m-%d %H:%M")
+            lines.append(f"- [{t.public_id}] {t.kind}{every} · next {when}Z — {t.instruction}")
+        return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])

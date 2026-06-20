@@ -98,9 +98,22 @@ class ScheduleStore:
         return task
 
     async def list(self) -> list[ScheduledTask]:
-        """Live, still-armed tasks in this conversation (for a future list/cancel tool)."""
+        """Live, still-armed tasks in this conversation — the index injected each turn."""
         query = {"conversation_id": self._conversation_id, "status": ScheduleStatus.PENDING, "deleted_at": None}
         return [ScheduledTask.model_validate(doc) async for doc in self._collection.find(query)]
+
+    async def cancel(self, public_id: str) -> bool:
+        """Soft-delete a task in this conversation; True if a live one was found.
+
+        Sets CANCELLED + deleted_at, so an already-enqueued Cloud Task fires once more, fails the
+        claim (no longer PENDING), and no-ops — a recurring chain then stops re-enqueuing itself.
+        """
+        now = datetime.now()
+        result = await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
+            {"$set": {"status": ScheduleStatus.CANCELLED, "deleted_at": now, "updated_at": now}},
+        )
+        return result.modified_count > 0
 
 
 # ── Fire path (global, trusted): the runner has only a public_id + the occurrence's fire_at. ──

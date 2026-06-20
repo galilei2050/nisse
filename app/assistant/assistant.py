@@ -4,7 +4,7 @@ from baski.agents import AgentExecuteResult, Listener, noop
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
-from app.scheduling import Scheduling
+from app.scheduling import SchedulingService
 from app.shared import CoreDeps
 
 NISSE_SYSTEM_PROMPT = (
@@ -26,7 +26,7 @@ class Assistant:
         system_prompt: str = NISSE_SYSTEM_PROMPT,
         await_trace: bool = False,
         local_traces_dir: str | None = None,
-        scheduling: Scheduling | None = None,
+        scheduling: SchedulingService | None = None,
     ) -> None:
         """Build the conversation registry from shared deps + the prebuilt domain tools.
 

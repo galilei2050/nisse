@@ -58,7 +58,7 @@ app/
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
     store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
-    tools.py        remind (one-off) · schedule_routine (recurring); agent gives absolute UTC, asks owner's TZ
+    tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
     dispatch.py     Scheduling holder + enqueue_fire (reuses baski CloudTasksScheduler)
     runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
     router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
@@ -97,6 +97,11 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   *here*, by `Assistant._build_agent`, which constructs the per-conversation store and passes
   it to the stateful tools. Wire stateless tools via the `tools/<domain>` providers
   (`build_tools(deps)`); wire conversation-scoped tools in `_build_agent(conversation_id=…)`.
+  **A tool talks only to a narrow domain SERVICE, never to raw clients/transport.** Inject a
+  service that hides the wiring behind intent-named methods — e.g. scheduling tools get a
+  `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + callback URL. Passing a
+  client bundle (scheduler+endpoint) into a tool leaks the transport into the tool and couples it
+  to how the work is dispatched; the service is the seam that keeps the tool ignorant of that.
 - **Skill** = a tool bundle (and optionally a sub-agent) the toolset can load.
   Two kinds: **code skills** = a new `skills/<x>/` + one line in `skills/__init__.py`
   (dev-authored, git-versioned); **learned skills** = data specs (name + prompt +
@@ -138,7 +143,7 @@ in `IDEAS.md`.
 ## Tool tiers (always-on vs loaded) — built in from the start
 
 - **Always-on** (registered by `assistant/toolset.py`, present every turn):
-  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine` (webhook mode).
+  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule` (webhook mode).
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
@@ -215,7 +220,7 @@ future features get their own cases doc on the same pattern.
 
 ## Scheduling (self-invocation) — webhook mode only
 
-Two tools: `remind` (one-off) and `schedule_routine` (recurring every N hours). Both store a
+Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), and `cancel_schedule` (cancels by id; its `user_message` injects the active-schedule list each turn). The two creation tools store a
 `ScheduledTask` (conversation-scoped) and enqueue ONE Cloud Task per occurrence with `schedule_time`
 (push, no poller) — reusing baski's `CloudTasksScheduler`, no Cloud Scheduler resource.
 

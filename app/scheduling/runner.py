@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from baski.primitives import datetime
 
-from app.scheduling.dispatch import Scheduling, enqueue_fire
 from app.scheduling.store import ScheduleKind, claim, mark_done, reschedule
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
@@ -14,12 +13,15 @@ if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant impor
     from pymongo.asynchronous.database import AsyncDatabase
 
     from app.assistant import Assistant
+    from app.scheduling.service import SchedulingService
 
 
 class ScheduleRunner:
     """Executes a due task end-to-end when Cloud Tasks calls the fire endpoint."""
 
-    def __init__(self, *, assistant: Assistant, bot: Bot, database: AsyncDatabase, scheduling: Scheduling) -> None:
+    def __init__(
+        self, *, assistant: Assistant, bot: Bot, database: AsyncDatabase, scheduling: SchedulingService
+    ) -> None:
         """Hold the collaborators a fire needs: the agent, the Telegram bot, the DB, the enqueuer."""
         self._assistant = assistant
         self._bot = bot
@@ -42,7 +44,7 @@ class ScheduleRunner:
                 raise RuntimeError(f"recurring task {public_id} has no repeat_every_hours")
             next_fire = self._next_occurrence(fire_at, task.repeat_every_hours)
             await reschedule(self._database, public_id=public_id, fire_at=next_fire)
-            await enqueue_fire(self._scheduling, public_id=public_id, fire_at=next_fire)
+            await self._scheduling.enqueue_fire(public_id=public_id, fire_at=next_fire)
 
         answer = await self._assistant.reply(
             conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"

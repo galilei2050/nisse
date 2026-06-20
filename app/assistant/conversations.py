@@ -7,7 +7,7 @@ from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 from app.assistant.toolset import build_tools
 from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
-from app.scheduling import RemindTool, RoutineTool, ScheduleStore, Scheduling
+from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
 from app.shared import CoreDeps
 
 
@@ -21,7 +21,7 @@ class Conversations:
         system_prompt: str,
         await_trace: bool = False,
         local_traces_dir: str | None = None,
-        scheduling: Scheduling | None = None,
+        scheduling: SchedulingService | None = None,
     ) -> None:
         """Hold the shared deps + prebuilt tools; `scheduling` wires the reminder tools (webhook mode only)."""
         self._deps = deps
@@ -67,6 +67,7 @@ class Conversations:
             schedule_store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
             toolset.add(RemindTool(schedule_store, self._scheduling))
             toolset.add(RoutineTool(schedule_store, self._scheduling))
+            toolset.add(CancelScheduleTool(schedule_store))  # injects the active-schedule list each turn
 
         config = AgentConfig(
             logger=self._deps.logger,
