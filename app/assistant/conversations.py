@@ -7,26 +7,29 @@ from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 from app.assistant.toolset import build_tools
 from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
+from app.scheduling import RemindTool, RoutineTool, ScheduleStore, Scheduling
 from app.shared import CoreDeps
 
 
 class Conversations:
     """Builds and caches one `Conversation` per conversation_id; reused for every later reply."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — composition root: deps + prompt + 2 trace knobs + scheduling
         self,
         *,
         deps: CoreDeps,
         system_prompt: str,
         await_trace: bool = False,
         local_traces_dir: str | None = None,
+        scheduling: Scheduling | None = None,
     ) -> None:
-        """Hold the shared deps + the prebuilt domain tools used to assemble every conversation's agent."""
+        """Hold the shared deps + prebuilt tools; `scheduling` wires the reminder tools (webhook mode only)."""
         self._deps = deps
         self._tools = build_tools(deps)  # stateless domain tools, shared across conversations
         self._system_prompt = system_prompt
         self._await_trace = await_trace
         self._local_traces_dir = local_traces_dir
+        self._scheduling = scheduling
         self._conversations: dict[int, Conversation] = {}
 
     async def get(self, conversation_id: int) -> Conversation:
@@ -60,6 +63,10 @@ class Conversations:
         toolset.add(RememberTool(store))
         toolset.add(RecallMemoryTool(store))  # reads the index live from the store each turn
         toolset.add(ForgetTool(store))
+        if self._scheduling is not None:  # webhook mode only — polling has no public fire callback
+            schedule_store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
+            toolset.add(RemindTool(schedule_store, self._scheduling))
+            toolset.add(RoutineTool(schedule_store, self._scheduling))
 
         config = AgentConfig(
             logger=self._deps.logger,

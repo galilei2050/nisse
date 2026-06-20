@@ -6,14 +6,16 @@ from collections.abc import Iterable
 from contextlib import AsyncExitStack
 from functools import cached_property
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
 from baski.clients.playwright_client import PlaywrightClient
-from baski.clients.scheduler import CloudTasksConfig
+from baski.clients.scheduler import CloudTasksConfig, CloudTasksScheduler
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
+from fastapi import FastAPI
 from google.cloud import tasks_v2
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
@@ -21,6 +23,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
+from app.scheduling import ScheduleRunner, ScheduleStore, Scheduling, build_fire_route
 from app.shared import CoreDeps
 
 
@@ -49,10 +52,28 @@ class NisseBot(TelegramServer):
             invoker_sa_email=f"cloud-run@{project}.iam.gserviceaccount.com",
         )
 
+    def add_webhook_routes(self, app: FastAPI) -> None:
+        """Mount the scheduling fire endpoint Cloud Tasks calls when a task is due (webhook mode)."""
+        if self._scheduling is None:
+            return
+        runner = ScheduleRunner(
+            assistant=self.assistant, bot=self.bot, database=self._database, scheduling=self._scheduling
+        )
+        build_fire_route(app, runner)
+
     @cached_property
     def assistant(self) -> Assistant:
-        """The bot's Assistant, built from shared deps."""
-        return Assistant(deps=self.deps)
+        """The bot's Assistant, built from shared deps + (in webhook mode) the scheduling wiring."""
+        return Assistant(deps=self.deps, scheduling=self._scheduling)
+
+    @cached_property
+    def _scheduling(self) -> Scheduling | None:
+        """Cloud Tasks self-invocation wiring — only in webhook mode; polling has no public callback."""
+        if not self.args["cloud"]:
+            return None
+        base = urlparse(self.args["webhook_url"])
+        endpoint = f"{base.scheme}://{base.netloc}/schedule/fire"
+        return Scheduling(scheduler=CloudTasksScheduler(self.cloud_tasks_config()), endpoint=endpoint)
 
     @cached_property
     def deps(self) -> CoreDeps:
@@ -77,10 +98,11 @@ class NisseBot(TelegramServer):
         return AsyncExitStack()
 
     async def _on_startup(self) -> None:
-        """Open the HTTP client and headless browser, and ensure memory indexes."""
+        """Open the HTTP client and headless browser, and ensure memory + schedule indexes."""
         await self._resources.enter_async_context(self.deps.http)
         await self._resources.enter_async_context(self.deps.playwright)
         await self.assistant.setup()
+        await ScheduleStore.ensure_indexes(self._database)
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""

@@ -56,9 +56,12 @@ app/
     tools.py        remember · read_memory · forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
-  scheduling/       deferred self-invocation (reminders, daily briefings)
-    schedule.py     ScheduleTaskTool + fire-due-task → Assistant
-    router.py       HTTP trigger Cloud Tasks/Scheduler hits when a task is due
+  scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
+    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
+    tools.py        remind (one-off) · schedule_routine (recurring); agent gives absolute UTC, asks owner's TZ
+    dispatch.py     Scheduling holder + enqueue_fire (reuses baski CloudTasksScheduler)
+    runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
+    router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
@@ -135,7 +138,7 @@ in `IDEAS.md`.
 ## Tool tiers (always-on vs loaded) — built in from the start
 
 - **Always-on** (registered by `assistant/toolset.py`, present every turn):
-  knowledge/memory, context management (`delete_messages`), `schedule_task`.
+  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine` (webhook mode).
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
@@ -210,14 +213,22 @@ writes to the real DB — use a throwaway `U=`. Write expectations **before** ru
 cases (scripted + natural-conversation, expectation-first) live in `docs/memory-test-cases.md`;
 future features get their own cases doc on the same pattern.
 
-## Scheduling (self-invocation)
+## Scheduling (self-invocation) — webhook mode only
 
-1. Agent calls `schedule_task` → writes a `ScheduledTask` to **MongoDB** with the
-   fire time + enough context to resume.
-2. **Cloud Tasks** (one-off) / **Cloud Scheduler** (recurring, cron) hits
-   `scheduling/router.py` when due → reconstructs a minimal context →
-   `Assistant.reply()` → pushes a Telegram message. Idempotent by task id (a
-   re-delivery must not double-send). Google Tasks is only a user-facing mirror.
+Two tools: `remind` (one-off) and `schedule_routine` (recurring every N hours). Both store a
+`ScheduledTask` (conversation-scoped) and enqueue ONE Cloud Task per occurrence with `schedule_time`
+(push, no poller) — reusing baski's `CloudTasksScheduler`, no Cloud Scheduler resource.
+
+- **Time is the agent's job.** The agent gives an absolute UTC `fire_at`; if it doesn't know the
+  owner's city/timezone it asks (and remembers it) — nisse invents no timezone. `fire_at` is
+  normalized to UTC seconds so it round-trips Mongo's ms datetimes and the claim matches exactly.
+- **Fire** (`POST /schedule/fire`, mounted via `add_webhook_routes`): `ScheduleRunner.fire` →
+  **atomic CAS-claim** (`claim`: PENDING→RUNNING for this public_id+fire_at — the single idempotency
+  point under Cloud Tasks' at-least-once delivery) → recurring: advance + re-enqueue the next
+  occurrence BEFORE running → `Assistant.reply(conversation_id)` (same agent as a live turn) →
+  `bot.send_message` → ONCE: mark DONE. A duplicate delivery loses the claim and no-ops.
+- **No app-level OIDC check** on the route — same protection as baski's `/tasks/update` worker
+  (Cloud Tasks OIDC + Cloud Run ingress). Polling mode wires no scheduling tools (no public callback).
 
 ## Judge / evaluation (Gemini grades Opus)
 
