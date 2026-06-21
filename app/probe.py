@@ -31,7 +31,7 @@ from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
 from app.scheduling import LoggingScheduler
-from app.shared import CoreDeps
+from app.shared import CoreDeps, block_type
 
 if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase
@@ -45,10 +45,11 @@ def _render_content(content: object) -> str:
         return str(content)
     parts = []
     for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
+        btype = block_type(block)
+        if btype == "text":
             parts.append(str(block["text"]))
-        elif isinstance(block, dict):
-            parts.append(f"<{block.get('type', '?')}>")
+        elif btype is not None:
+            parts.append(f"<{btype}>")
         else:
             parts.append(str(block))
     return "\n".join(parts)

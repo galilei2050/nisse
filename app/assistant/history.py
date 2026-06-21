@@ -20,22 +20,14 @@ infrastructure/services/cloud_run_backend.py) with every entry point sharing one
 import asyncio
 from typing import Self
 
-from anthropic.types import (
-    ContentBlock,
-    MessageParam,
-    RedactedThinkingBlock,
-    TextBlock,
-    TextBlockParam,
-    ThinkingBlock,
-    ToolResultBlockParam,
-    Usage,
-)
+from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
 from baski.agents.message_history import MessageHistory, Turn
 from baski.primitives import datetime
 from baski.server import Logger
 from pydantic import BaseModel, ConfigDict
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.shared.blocks import block_type
 from app.shared.models import NisseDbModel
 
 _COLLECTION = "conversation_turns"
@@ -74,27 +66,13 @@ class ConversationTurn(NisseDbModel):
 
 
 def _is_text_block(block: object) -> bool:
-    """True if a content block is a text block.
-
-    A fresh assistant block is an SDK `TextBlock` (isinstance is type-checked by mypy); a block
-    loaded from Mongo or built by `add_user_text` is a `TextBlockParam` dict whose discriminator
-    is `type: "text"` (Anthropic models it as a `Literal`, not a runtime enum).
-    """
-    if isinstance(block, TextBlock):
-        return True
-    return isinstance(block, dict) and block.get("type") == "text"
+    """True if a content block is a text block (by its Anthropic `type` discriminator)."""
+    return block_type(block) == "text"
 
 
 def _is_thinking_block(block: object) -> bool:
-    """True if a content block is a thinking or redacted-thinking block.
-
-    Mirror of `_is_text_block`: a fresh assistant block is an SDK `ThinkingBlock`/`RedactedThinkingBlock`
-    (isinstance, type-checked); a block loaded from Mongo is the matching param dict whose discriminator
-    is `type` (the SDK params are TypedDicts, not runtime classes, so isinstance can't reach them).
-    """
-    if isinstance(block, ThinkingBlock | RedactedThinkingBlock):
-        return True
-    return isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking")
+    """True for a thinking or redacted-thinking block (by its Anthropic `type` discriminator)."""
+    return block_type(block) in ("thinking", "redacted_thinking")
 
 
 def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
