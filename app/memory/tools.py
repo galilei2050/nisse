@@ -37,7 +37,7 @@ _REMEMBER_GUIDANCE = (
 
 _INDEX_HEADER = (
     "YOUR LONG-TERM MEMORY (grouped by category). Each line is a pointer: [public_id] source · date — "
-    "title; date = when learned, an old one may be stale. When a title is relevant, call read_memory("
+    "title; date = last updated, an old one may be stale. When a title is relevant, call read_memory("
     "public_id) to load the body before answering — don't answer from assumption when a relevant memory "
     "exists, and read only what's relevant. Don't re-save what's already here."
 )
@@ -136,7 +136,7 @@ class RecallMemoryTool(Tool):
             lines.append(f"\n{category.upper()}")
             for m in group:
                 src = m.source.kind if m.source.ref is None else f"{m.source.kind}:{m.source.ref}"
-                lines.append(f"- [{m.public_id}] {src} · {m.created_at.strftime('%Y-%m-%d')} — {m.title}")
+                lines.append(f"- [{m.public_id}] {src} · {m.updated_at.strftime('%Y-%m-%d')} — {m.title}")
         return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])
 
 

@@ -16,6 +16,7 @@ def _memory(public_id: str, *, category: str, source: dict, title: str, body: st
             "category": category,
             "source": source,
             "created_at": "2026-06-18T00:00:00Z",
+            "updated_at": "2026-06-20T00:00:00Z",  # differs from created_at so the index test proves it uses updated_at
             "body": body,
         }
     )
@@ -70,9 +71,9 @@ async def test_index_renders_pointers_grouped_by_category() -> None:
 
     assert "YOUR LONG-TERM MEMORY" in text
     assert "PREFERENCE" in text  # category is the group header, not part of the pointer line
-    assert "- [a1] user · 2026-06-18 — Prefers metric units" in text
+    assert "- [a1] user · 2026-06-20 — Prefers metric units" in text  # updated_at, not created_at (2026-06-18)
     assert "EVENT" in text
-    assert "- [b2] external:https://x.test · 2026-06-18 — Booked flight" in text
+    assert "- [b2] external:https://x.test · 2026-06-20 — Booked flight" in text
     assert "SECRET" not in text  # bodies are fetched on demand, never in the index
 
 

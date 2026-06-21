@@ -111,6 +111,7 @@ PREFERENCE
 FACT
 - [public_id] source · date — title
 ```
-Confirm: titles only (no bodies leak in); the date is present (the agent is told an old date
-may be stale); soft-deleted memories are absent; the category appears once as a group header,
-not repeated per line.
+Confirm: titles only (no bodies leak in); the date shown is `updated_at` — an overwritten or
+edited memory shows its **edit** date, not its creation date, so a freshly-corrected fact doesn't
+look stale (the agent is told an old date may be stale); soft-deleted memories are absent; the
+category appears once as a group header, not repeated per line.
