@@ -73,7 +73,8 @@ async def test_index_renders_pointers_grouped_by_category() -> None:
     assert "PREFERENCE" in text  # category is the group header, not part of the pointer line
     assert "- [a1] user · 2026-06-20 — Prefers metric units" in text  # updated_at, not created_at (2026-06-18)
     assert "EVENT" in text
-    assert "- [b2] external:https://x.test · 2026-06-20 — Booked flight" in text
+    assert "- [b2] external · 2026-06-20 — Booked flight" in text  # kind only — the url is not in the index
+    assert "https://x.test" not in text  # the external ref/url lives in the full read, not the index
     assert "SECRET" not in text  # bodies are fetched on demand, never in the index
 
 
@@ -93,8 +94,15 @@ async def test_remember_saves_with_source() -> None:
 async def test_read_returns_body_or_not_found() -> None:
     mem = _memory("a1", category="fact", source={"kind": "user"}, title="t", body="the body")
     tool = RecallMemoryTool(FakeStore([mem]))
-    assert await tool.execute(public_id="a1") == "the body"
+    assert await tool.execute(public_id="a1") == "the body"  # no ref for a user source
     assert await tool.execute(public_id="zz") == "No memory zz."
+
+
+async def test_read_appends_source_link_for_external() -> None:
+    mem = _memory("a1", category="fact", source={"kind": "external", "ref": "https://x.test"}, title="t", body="the body")
+    out = await RecallMemoryTool(FakeStore([mem])).execute(public_id="a1")
+    assert "the body" in out
+    assert "https://x.test" in out  # the link surfaces in the full read, not the index
 
 
 async def test_forget_soft_deletes_then_reports_missing() -> None:

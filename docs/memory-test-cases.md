@@ -10,7 +10,8 @@ Two memories under test:
 - **Short-term** (`store_memory`, baski) — per-reply scratchpad, wiped after the turn. For
   task data (search results, tool output).
 - **Long-term** (`remember`/`read_memory`/`edit_memory`/`forget`, this app) — durable owner facts;
-  index always injected, bodies on demand by `public_id`. Correcting a memory is in place:
+  index always injected (source *kind* + `updated_at` per line); the body and the external source
+  link (`source.ref`) come on demand by `public_id`. Correcting a memory is in place:
   `remember(public_id, …)` overwrites the whole record, `edit_memory` patches part of a long body
   (replace a fragment, or append when `old` is empty); `forget` is a soft delete, only for facts that
   no longer hold.

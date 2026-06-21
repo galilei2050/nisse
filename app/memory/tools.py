@@ -119,9 +119,11 @@ class RecallMemoryTool(Tool):
         self._store = store
 
     async def execute(self, *, public_id: str) -> str:
-        """Return the memory body, or a not-found note."""
+        """Return the memory body (plus its source link when external), or a not-found note."""
         memory = await self._store.get(public_id)
-        return memory.body if memory else f"No memory {public_id}."
+        if memory is None:
+            return f"No memory {public_id}."
+        return f"{memory.body}\n\nsource: {memory.source.ref}" if memory.source.ref else memory.body
 
     async def user_message(self) -> MessageParam | None:
         """The always-injected index, read live from the store so mid-run writes show up."""
@@ -134,9 +136,10 @@ class RecallMemoryTool(Tool):
             if not group:
                 continue
             lines.append(f"\n{category.upper()}")
-            for m in group:
-                src = m.source.kind if m.source.ref is None else f"{m.source.kind}:{m.source.ref}"
-                lines.append(f"- [{m.public_id}] {src} · {m.updated_at.strftime('%Y-%m-%d')} — {m.title}")
+            # kind only here (cheap provenance); the external ref/url is detail, returned by read_memory.
+            lines.extend(
+                f"- [{m.public_id}] {m.source.kind} · {m.updated_at.strftime('%Y-%m-%d')} — {m.title}" for m in group
+            )
         return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])
 
 

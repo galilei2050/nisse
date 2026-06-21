@@ -161,8 +161,10 @@ mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversa
 - **LongTerm** — durable owner-facts in Mongo (`memory/`), shipped now: a flat store
   + four tools (`remember` / `read_memory` / `edit_memory` / `forget`). **Scoped per `conversation_id`** —
   `MemoryStore(database, conversation_id=…)` filters every read/write to one chat, so
-  memories never cross conversations. The titled index is always
-  injected (read tool's `user_message()`); bodies fetched on demand by `public_id`.
+  memories never cross conversations. The titled index is always injected (read tool's
+  `user_message()`) — one pointer per memory carrying source *kind* + `updated_at` (the freshness
+  date, so an edited memory doesn't look stale); the body and the external `source.ref`/url are
+  fetched on demand by `public_id` (kept out of the every-turn index to save tokens).
   Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
   body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing
   `public_id` (what the model reads/echoes). **Correcting a memory is in place** (not delete-then-recreate,
