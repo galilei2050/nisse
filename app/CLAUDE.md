@@ -31,7 +31,12 @@ app/
     providers.py    role → model_id presets (main · judge · curator · task)
 
   chat/             Telegram I/O — the ONLY aiogram Router
-    router.py       voice + text handler → transcribe → Assistant.reply() → answer
+    router.py       voice + text handler → transcribe → Assistant.reply(on_event=TelegramProgress) → answer
+    progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message: step checklist
+                    (each tool with its salient arg in a `code span`, thinking — a rotating "думаю…"
+                    word when thinking surfaces no text), then the reply streamed in a sentence at a
+                    time (on baski's TextDelta), throttled to 0.5s; finish() renders the final MarkdownV2.
+    format.py       LLM markdown → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
   assistant/        the main agent — composition root
