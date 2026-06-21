@@ -18,6 +18,8 @@ infrastructure/services/cloud_run_backend.py) with every entry point sharing one
 """
 
 import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Self
 
 from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
@@ -35,6 +37,24 @@ _COLLECTION = "conversation_turns"
 _MAX_TOKENS = 64_000
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
+_GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
+
+
+@dataclass
+class MongoTurn(Turn):
+    """A transcript turn that also carries its UTC send-time, used to render the recency marker."""
+
+    created_at: datetime.datetime = field(kw_only=True)
+
+
+def _turn_marker(turn_id: int, at: datetime.datetime, prev_at: datetime.datetime | None) -> str:
+    """`[Turn N]`, plus the turn's absolute UTC send-time on the first turn or after a >1h gap.
+
+    Absolute (not relative) to stay byte-stable in the cached prefix.
+    """
+    if prev_at is not None and at - prev_at <= _GAP_MARKER_THRESHOLD:
+        return f"[Turn {turn_id}]"
+    return f"[Turn {turn_id} · {at.strftime('%Y-%m-%d %H:%M')} UTC]"
 
 
 def _dump_block(block: object) -> object:
@@ -81,7 +101,7 @@ def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 —
 
     On Opus 4.5+/Sonnet 4.6+ prior-turn thinking is kept in context and billed as input tokens, yet
     it's only needed for tool-use continuation *within* the active turn — which rides on the still-open
-    in-flight turn, never on `self.turns`. So for settled turns the encrypted reasoning is dead weight;
+    in-flight turn, never on `self._turns`. So for settled turns the encrypted reasoning is dead weight;
     the API permits omitting (not modifying) prior thinking blocks. Mongo keeps the full block.
     """
     content = message["content"]
@@ -125,7 +145,7 @@ class MongoMessageHistory(MessageHistory):
         self._conversation_id = conversation_id
 
         # In-memory transcript + turn assembly (Protocol surface).
-        self.turns: list[Turn] = []
+        self._turns: list[MongoTurn] = []
         self.max_tokens = _MAX_TOKENS
         self._next_turn_id = 0
         self._current_turn: Turn | None = None
@@ -144,14 +164,19 @@ class MongoMessageHistory(MessageHistory):
 
     # --- MessageHistory protocol: in-memory turn assembly ---
 
+    @property
+    def turns(self) -> Sequence[MongoTurn]:
+        """Committed turns, oldest first — read-only; mutation goes through the contract methods."""
+        return self._turns
+
     def __len__(self) -> int:
         """Number of committed turns in the active transcript."""
-        return len(self.turns)
+        return len(self._turns)
 
     def __enter__(self) -> Self:
-        """Open a new turn, assigning the next sequential id."""
+        """Open a new turn, assigning the next sequential id and stamping its send-time."""
         self._next_turn_id += 1
-        self._current_turn = Turn(id=self._next_turn_id)
+        self._current_turn = MongoTurn(id=self._next_turn_id, created_at=datetime.now())
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -159,7 +184,7 @@ class MongoMessageHistory(MessageHistory):
         turn = self._current_turn
         self._current_turn = None
         if turn and turn.messages:
-            self.turns.append(turn)
+            self._turns.append(turn)
             self._writes.append(asyncio.create_task(self._write_turn(turn)))
 
     @property
@@ -184,9 +209,13 @@ class MongoMessageHistory(MessageHistory):
     def format_for_api(self) -> list[MessageParam]:
         """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
         result: list[MessageParam] = []
-        for turn in self.turns:
-            result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=f"[Turn {turn.id}]")]))
+        prev_at: datetime.datetime | None = None
+        for turn in self._turns:
+            at = datetime.as_utc(turn.created_at)
+            marker = _turn_marker(turn.id, at, prev_at)
+            result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=marker)]))
             result.extend(_strip_thinking(m) for m in turn.messages)
+            prev_at = at
 
         if result:
             result[-1] = mark_cached(result[-1])
@@ -196,26 +225,30 @@ class MongoMessageHistory(MessageHistory):
         """The context-usage footer, rendered by the shared helper from this history's counters."""
         return context_status(self._last_input_tokens, self.max_tokens)
 
+    def initial_context_too_large(self, input_tokens: int) -> bool:
+        """True when the transcript is empty yet the first request already exceeds half the budget."""
+        return not self._turns and input_tokens > self.max_tokens // 2
+
     def truncate(self, usage: Usage) -> None:
         """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
         context_tokens = effective_input_tokens(usage)
         self._last_input_tokens = context_tokens
-        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self.turns:
+        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
             return
-        count = max(int(len(self.turns) * _TRUNCATE_PERCENTAGE), 1)
-        dropped, self.turns = self.turns[:count], self.turns[count:]
+        count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
+        dropped, self._turns = self._turns[:count], self._turns[count:]
         self._dropped.update(turn.id for turn in dropped)
         self._logger.info(
             "Truncated message history",
-            labels={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self.turns)},
+            labels={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
         )
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
         """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
         ids = set(turn_ids)
-        original = len(self.turns)
-        self.turns = [turn for turn in self.turns if turn.id not in ids]
-        removed = original - len(self.turns)
+        original = len(self._turns)
+        self._turns = [turn for turn in self._turns if turn.id not in ids]
+        removed = original - len(self._turns)
         self._dropped.update(ids)
         self._logger.info("Turns deleted by agent", labels={"turnIds": sorted(ids), "turnsRemoved": removed})
         return removed
@@ -234,7 +267,9 @@ class MongoMessageHistory(MessageHistory):
         ).to_list(length=None)
         # Read messages straight from raw Mongo docs — bypassing TypedDict validation so plain dicts
         # are not re-wrapped in Pydantic ValidatorIterator objects that break the SDK serializer.
-        self.turns = [Turn(id=doc["turn_id"], messages=list(doc["messages"])) for doc in active]
+        self._turns = [
+            MongoTurn(id=doc["turn_id"], messages=list(doc["messages"]), created_at=doc["created_at"]) for doc in active
+        ]
 
         newest = await self._collection.find_one(
             {"conversation_id": self._conversation_id},
@@ -269,7 +304,7 @@ class MongoMessageHistory(MessageHistory):
         Their Mongo docs were already written soft-deleted (see `_write_turn`), so this is an
         in-memory prune only — no extra write, and the full turn stays recoverable in Mongo.
         """
-        self.turns = [turn for turn in self.turns if _has_text(turn)]
+        self._turns = [turn for turn in self._turns if _has_text(turn)]
 
     async def _write_turn(self, turn: Turn) -> None:
         """Insert one turn document, once. A pure tool turn is written already soft-deleted."""

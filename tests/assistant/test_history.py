@@ -9,6 +9,7 @@ up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud Run
 from types import SimpleNamespace
 
 from anthropic.types import Usage
+from baski.primitives import datetime as dt
 
 from app.assistant.history import MongoMessageHistory
 
@@ -91,6 +92,27 @@ def _history(collection: _FakeCollection, conversation_id: int = 1) -> MongoMess
 
 def _active_ids(collection: _FakeCollection) -> list[int]:
     return sorted(d["turn_id"] for d in collection.docs.values() if d["deleted_at"] is None)
+
+
+def _markers(hist: MongoMessageHistory) -> list[str]:
+    """The `[Turn N …]` marker text rendered for each turn (one per turn, in order)."""
+    out: list[str] = []
+    for m in hist.format_for_api():
+        content = m["content"]
+        if isinstance(content, list):
+            out += [b["text"] for b in content if isinstance(b, dict) and str(b.get("text", "")).startswith("[Turn ")]
+    return out
+
+
+def _seed_turn(col: _FakeCollection, turn_id: int, created_at: object, conversation_id: int = 1) -> None:
+    """Insert one active turn doc directly, to control its created_at (the recency-marker source)."""
+    col.docs[(conversation_id, turn_id)] = {
+        "conversation_id": conversation_id,
+        "turn_id": turn_id,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": f"m{turn_id}"}]}],
+        "created_at": created_at,
+        "deleted_at": None,
+    }
 
 
 def _add_user(hist: MongoMessageHistory, text: str = "hi") -> None:
@@ -185,6 +207,36 @@ async def test_delete_turns_persists() -> None:
     cold = _history(col)
     await cold.load()
     assert [t.id for t in cold.turns] == [1, 3]
+
+
+async def test_turn_marker_carries_utc_send_time_on_first_turn_and_after_gap() -> None:
+    """A marker shows the UTC send-time on the first turn and after a >1h gap; bare otherwise.
+
+    Drives the cold-start `load()` path so created_at comes from Mongo, like production.
+    """
+    col = _FakeCollection()
+    base = dt.as_utc(dt.datetime(2026, 6, 21, 10, 0))
+    _seed_turn(col, 1, base)  # first turn → always stamped
+    _seed_turn(col, 2, base + dt.timedelta(minutes=5))  # +5min, no gap → bare
+    _seed_turn(col, 3, base + dt.timedelta(hours=2))  # +2h gap → stamped
+    hist = _history(col)
+    await hist.load()
+
+    assert _markers(hist) == [
+        "[Turn 1 · 2026-06-21 10:00 UTC]",
+        "[Turn 2]",
+        "[Turn 3 · 2026-06-21 12:00 UTC]",
+    ]
+
+
+async def test_turn_marker_handles_naive_created_at_from_mongo() -> None:
+    """A naive created_at (pymongo without tz_aware) is treated as UTC, not crashed on or misread."""
+    col = _FakeCollection()
+    _seed_turn(col, 1, dt.datetime(2026, 6, 21, 9, 30))  # naive — no tzinfo
+    hist = _history(col)
+    await hist.load()
+
+    assert _markers(hist) == ["[Turn 1 · 2026-06-21 09:30 UTC]"]
 
 
 async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:

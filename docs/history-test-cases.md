@@ -34,6 +34,12 @@ Write the expected Mongo end-state **before** running; then compare.
 - `turn_id` is a sequential int from baski; `load()` advances the counter past **every** turn
   (including soft-deleted) so an id is never reused → no unique-index collision.
 - Durable facts the agent wants later go to long-term memory (injected separately), not history.
+- **Recency marker:** each `[Turn N]` marker carries the turn's absolute UTC send-time on the first
+  (oldest visible) turn and after a >1h gap from the previous turn — `[Turn 8 · 2026-06-21 21:42 UTC]`;
+  consecutive turns inside a session stay bare `[Turn N]`. Absolute UTC (never relative) so the marker
+  is byte-stable in the cached prefix; the model derives "how long ago" from it plus the live
+  current-time line in the non-cached tail. Send-time rides on `MongoTurn.created_at` (from `__enter__`
+  live, from the Mongo doc on `load()`), normalized through baski `as_utc`.
 
 > The unit tests in `tests/assistant/test_history.py` cover these invariants (write-once, durable
 > truncate, durable delete, recoverable pure-tool prune) against a fake collection. The probe
@@ -215,3 +221,23 @@ reply; both replies' tool turns soft-deleted; turn_ids unique and monotonic acro
 
 **Pass:** second probe's answer names a specific event/price from the first answer (not "which
 concert?"); `make turns` shows the first answer turn still `active`, no id collision.
+
+---
+
+## Scenario 9 — recency marker (time awareness)
+
+**Risk:** the `[Turn N]` marker shows the wrong send-time, a relative string (breaks caching), or a
+time on every turn (token noise) instead of only on the first turn and after a >1h gap.
+
+**Steps:** reuse a conversation that already has turns from a prior session (>1h ago), then probe it.
+```
+make probe U=<existing-prior-day-id> MSG="что мы обсуждали?"
+```
+Inspect the probe's injected context (the `[Turn N …]` lines).
+
+**Expected:** the first (oldest visible) turn carries `[Turn 1 · YYYY-MM-DD HH:MM UTC]`; consecutive
+turns inside the old session are bare `[Turn N]`; the new turn (>1h later) carries its own UTC time.
+Time is absolute UTC, never relative.
+
+**Pass:** markers match the above; verified 2026-06-21 (U=770004 → turn 1 stamped 06-20, 2–7 bare,
+turn 8 stamped 06-21). Unit-tested in `test_turn_marker_*` against the cold-start `load()` path.
