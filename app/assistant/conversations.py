@@ -7,6 +7,7 @@ from baski.clients.serpapi_client import SerpApiClient
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
+from app.lists import ListEditTool, ListShowTool, ListStore
 from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.prompts import CoreMemoryTool, PromptStore
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
@@ -72,6 +73,7 @@ class Conversations:
         for tool in [
             *self._build_web_tools(),
             *self._build_memory_tools(conversation_id),
+            *self._build_list_tools(conversation_id),
             *self._build_scheduling_tools(conversation_id),
             CoreMemoryTool(PromptStore(self._deps.database, conversation_id=conversation_id)),
         ]:
@@ -111,6 +113,11 @@ class Conversations:
         """Long-term memory — store scoped to the chat so memories never cross conversations."""
         store = MemoryStore(self._deps.database, conversation_id=conversation_id)
         return [RememberTool(store), RecallMemoryTool(store), EditMemoryTool(store), ForgetTool(store)]
+
+    def _build_list_tools(self, conversation_id: int) -> list[Tool]:
+        """Named lists (ARTIFACT tier) — store scoped to the chat so lists never cross conversations."""
+        store = ListStore(self._deps.database, conversation_id=conversation_id)
+        return [ListEditTool(store), ListShowTool(store)]
 
     def _build_scheduling_tools(self, conversation_id: int) -> list[Tool]:
         """Reminders/routines — built in every mode.
