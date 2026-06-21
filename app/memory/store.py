@@ -9,6 +9,7 @@ from enum import StrEnum
 
 from baski.primitives import datetime
 from pydantic import BaseModel, Field, model_validator
+from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
@@ -101,6 +102,39 @@ class MemoryStore:
         result = await self._collection.insert_one(memory.model_dump(exclude={"id"}))
         memory.id = str(result.inserted_id)
         return memory
+
+    async def overwrite(  # noqa: PLR0913 — mirrors add() plus the public_id of the record to overwrite
+        self, public_id: str, *, title: str, category: MemoryCategory, source: MemorySource, body: str
+    ) -> Memory:
+        """Replace a live memory's fields in place by public id; create a fresh one if the id is gone.
+
+        A fresh create (rather than reusing the requested id) is deliberate: a missing id means the
+        memory was soft-deleted, and its `public_id` still occupies the unique index — reusing it would
+        collide. The caller reports whichever id is now live.
+        """
+        result = await self._collection.find_one_and_update(
+            {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
+            {
+                "$set": {
+                    "title": title,
+                    "category": category,
+                    "source": source.model_dump(),
+                    "body": body,
+                    "updated_at": datetime.now(),
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if result is None:
+            return await self.add(title=title, category=category, source=source, body=body)
+        return Memory.model_validate(result)
+
+    async def set_body(self, public_id: str, *, body: str) -> None:
+        """Overwrite one live memory's body (the agent's edit_memory patch); bump updated_at."""
+        await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
+            {"$set": {"body": body, "updated_at": datetime.now()}},
+        )
 
     async def soft_delete(self, public_id: str) -> bool:
         """Mark a memory deleted (keep the doc); True if a live one was found in this conversation."""

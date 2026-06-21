@@ -47,9 +47,9 @@ app/
     gemini.py       Gemini/Vertex impl — own client, own provider
     rubric.py       scoring criteria
 
-  memory/           long-term memory: durable owner-facts + the remember/read/forget tools
-    store.py        Memory model + MemoryStore (Mongo `memories`, short-id CRUD)
-    tools.py        remember · read_memory · forget; index injected via the read tool's user_message()
+  memory/           long-term memory: durable owner-facts + the remember/read/edit/forget tools
+    store.py        Memory model + MemoryStore (Mongo `memories`, short-id CRUD: add/overwrite/set_body/soft_delete)
+    tools.py        remember · read_memory · edit_memory · forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
@@ -159,15 +159,20 @@ mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversa
 - **ShortTerm** — per-Turn scratchpad (baski `ShortTermMemory`, `store_memory` tool);
   lives during one `Assistant.reply()`, wiped after the reply. Not persisted.
 - **LongTerm** — durable owner-facts in Mongo (`memory/`), shipped now: a flat store
-  + three tools (`remember` / `read_memory` / `forget`). **Scoped per `conversation_id`** —
+  + four tools (`remember` / `read_memory` / `edit_memory` / `forget`). **Scoped per `conversation_id`** —
   `MemoryStore(database, conversation_id=…)` filters every read/write to one chat, so
   memories never cross conversations. The titled index is always
   injected (read tool's `user_message()`); bodies fetched on demand by `public_id`.
   Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
   body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing
-  `public_id` (what the model reads/echoes). `forget` is a **soft delete** — it sets
-  `deleted_at`; reads filter `{"deleted_at": None}`. The agent forgets a memory itself when
-  the dialogue shows it's stale.
+  `public_id` (what the model reads/echoes). **Correcting a memory is in place** (not delete-then-recreate,
+  which churns the id and corrupts long bodies): `remember(public_id, …)` overwrites the whole record
+  (`MemoryStore.overwrite` — upserts to a fresh id if the old one is gone, since the unique `public_id`
+  index forbids reuse); `edit_memory(public_id, old, new)` patches the body (`MemoryStore.set_body`) —
+  replace `old` with `new`, or append when `old` is empty, with the always-accepted create/append paths
+  chosen so the model's first tool call rarely gets rejected. `forget` is a **soft delete** — it sets
+  `deleted_at`; reads filter `{"deleted_at": None}` — only for facts that no longer hold. The agent
+  corrects or forgets a memory itself when the dialogue shows it's stale.
 
 Every tool injects its always-present block via `Tool.user_message()` (baski) — the
 uniform seam ShortTerm, the memory index, and future skills all share.
@@ -197,6 +202,22 @@ make turns U=<id>                # dump one conversation's `conversation_turns` 
 - The probe shows what the agent *did*; `make memories`/`make turns` show the durable *result* in Mongo.
 
 Real API/DB calls (env from `.env`) — use a throwaway `U=`. Write expectations **before** running.
+
+### Prod traces (real traffic)
+
+The probe writes its trace to a temp dir (gone after the run). **Prod** persists every agent run two ways:
+the full trace (gzipped JSON) to GCS, and a lightweight summary to the Mongo `traces` collection. To
+inspect what the live bot actually did, pull the latest from GCS:
+
+```
+# bucket nisse2050-private, prefix traces/, one file per run: <trace_id>.json.gz
+gsutil ls -l gs://nisse2050-private/traces/ | sort -k2 | tail        # newest trace_ids by time
+gsutil cat gs://nisse2050-private/traces/<trace_id>.json.gz | gunzip | jq   # full trace
+```
+
+The Mongo `traces` summary (`_id`=trace_id, `created_at`, `user_request`[:128], model, tokens, cost,
+`error`) is the index — query it by `created_at` desc to pick a `trace_id`, then fetch the body from GCS.
+Needs read access to GCP project `nisse2050` (the bucket name is global, but auth isn't).
 
 **Testing is part of every task — the definition of done.** Each feature has an expectation-first
 cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`). A task isn't done until you
