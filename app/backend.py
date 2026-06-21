@@ -124,6 +124,7 @@ class NisseBot(TelegramServer):
 
     async def _on_startup(self) -> None:
         """Open the HTTP client and headless browser, and ensure memory + schedule indexes."""
+        await self._resources.enter_async_context(self._database.client)
         await self._resources.enter_async_context(self._http)
         await self._resources.enter_async_context(self._playwright)
         await self.assistant.setup()
