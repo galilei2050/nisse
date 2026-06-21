@@ -25,12 +25,13 @@ class _SourceArg(TypedDict):
 
 
 _REMEMBER_GUIDANCE = (
-    "Save only durable owner knowledge worth recalling in a later unrelated conversation: stable facts, "
-    "stated preferences, dated events. Tool output, research, task steps → store_memory, not here; "
-    "unsure → skip (missed fact = one question; saved scrap pollutes every turn). Check index first; to "
-    "correct, pass that public_id here to overwrite whole (or edit_memory for a small change to a long "
-    "body) — never duplicate. category: fact = stable truth; preference = how they like things; event = "
-    'dated. SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
+    "Save discrete owner knowledge you'll recall when its topic comes up — facts and dated events — in a "
+    "later unrelated conversation. Tool output, research, task steps → store_memory, not here; unsure → "
+    "skip (missed fact = one question; saved scrap pollutes every turn). Check index first; to correct, "
+    "pass that public_id here to overwrite whole (or edit_memory for a small change to a long body) — "
+    "never duplicate. category: fact = stable truth; event = dated. How you should behave, how to address "
+    "the owner, or identity that shapes most turns → update_core_memory, not here (memory is recalled on "
+    'demand, not always-on). SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
     "Context auto-trims: pure tool turns drop after each reply, old turns trimmed as window fills — so a "
     "durable fact from a tool result is gone next turn unless you remember it here now."
 )
@@ -76,7 +77,7 @@ class RememberTool(Tool):
             description="Omit to create; pass an existing public_id to overwrite that memory whole",
         )
         title: str = Field(description="Short title shown in the always-visible index")
-        category: MemoryCategory = Field(description="fact, preference, or event")
+        category: MemoryCategory = Field(description="fact or event")
         source: MemorySource = Field(description="kind ∈ user/external/agent; ref = url/name, required when external")
         body: str = Field(description="Full memory text, fetched on demand by public_id")
 
@@ -97,7 +98,7 @@ class RememberTool(Tool):
             return f"Updated memory {memory.public_id}."
         return f"Saved new memory {memory.public_id}."  # the id was gone; a fresh one was created
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """The long-term save policy."""
         return _REMEMBER_GUIDANCE
 
@@ -178,7 +179,7 @@ class EditMemoryTool(Tool):
         await self._store.set_body(public_id, body=body)
         return f"Edited memory {public_id}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When and how to patch a body in place."""
         return _EDIT_GUIDANCE
 
@@ -203,6 +204,6 @@ class ForgetTool(Tool):
         """Soft-delete the memory and confirm."""
         return f"Forgot memory {public_id}." if await self._store.soft_delete(public_id) else f"No memory {public_id}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When to forget."""
         return _FORGET_GUIDANCE

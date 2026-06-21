@@ -4,6 +4,7 @@ from baski.agents import AgentExecuteResult, Listener, noop
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
+from app.prompts import PromptStore
 from app.shared import CoreDeps
 
 NISSE_SYSTEM_PROMPT = (
@@ -53,8 +54,9 @@ class Assistant:
         )
 
     async def setup(self) -> None:
-        """One-time startup: ensure the memory store's indexes exist."""
+        """One-time startup: ensure the memory and prompt stores' indexes exist."""
         await MemoryStore.ensure_indexes(self._deps.database)
+        await PromptStore.ensure_indexes(self._deps.database)
 
     async def run(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
         """Drive the conversation's reused agent over the new message; return the raw result.

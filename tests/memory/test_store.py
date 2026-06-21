@@ -62,7 +62,7 @@ class FakeStore:
 
 async def test_index_renders_pointers_grouped_by_category() -> None:
     memories = [
-        _memory("a1", category="preference", source={"kind": "user"}, title="Prefers metric units", body="SECRET"),
+        _memory("a1", category="fact", source={"kind": "user"}, title="Drives a BMW Z4", body="SECRET"),
         _memory("b2", category="event", source={"kind": "external", "ref": "https://x.test"}, title="Booked flight"),
     ]
     msg = await RecallMemoryTool(FakeStore(memories)).user_message()
@@ -70,8 +70,8 @@ async def test_index_renders_pointers_grouped_by_category() -> None:
     text = msg["content"][0]["text"]
 
     assert "YOUR LONG-TERM MEMORY" in text
-    assert "PREFERENCE" in text  # category is the group header, not part of the pointer line
-    assert "- [a1] user · 2026-06-20 — Prefers metric units" in text  # updated_at, not created_at (2026-06-18)
+    assert "FACT" in text  # category is the group header, not part of the pointer line
+    assert "- [a1] user · 2026-06-20 — Drives a BMW Z4" in text  # updated_at, not created_at (2026-06-18)
     assert "EVENT" in text
     assert "- [b2] external · 2026-06-20 — Booked flight" in text  # kind only — the url is not in the index
     assert "https://x.test" not in text  # the external ref/url lives in the full read, not the index
@@ -113,12 +113,12 @@ async def test_forget_soft_deletes_then_reports_missing() -> None:
 
 
 async def test_remember_with_public_id_overwrites_in_place() -> None:
-    mem = _memory("a1", category="preference", source={"kind": "user"}, title="Loves chocolate", body="Loves chocolate.")
+    mem = _memory("a1", category="fact", source={"kind": "user"}, title="Loves chocolate", body="Loves chocolate.")
     store = FakeStore([mem])
     result = await RememberTool(store).execute(
         public_id="a1",
         title="Loves dark chocolate",
-        category="preference",
+        category="fact",
         source={"kind": "user", "ref": None},
         body="Loves dark chocolate, 70%+.",
     )

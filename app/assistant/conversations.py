@@ -8,6 +8,7 @@ from baski.clients.serpapi_client import SerpApiClient
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
+from app.prompts import CoreMemoryTool, PromptStore
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
 from app.search import (
     AmazonProductTool,
@@ -72,6 +73,7 @@ class Conversations:
             *self._build_web_tools(),
             *self._build_memory_tools(conversation_id),
             *self._build_scheduling_tools(conversation_id),
+            CoreMemoryTool(PromptStore(self._deps.database, conversation_id=conversation_id)),
         ]:
             toolset.add(tool)
 

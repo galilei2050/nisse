@@ -51,7 +51,7 @@ class RemindTool(Tool):
         await self._scheduling.enqueue_fire(public_id=task.public_id, fire_at=fire_at)
         return f"Reminder {task.public_id} set for {fire_at.isoformat()}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When/how to schedule a one-shot reminder."""
         return f"Use remind for a one-time future reminder. {_TIME_GUIDANCE}"
 
@@ -89,7 +89,7 @@ class RoutineTool(Tool):
         await self._scheduling.enqueue_fire(public_id=task.public_id, fire_at=first_fire_at)
         return f"Routine {task.public_id} set, every {repeat_every_hours}h from {first_fire_at.isoformat()}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When/how to schedule a recurring routine."""
         return f"Use schedule_routine for a repeating routine (24h=daily). {_TIME_GUIDANCE}"
 

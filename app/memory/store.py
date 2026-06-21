@@ -18,10 +18,13 @@ _COLLECTION = "memories"
 
 
 class MemoryCategory(StrEnum):
-    """What kind of thing a memory is — drives later curator decay/promotion."""
+    """What kind of thing a memory is — drives later curator decay/promotion.
 
-    FACT = "fact"  # stable truth about the owner/world
-    PREFERENCE = "preference"  # how they like things done
+    Behavioural preferences and identity that shape how the bot acts live in core memory
+    (`app/prompts`, always-on), NOT here — `memories` is the recalled-on-demand long tail.
+    """
+
+    FACT = "fact"  # stable truth about the owner/world, recalled when its topic comes up
     EVENT = "event"  # something dated, past or future
 
 
