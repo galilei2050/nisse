@@ -109,6 +109,28 @@ def _add_tool_turn(hist: MongoMessageHistory, tool_id: str = "t1") -> None:
         hist.add_tool_results([{"type": "tool_result", "tool_use_id": tool_id, "content": "payload"}])
 
 
+async def test_format_for_api_strips_thinking_from_completed_turns() -> None:
+    """Settled turns' thinking blocks are omitted from the API payload (billed on Opus 4.5+), text kept."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "q")
+    with hist:
+        hist.add_assistant(
+            [
+                {"type": "thinking", "thinking": "private reasoning", "signature": "sig123"},
+                {"type": "text", "text": "the answer"},
+            ]
+        )
+    await hist.flush()
+
+    blocks = [b for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"]]
+    types = [b.get("type") for b in blocks if isinstance(b, dict)]
+    assert "thinking" not in types  # stripped from the completed turn
+    assert "the answer" in [b.get("text") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    assert col.docs[(1, 2)]["messages"]  # ...but Mongo keeps the full turn (thinking recoverable)
+
+
 async def test_each_turn_written_exactly_once() -> None:
     """Turns are inserted once on commit — no rewrites, no double-writes (solves write amplification)."""
     col = _FakeCollection()
