@@ -76,6 +76,34 @@ def _is_text_block(block: object) -> bool:
     return isinstance(block, dict) and block.get("type") == "text"
 
 
+_THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _block_type(block: object) -> str | None:
+    """A content block's discriminator, whether it's an SDK model or a plain dict (loaded from Mongo)."""
+    if isinstance(block, dict):
+        return block.get("type")
+    return getattr(block, "type", None)
+
+
+def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
+    """Drop thinking/redacted_thinking blocks from a completed turn's message.
+
+    On Opus 4.5+/Sonnet 4.6+ prior-turn thinking is kept in context and billed as input tokens, yet
+    it's only needed for tool-use continuation *within* the active turn — which rides on the still-open
+    in-flight turn, never on `self.turns`. So for settled turns the encrypted reasoning is dead weight;
+    the API permits omitting (not modifying) prior thinking blocks. Mongo keeps the full block.
+    """
+    content = message["content"]
+    if isinstance(content, str):
+        return message
+    blocks = list(content)
+    kept = [b for b in blocks if _block_type(b) not in _THINKING_TYPES]
+    if len(kept) == len(blocks):
+        return message
+    return MessageParam(role=message["role"], content=kept)
+
+
 def _has_text(turn: Turn) -> bool:
     """True if the turn has any conversational text — a user question or an assistant reply.
 
@@ -168,7 +196,7 @@ class MongoMessageHistory(MessageHistory):
         result: list[MessageParam] = []
         for turn in self.turns:
             result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=f"[Turn {turn.id}]")]))
-            result.extend(turn.messages)
+            result.extend(_strip_thinking(m) for m in turn.messages)
 
         if self._last_input_tokens:
             pct = int(self._last_input_tokens / self.max_tokens * 100)

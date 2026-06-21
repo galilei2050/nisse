@@ -38,7 +38,7 @@ app/
     assistant.py    Assistant.reply(conversation_id, text) -> str; thin TG↔agent layer over the registry
     conversations.py Conversations — registry: builds each chat's agent once and caches it
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
-    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned)
+    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking)
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 
@@ -213,8 +213,8 @@ inspect what the live bot actually did, pull the latest from GCS:
 
 ```
 # bucket nisse2050-private, prefix traces/, one file per run: <trace_id>.json.gz
-gsutil ls -l gs://nisse2050-private/traces/ | sort -k2 | tail        # newest trace_ids by time
-gsutil cat gs://nisse2050-private/traces/<trace_id>.json.gz | gunzip | jq   # full trace
+gcloud storage ls --long gs://nisse2050-private/traces/ | sort -k2 | tail   # newest trace_ids by time
+gcloud storage cat gs://nisse2050-private/traces/<trace_id>.json.gz | gunzip | jq   # full trace
 ```
 
 The Mongo `traces` summary (`_id`=trace_id, `created_at`, `user_request`[:128], model, tokens, cost,
