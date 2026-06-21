@@ -1,9 +1,9 @@
 """Living prompts — per-conversation prompt fragments the bot maintains, keyed by type.
 
 Unlike `memories` (discrete facts, recalled on demand by the agent), a prompt here is a single
-document that is injected into the system prompt every turn. `user_preference` is the first type:
-how the owner wants the bot to behave + identity facts that shape behaviour. One document per
-`(conversation_id, prompt_type)`, overwritten in place — no soft-delete, no versioning.
+document injected into the system prompt every turn. `core_memory` is the first type: the small,
+always-on block of standing behaviour rules + canonical owner identity + current focus. One document
+per `(conversation_id, prompt_type)`, overwritten in place — no soft-delete, no versioning.
 """
 
 from enum import StrEnum
@@ -19,7 +19,7 @@ _COLLECTION = "prompts"
 class PromptType(StrEnum):
     """Which prompt a row holds. Extensible — a new kind is a new member, no schema change."""
 
-    USER_PREFERENCE = "user_preference"  # how the owner wants the bot to behave + identity facts
+    CORE_MEMORY = "core_memory"  # always-on block: behaviour rules + owner identity + current focus
 
 
 class Prompt(NisseDbModel):

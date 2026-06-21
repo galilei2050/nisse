@@ -25,13 +25,13 @@ class _SourceArg(TypedDict):
 
 
 _REMEMBER_GUIDANCE = (
-    "Save only durable owner knowledge worth recalling in a later unrelated conversation: stable facts, "
-    "stated preferences, dated events. Tool output, research, task steps → store_memory, not here; "
-    "unsure → skip (missed fact = one question; saved scrap pollutes every turn). Check index first; to "
-    "correct, pass that public_id here to overwrite whole (or edit_memory for a small change to a long "
-    "body) — never duplicate. category: fact = stable truth; event = dated. How the owner wants you to "
-    "behave or address them → update_preferences, not here. "
-    'SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
+    "Save discrete owner knowledge you'll recall when its topic comes up — facts and dated events — in a "
+    "later unrelated conversation. Tool output, research, task steps → store_memory, not here; unsure → "
+    "skip (missed fact = one question; saved scrap pollutes every turn). Check index first; to correct, "
+    "pass that public_id here to overwrite whole (or edit_memory for a small change to a long body) — "
+    "never duplicate. category: fact = stable truth; event = dated. How you should behave, how to address "
+    "the owner, or identity that shapes most turns → update_core_memory, not here (memory is recalled on "
+    'demand, not always-on). SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
     "Context auto-trims: pure tool turns drop after each reply, old turns trimmed as window fills — so a "
     "durable fact from a tool result is gone next turn unless you remember it here now."
 )
@@ -77,7 +77,7 @@ class RememberTool(Tool):
             description="Omit to create; pass an existing public_id to overwrite that memory whole",
         )
         title: str = Field(description="Short title shown in the always-visible index")
-        category: MemoryCategory = Field(description="fact, preference, or event")
+        category: MemoryCategory = Field(description="fact or event")
         source: MemorySource = Field(description="kind ∈ user/external/agent; ref = url/name, required when external")
         body: str = Field(description="Full memory text, fetched on demand by public_id")
 
