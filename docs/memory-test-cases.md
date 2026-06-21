@@ -9,8 +9,12 @@ category, what the agent sees going in), the **tool calls** (name + args), and t
 Two memories under test:
 - **Short-term** (`store_memory`, baski) — per-reply scratchpad, wiped after the turn. For
   task data (search results, tool output).
-- **Long-term** (`remember`/`read_memory`/`forget`, this app) — durable owner facts; index
-  always injected, bodies on demand by `public_id`; `forget` is a soft delete.
+- **Long-term** (`remember`/`read_memory`/`edit_memory`/`forget`, this app) — durable owner facts;
+  index always injected (source *kind* + `updated_at` per line); the body and the external source
+  link (`source.ref`) come on demand by `public_id`. Correcting a memory is in place:
+  `remember(public_id, …)` overwrites the whole record, `edit_memory` patches part of a long body
+  (replace a fragment, or append when `old` is empty); `forget` is a soft delete, only for facts that
+  no longer hold.
 
 Two rules the cases below depend on:
 - **Recall must use a *fresh* `U=`** (new conversation). In the same conversation the fact is
@@ -55,6 +59,25 @@ Then, fresh `U=`: `How many espresso shots are in my usual coffee, and is it swe
 `Compare the population of Tokyo and Osaka`
 - `remember` **not** called (research data, not an owner fact). `make memories` unchanged.
 
+### S6 — refine a small record in place (overwrite, same id)
+With "Loves chocolate" stored, fresh `U=`: `Actually, to be precise — I only love dark chocolate, 70% or higher.`
+- `remember(public_id=<chocolate id>, …, title~dark chocolate)` — overwrites the whole record.
+- `make memories`: **one** live doc, **same `public_id`**, body/title updated, `updated_at` bumped — no
+  second doc, no soft-delete. The model should overwrite, not forget-then-re-add.
+
+### S7 — extend a long body (edit_memory append, empty `old`)
+With the S3 coffee order stored, fresh `U=`: `For my usual coffee, also note I want it in a ceramic cup, not paper.`
+- `edit_memory(public_id=<coffee id>, old="", new="… ceramic cup, not paper")` — appends one line.
+- `make memories`: the coffee body now ends with the ceramic-cup line; the rest of the order is intact
+  (the point: it did **not** rewrite the whole body). Same doc, `updated_at` bumped.
+
+### S8 — change part of a long body (edit_memory replace + no-match retry)
+With the S3 coffee order stored, fresh `U=`: `Change my usual coffee to three espresso shots instead of two.`
+- `edit_memory(public_id=<coffee id>, old~"two extra espresso shots", new~"three extra espresso shots")`
+  — replaces only that fragment; the rest is untouched.
+- If the first `old` doesn't match the body verbatim, the tool returns the current body unchanged and the
+  agent retries `edit_memory` against that exact text — at most one extra call, never a silent no-op.
+
 ## §N — natural-conversation cases (the real judgment test)
 
 No prompt mentions "remember", "forget", or "memory". Each slips a durable fact into an
@@ -74,9 +97,10 @@ With "vegetarian" stored, fresh `U=`:
 ### N3 — implicit contradiction in passing
 With "vegetarian" stored, fresh `U=`:
 `Honestly I've started eating meat again over the past month, feeling much better for it.`
-- The agent should infer the preference is now stale: `forget` the vegetarian doc and
-  `remember` the update — without being told to. `make memories`: vegetarian soft-deleted, a
-  new live doc for the change.
+- The agent should infer the preference is now stale and correct it **in place** — without being told
+  to — by overwriting the record: `remember(public_id=<vegetarian id>, category=preference, title~eats
+  meat again)`. `make memories`: same `public_id`, now reflecting the change (forget-then-re-add is the
+  worse path — it churns the id; only `forget` if the preference is dropped with nothing replacing it).
 
 ## What to inspect in the injected index
 
@@ -88,6 +112,7 @@ PREFERENCE
 FACT
 - [public_id] source · date — title
 ```
-Confirm: titles only (no bodies leak in); the date is present (the agent is told an old date
-may be stale); soft-deleted memories are absent; the category appears once as a group header,
-not repeated per line.
+Confirm: titles only (no bodies leak in); the date shown is `updated_at` — an overwritten or
+edited memory shows its **edit** date, not its creation date, so a freshly-corrected fact doesn't
+look stale (the agent is told an old date may be stale); soft-deleted memories are absent; the
+category appears once as a group header, not repeated per line.

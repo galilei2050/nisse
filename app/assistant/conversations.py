@@ -7,7 +7,7 @@ from baski.clients.serpapi_client import SerpApiClient
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
-from app.memory import ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
+from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
 from app.search import (
     AmazonProductTool,
@@ -108,7 +108,7 @@ class Conversations:
     def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
         """Long-term memory — store scoped to the chat so memories never cross conversations."""
         store = MemoryStore(self._deps.database, conversation_id=conversation_id)
-        return [RememberTool(store), RecallMemoryTool(store), ForgetTool(store)]
+        return [RememberTool(store), RecallMemoryTool(store), EditMemoryTool(store), ForgetTool(store)]
 
     def _build_scheduling_tools(self, conversation_id: int) -> list[Tool]:
         """Reminders/routines — built in every mode.

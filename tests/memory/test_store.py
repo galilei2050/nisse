@@ -3,7 +3,7 @@
 from baski.primitives import datetime
 
 from app.memory.store import Memory, MemorySource
-from app.memory.tools import ForgetTool, RecallMemoryTool, RememberTool
+from app.memory.tools import EditMemoryTool, ForgetTool, RecallMemoryTool, RememberTool
 
 
 def _memory(public_id: str, *, category: str, source: dict, title: str, body: str = "body text") -> Memory:
@@ -16,6 +16,7 @@ def _memory(public_id: str, *, category: str, source: dict, title: str, body: st
             "category": category,
             "source": source,
             "created_at": "2026-06-18T00:00:00Z",
+            "updated_at": "2026-06-20T00:00:00Z",  # differs from created_at so the index test proves it uses updated_at
             "body": body,
         }
     )
@@ -41,6 +42,16 @@ class FakeStore:
         mem = self._m.get(public_id)
         return mem if (mem and mem.deleted_at is None) else None
 
+    async def overwrite(self, public_id, *, title, category, source, body) -> Memory:  # noqa: ANN001, PLR0913
+        mem = self._m.get(public_id)
+        if mem is None or mem.deleted_at is not None:
+            return await self.add(title=title, category=category, source=source, body=body)
+        mem.title, mem.category, mem.source, mem.body = title, category, source, body
+        return mem
+
+    async def set_body(self, public_id: str, *, body) -> None:  # noqa: ANN001
+        self._m[public_id].body = body
+
     async def soft_delete(self, public_id: str) -> bool:
         mem = self._m.get(public_id)
         if mem and mem.deleted_at is None:
@@ -60,9 +71,10 @@ async def test_index_renders_pointers_grouped_by_category() -> None:
 
     assert "YOUR LONG-TERM MEMORY" in text
     assert "PREFERENCE" in text  # category is the group header, not part of the pointer line
-    assert "- [a1] user · 2026-06-18 — Prefers metric units" in text
+    assert "- [a1] user · 2026-06-20 — Prefers metric units" in text  # updated_at, not created_at (2026-06-18)
     assert "EVENT" in text
-    assert "- [b2] external:https://x.test · 2026-06-18 — Booked flight" in text
+    assert "- [b2] external · 2026-06-20 — Booked flight" in text  # kind only — the url is not in the index
+    assert "https://x.test" not in text  # the external ref/url lives in the full read, not the index
     assert "SECRET" not in text  # bodies are fetched on demand, never in the index
 
 
@@ -82,8 +94,15 @@ async def test_remember_saves_with_source() -> None:
 async def test_read_returns_body_or_not_found() -> None:
     mem = _memory("a1", category="fact", source={"kind": "user"}, title="t", body="the body")
     tool = RecallMemoryTool(FakeStore([mem]))
-    assert await tool.execute(public_id="a1") == "the body"
+    assert await tool.execute(public_id="a1") == "the body"  # no ref for a user source
     assert await tool.execute(public_id="zz") == "No memory zz."
+
+
+async def test_read_appends_source_link_for_external() -> None:
+    mem = _memory("a1", category="fact", source={"kind": "external", "ref": "https://x.test"}, title="t", body="the body")
+    out = await RecallMemoryTool(FakeStore([mem])).execute(public_id="a1")
+    assert "the body" in out
+    assert "https://x.test" in out  # the link surfaces in the full read, not the index
 
 
 async def test_forget_soft_deletes_then_reports_missing() -> None:
@@ -91,3 +110,55 @@ async def test_forget_soft_deletes_then_reports_missing() -> None:
     tool = ForgetTool(FakeStore([mem]))
     assert await tool.execute(public_id="a1") == "Forgot memory a1."
     assert await tool.execute(public_id="a1") == "No memory a1."  # already soft-deleted
+
+
+async def test_remember_with_public_id_overwrites_in_place() -> None:
+    mem = _memory("a1", category="preference", source={"kind": "user"}, title="Loves chocolate", body="Loves chocolate.")
+    store = FakeStore([mem])
+    result = await RememberTool(store).execute(
+        public_id="a1",
+        title="Loves dark chocolate",
+        category="preference",
+        source={"kind": "user", "ref": None},
+        body="Loves dark chocolate, 70%+.",
+    )
+    assert result == "Updated memory a1."  # same id, no churn
+    assert store.added == []  # overwrote in place, did not add a second doc
+    assert (await store.get("a1")).body == "Loves dark chocolate, 70%+."
+
+
+async def test_remember_overwrite_of_gone_id_creates_fresh() -> None:
+    store = FakeStore()  # the id was soft-deleted / never existed
+    result = await RememberTool(store).execute(
+        public_id="gone", title="t", category="fact", source={"kind": "user", "ref": None}, body="b"
+    )
+    assert result == "Saved new memory p1."  # a fresh id, not the gone one
+    assert len(store.added) == 1
+
+
+async def test_edit_memory_appends_when_old_empty() -> None:
+    mem = _memory("a1", category="fact", source={"kind": "user"}, title="t", body="line one")
+    store = FakeStore([mem])
+    assert await EditMemoryTool(store).execute(public_id="a1", old="", new="line two") == "Edited memory a1."
+    assert (await store.get("a1")).body == "line one\nline two"
+
+
+async def test_edit_memory_replaces_only_the_fragment() -> None:
+    mem = _memory("a1", category="fact", source={"kind": "user"}, title="t", body="two extra shots, no sugar")
+    store = FakeStore([mem])
+    result = await EditMemoryTool(store).execute(public_id="a1", old="two extra shots", new="three extra shots")
+    assert result == "Edited memory a1."
+    assert (await store.get("a1")).body == "three extra shots, no sugar"  # rest untouched
+
+
+async def test_edit_memory_no_match_hands_back_body_unchanged() -> None:
+    mem = _memory("a1", category="fact", source={"kind": "user"}, title="t", body="the real body")
+    store = FakeStore([mem])
+    result = await EditMemoryTool(store).execute(public_id="a1", old="not present", new="x")
+    assert "not found verbatim" in result
+    assert "the real body" in result  # current body returned for a grounded retry
+    assert (await store.get("a1")).body == "the real body"  # never a silent change
+
+
+async def test_edit_memory_unknown_id_reports_missing() -> None:
+    assert await EditMemoryTool(FakeStore()).execute(public_id="zz", old="", new="x") == "No memory zz."
