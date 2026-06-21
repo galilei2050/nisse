@@ -43,7 +43,7 @@ app/
     assistant.py    Assistant.reply(conversation_id, text) -> str; thin TG↔agent layer over the registry
     conversations.py Conversations — registry: builds each chat's agent once and caches it
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
-    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking)
+    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking) and marks the prompt-cache breakpoint on the last turn (baski `mark_cached`); the volatile `[Context: N% used]` footer rides after it via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 
@@ -52,9 +52,9 @@ app/
     gemini.py       Gemini/Vertex impl — own client, own provider
     rubric.py       scoring criteria
 
-  memory/           long-term memory: durable owner-facts + the remember/read/edit/forget tools
+  memory/           LONG-TERM MEMORY: durable owner-facts + the recall_save/recall_read/recall_edit/recall_forget tools
     store.py        Memory model + MemoryStore (Mongo `memories`, short-id CRUD: add/overwrite/set_body/soft_delete)
-    tools.py        remember · read_memory · edit_memory · forget; index injected via the read tool's user_message()
+    tools.py        recall_save · recall_read · recall_edit · recall_forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
@@ -70,7 +70,7 @@ app/
 
   search/           SerpApi search tools — 10 leaf tools over baski's SerpApiClient
     serp_tool.py    SerpTool base (params→request→render) + shared format_hits (token-lean Markdown)
-    tools.py        google_search · google_ai_mode · google_maps_search · google_news · google_events ·
+    tools.py        google_search · google_ai_answer · google_maps_search · google_news · google_events ·
                     amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
@@ -146,7 +146,7 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 ## Tool tiers (always-on vs loaded) — built in from the start
 
 - **Always-on** (assembled in `Conversations._build`, present every turn):
-  knowledge/memory, context management (`delete_messages`), `remind`/`schedule_routine`/`cancel_schedule`.
+  knowledge/memory, context management (`prune_transcript`), `remind`/`schedule_routine`/`cancel_schedule`.
 - **Loaded**: a skill's tools, exposed only when that skill is active. The
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
@@ -169,10 +169,10 @@ every mode — only webhook mode actually fires the callback.
 `MessageHistory` (baski.agents) is the transcript / context window, not memory. In chat
 mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversation.
 
-- **ShortTerm** — per-Turn scratchpad (baski `ShortTermMemory`, `store_memory` tool);
+- **ShortTerm** — per-Turn scratchpad (baski `ShortTermMemory`, `working_note` tool);
   lives during one `Assistant.reply()`, wiped after the reply. Not persisted.
 - **LongTerm** — durable owner-facts in Mongo (`memory/`), shipped now: a flat store
-  + four tools (`remember` / `read_memory` / `edit_memory` / `forget`). **Scoped per `conversation_id`** —
+  + four tools (`recall_save` / `recall_read` / `recall_edit` / `recall_forget`). **Scoped per `conversation_id`** —
   `MemoryStore(database, conversation_id=…)` filters every read/write to one chat, so
   memories never cross conversations. The titled index is always injected (read tool's
   `user_message()`) — one pointer per memory carrying source *kind* + `updated_at` (the freshness
@@ -185,11 +185,11 @@ mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversa
   Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
   body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing
   `public_id` (what the model reads/echoes). **Correcting a memory is in place** (not delete-then-recreate,
-  which churns the id and corrupts long bodies): `remember(public_id, …)` overwrites the whole record
+  which churns the id and corrupts long bodies): `recall_save(public_id, …)` overwrites the whole record
   (`MemoryStore.overwrite` — upserts to a fresh id if the old one is gone, since the unique `public_id`
-  index forbids reuse); `edit_memory(public_id, old, new)` patches the body (`MemoryStore.set_body`) —
+  index forbids reuse); `recall_edit(public_id, old, new)` patches the body (`MemoryStore.set_body`) —
   replace `old` with `new`, or append when `old` is empty, with the always-accepted create/append paths
-  chosen so the model's first tool call rarely gets rejected. `forget` is a **soft delete** — it sets
+  chosen so the model's first tool call rarely gets rejected. `recall_forget` is a **soft delete** — it sets
   `deleted_at`; reads filter `{"deleted_at": None}` — only for facts that no longer hold. The agent
   corrects or forgets a memory itself when the dialogue shows it's stale.
 

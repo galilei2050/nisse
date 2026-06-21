@@ -36,12 +36,12 @@ class CoreMemoryTool(Tool):
         "language/name; store the operational value, e.g. timezone not 'lives in X'); CURRENT FOCUS "
         "(transient active goals; overwrite/clear as they change). "
         "ROUTING: include something ONLY if ignoring it would make you wrong on a turn that never mentions "
-        "it; if it matters only once its topic comes up, use remember instead. A memory is NOT injected "
-        "and does NOT substitute for core memory — never skip writing here because a similar memory "
-        "exists, and don't search memory first. "
+        "it; if it matters only once its topic comes up, use recall_save (LONG-TERM MEMORY) instead. A "
+        "long-term memory is NOT injected and does NOT substitute for CORE MEMORY — never skip writing here "
+        "because a similar memory exists, and don't search memory first. "
         "Pass the FULL updated text (overwrites wholesale; you always see the current content) — keep "
         "existing lines, amend. Hard-capped: if full, drop the least-relevant line (it can go to "
-        "remember). Keep tight — costs tokens every turn."
+        "recall_save). Keep tight — costs tokens every turn."
     )
 
     class Input(BaseModel):
@@ -58,7 +58,7 @@ class CoreMemoryTool(Tool):
         if len(content) > _CORE_BUDGET:
             return (
                 f"Too long: {len(content)} chars > {_CORE_BUDGET} cap. Core memory must stay small — keep "
-                f"only what shapes most turns and move the rest to remember, then resend."
+                f"only what shapes most turns and move the rest to recall_save, then resend."
             )
         await self._store.set(PromptType.CORE_MEMORY, content)
         return "Core memory updated."

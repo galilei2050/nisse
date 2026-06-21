@@ -1,7 +1,7 @@
-"""Long-term memory — durable owner-facts in Mongo.
+"""LONG-TERM MEMORY — durable owner-facts in Mongo.
 
 Each doc keeps Mongo's `ObjectId` as `_id` (via NisseDbModel) plus a short `public_id`
-the agent reads from the index and echoes back into read_memory/forget.
+the agent reads from the index and echoes back into recall_read/recall_forget.
 """
 
 import secrets
@@ -133,7 +133,7 @@ class MemoryStore:
         return Memory.model_validate(result)
 
     async def set_body(self, public_id: str, *, body: str) -> None:
-        """Overwrite one live memory's body (the agent's edit_memory patch); bump updated_at."""
+        """Overwrite one live memory's body (the agent's recall_edit patch); bump updated_at."""
         await self._collection.update_one(
             {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
             {"$set": {"body": body, "updated_at": datetime.now()}},

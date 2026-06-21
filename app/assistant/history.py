@@ -21,7 +21,8 @@ import asyncio
 from typing import Self
 
 from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
-from baski.agents.message_history import MessageHistory, Turn
+from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
+from baski.agents.pricing import effective_input_tokens
 from baski.primitives import datetime
 from baski.server import Logger
 from pydantic import BaseModel, ConfigDict
@@ -181,36 +182,32 @@ class MongoMessageHistory(MessageHistory):
         self._turn.messages.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=text)]))
 
     def format_for_api(self) -> list[MessageParam]:
-        """Render the transcript for the Anthropic API with [Turn N] markers and a context footer."""
+        """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
         result: list[MessageParam] = []
         for turn in self.turns:
             result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=f"[Turn {turn.id}]")]))
             result.extend(_strip_thinking(m) for m in turn.messages)
 
-        if self._last_input_tokens:
-            pct = int(self._last_input_tokens / self.max_tokens * 100)
-            remaining = self.max_tokens - self._last_input_tokens
-            result.append(
-                MessageParam(
-                    role="user",
-                    content=[
-                        TextBlockParam(type="text", text=f"[Context: {pct}% used — {remaining:,} tokens remaining]")
-                    ],
-                )
-            )
+        if result:
+            result[-1] = mark_cached(result[-1])
         return result
+
+    def context_status(self) -> MessageParam | None:
+        """The context-usage footer, rendered by the shared helper from this history's counters."""
+        return context_status(self._last_input_tokens, self.max_tokens)
 
     def truncate(self, usage: Usage) -> None:
         """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
-        self._last_input_tokens = usage.input_tokens
-        if usage.input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self.turns:
+        context_tokens = effective_input_tokens(usage)
+        self._last_input_tokens = context_tokens
+        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self.turns:
             return
         count = max(int(len(self.turns) * _TRUNCATE_PERCENTAGE), 1)
         dropped, self.turns = self.turns[:count], self.turns[count:]
         self._dropped.update(turn.id for turn in dropped)
         self._logger.info(
             "Truncated message history",
-            labels={"inputTokens": usage.input_tokens, "turnsRemoved": count, "turnsAfter": len(self.turns)},
+            labels={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self.turns)},
         )
 
     async def delete_turns(self, turn_ids: list[int]) -> int:

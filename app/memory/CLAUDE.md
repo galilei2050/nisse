@@ -1,8 +1,8 @@
 # memory/ — recalled-on-demand long-term memory (the long tail)
 
-Durable owner knowledge in Mongo `memories`, scoped per `conversation_id`. Tools: `remember` /
-`read_memory` / `edit_memory` / `forget`. Only a titled **index** is injected every turn (one pointer
-line per memory); the **body** loads on demand via `read_memory(public_id)`.
+Durable owner knowledge in Mongo `memories`, scoped per `conversation_id`. Tools: `recall_save` /
+`recall_read` / `recall_edit` / `recall_forget`. Only a titled **index** is injected every turn (one pointer
+line per memory); the **body** loads on demand via `recall_read(public_id)`.
 
 This is one of TWO stores. Its sibling is **core memory** (`app/prompts/`, `update_core_memory`) — a
 small block injected into the system prompt *every turn*. The split, and the rule for what goes
@@ -30,7 +30,7 @@ Worked examples (these drove the design):
 
 - **Recall-on-demand is wrong for standing rules.** A behavioural rule the agent has to *remember to
   recall* is one it will violate — observed live: the owner said "answer in feminine", the agent
-  `read_memory`'d an old preference, concluded "already saved", and never applied it. Standing rules
+  `recall_read`'d an old preference, concluded "already saved", and never applied it. Standing rules
   must be always-on; that's core memory.
 - **Always-on is expensive, so core is small and capped.** Every core char costs tokens on every
   turn. `update_core_memory` is hard-capped (`_CORE_BUDGET`); when full the agent must drop the
@@ -49,5 +49,5 @@ cap just rejects oversize writes and the agent trims; revisit if the manual trim
 
 ## Tiers (≠ conversation transcript)
 
-`MessageHistory` (baski) is the transcript/context window, not memory. `ShortTerm` (`store_memory`)
+`MessageHistory` (baski) is the transcript/context window, not memory. `ShortTerm` (`working_note`)
 is a per-reply scratchpad. `LongTerm` is this module. `Core memory` is `app/prompts/`.
