@@ -10,7 +10,7 @@ checking on any change:
 
 Usage + expectation-first test cases: `app/CLAUDE.md` → "Manual probe", `docs/memory-test-cases.md`.
 
-    python -m app.probe --user-id 1 --message "remember that I love chocolate"
+    python -m app.probe --user-id 1 --message "save that I love chocolate"
 """
 
 import argparse
@@ -70,6 +70,14 @@ def _print_trace(trace: TraceRecord) -> None:
 
     result = trace.result
     print("\n=== ANSWER ===\n" + ((result and result.response) or "<no answer>"))
+
+    print("\n=== PROMPT CACHE (per turn) ===")
+    for turn in trace.turns:
+        print(
+            f"turn {turn.turn_number}: input={turn.input_tokens} "
+            f"cache_read={turn.cache_read_tokens} cache_write={turn.cache_creation_tokens}"
+        )
+
     if result:
         print(
             f"\n=== STATS ===\nturns={result.turn_count} tool_calls={result.tool_call_count} "
@@ -97,6 +105,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
         await assistant.setup()
         result = await assistant.run(conversation_id=user_id, text=message)
+        await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
 
     trace = TraceRecord.model_validate_json((traces_dir / f"{result.trace_id}.json").read_text())
     _print_trace(trace)

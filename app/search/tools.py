@@ -21,7 +21,7 @@ class GoogleSearchTool(SerpTool):
         "Search Google and return organic results (links + snippets). "
         "Use for source hunting, site-specific searches (site:example.com), or when "
         "the owner wants the actual URLs. "
-        "For a synthesized answer with citations, use google_ai_mode instead."
+        "For a synthesized answer with citations, use google_ai_answer instead."
     )
     engine = "google"
 
@@ -57,8 +57,8 @@ class GoogleAiModeTool(SerpTool):
     Best for "explain / compare / what's the best…" questions.
     """
 
-    name = "google_ai_mode"
-    one_line = "Ask Google AI Mode for a synthesized answer with citations"
+    name = "google_ai_answer"
+    one_line = "Ask Google's AI for a synthesized answer with citations"
     description = (
         "Google AI Mode returns one synthesized answer (not a list of links) plus source references. "
         "Use for 'explain X', 'compare A and B', 'what's the best…' questions. "
