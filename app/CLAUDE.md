@@ -57,6 +57,10 @@ app/
     tools.py        remember · read_memory · edit_memory · forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
+  prompts/          living system-prompt fragments the bot maintains, per conversation, by type
+    store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
+    tools.py        update_preferences — owner standing rules; injected into the system EVERY turn via the tool's async system_prompt(), and overwritten wholesale by the agent
+
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
     store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
     tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
@@ -88,7 +92,11 @@ app/
 ```
 
 `judge/`, `curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below
-describe them. Shipped today: `chat`, `assistant`, `memory`, `scheduling`, `search`, `shared`.
+describe them. Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `shared`.
+
+`Tool.system_prompt()` (baski) is **async and re-read every turn** (symmetric with `user_message()`);
+the agent reassembles its system prompt each turn, so a tool can inject live content — `prompts/`
+uses this to keep the owner-preference block always current.
 
 ## Module shape
 
@@ -170,6 +178,9 @@ mode it's `MongoMessageHistory` (`assistant/history.py`), persisted per conversa
   `user_message()`) — one pointer per memory carrying source *kind* + `updated_at` (the freshness
   date, so an edited memory doesn't look stale); the body and the external `source.ref`/url are
   fetched on demand by `public_id` (kept out of the every-turn index to save tokens).
+  Behavioral/identity preferences (how to behave, how to address the owner) do NOT go here — they
+  live in `prompts/` (`update_preferences`), always-on in the system prompt. LongTerm is for discrete
+  `fact`/`event` recalled on demand; the `preference` category remains only for back-compat with old rows.
   Each memory carries `category ∈ {fact,preference,event}`, `source ∈ {user,external,agent}`,
   body, audit timestamps. **Two ids:** durable DB `id` (Mongo ObjectId) vs short agent-facing
   `public_id` (what the model reads/echoes). **Correcting a memory is in place** (not delete-then-recreate,

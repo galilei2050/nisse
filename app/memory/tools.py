@@ -29,8 +29,9 @@ _REMEMBER_GUIDANCE = (
     "stated preferences, dated events. Tool output, research, task steps → store_memory, not here; "
     "unsure → skip (missed fact = one question; saved scrap pollutes every turn). Check index first; to "
     "correct, pass that public_id here to overwrite whole (or edit_memory for a small change to a long "
-    "body) — never duplicate. category: fact = stable truth; preference = how they like things; event = "
-    'dated. SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
+    "body) — never duplicate. category: fact = stable truth; event = dated. How the owner wants you to "
+    "behave or address them → update_preferences, not here. "
+    'SKIP e.g. "debugging deploy script", "flight BCN→LIS €78".\n'
     "Context auto-trims: pure tool turns drop after each reply, old turns trimmed as window fills — so a "
     "durable fact from a tool result is gone next turn unless you remember it here now."
 )
@@ -97,7 +98,7 @@ class RememberTool(Tool):
             return f"Updated memory {memory.public_id}."
         return f"Saved new memory {memory.public_id}."  # the id was gone; a fresh one was created
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """The long-term save policy."""
         return _REMEMBER_GUIDANCE
 
@@ -178,7 +179,7 @@ class EditMemoryTool(Tool):
         await self._store.set_body(public_id, body=body)
         return f"Edited memory {public_id}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When and how to patch a body in place."""
         return _EDIT_GUIDANCE
 
@@ -203,6 +204,6 @@ class ForgetTool(Tool):
         """Soft-delete the memory and confirm."""
         return f"Forgot memory {public_id}." if await self._store.soft_delete(public_id) else f"No memory {public_id}."
 
-    def system_prompt(self) -> str:
+    async def system_prompt(self) -> str:
         """When to forget."""
         return _FORGET_GUIDANCE
