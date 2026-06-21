@@ -20,7 +20,16 @@ infrastructure/services/cloud_run_backend.py) with every entry point sharing one
 import asyncio
 from typing import Self
 
-from anthropic.types import ContentBlock, MessageParam, TextBlock, TextBlockParam, ToolResultBlockParam, Usage
+from anthropic.types import (
+    ContentBlock,
+    MessageParam,
+    RedactedThinkingBlock,
+    TextBlock,
+    TextBlockParam,
+    ThinkingBlock,
+    ToolResultBlockParam,
+    Usage,
+)
 from baski.agents.message_history import MessageHistory, Turn
 from baski.primitives import datetime
 from baski.server import Logger
@@ -76,14 +85,16 @@ def _is_text_block(block: object) -> bool:
     return isinstance(block, dict) and block.get("type") == "text"
 
 
-_THINKING_TYPES = frozenset({"thinking", "redacted_thinking"})
+def _is_thinking_block(block: object) -> bool:
+    """True if a content block is a thinking or redacted-thinking block.
 
-
-def _block_type(block: object) -> str | None:
-    """A content block's discriminator, whether it's an SDK model or a plain dict (loaded from Mongo)."""
-    if isinstance(block, dict):
-        return block.get("type")
-    return getattr(block, "type", None)
+    Mirror of `_is_text_block`: a fresh assistant block is an SDK `ThinkingBlock`/`RedactedThinkingBlock`
+    (isinstance, type-checked); a block loaded from Mongo is the matching param dict whose discriminator
+    is `type` (the SDK params are TypedDicts, not runtime classes, so isinstance can't reach them).
+    """
+    if isinstance(block, ThinkingBlock | RedactedThinkingBlock):
+        return True
+    return isinstance(block, dict) and block.get("type") in ("thinking", "redacted_thinking")
 
 
 def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
@@ -98,7 +109,7 @@ def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 —
     if isinstance(content, str):
         return message
     blocks = list(content)
-    kept = [b for b in blocks if _block_type(b) not in _THINKING_TYPES]
+    kept = [b for b in blocks if not _is_thinking_block(b)]
     if len(kept) == len(blocks):
         return message
     return MessageParam(role=message["role"], content=kept)
