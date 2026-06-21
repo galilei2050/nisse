@@ -33,6 +33,9 @@ tmp/
 
 node_modules/
 
+# Throwaway scratch scripts / data (see CLAUDE.md)
+scratch/
+
 # Reference clones of the projects cited in app/IDEAS.md (prior art, not versioned here)
 .references/
 .scratch/

@@ -34,7 +34,7 @@ from app.shared.blocks import block_type
 from app.shared.models import NisseDbModel
 
 _COLLECTION = "conversation_turns"
-_MAX_TOKENS = 64_000
+_MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long

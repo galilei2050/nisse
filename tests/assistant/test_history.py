@@ -11,9 +11,11 @@ from types import SimpleNamespace
 from anthropic.types import Usage
 from baski.primitives import datetime as dt
 
+from baski.agents.tools.delete_messages import DeleteMessagesTool
+
 from app.assistant.history import MongoMessageHistory
 
-_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 64_000 → triggers truncate
+_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → triggers truncate
 
 
 class _FakeCursor:
@@ -207,6 +209,26 @@ async def test_delete_turns_persists() -> None:
     cold = _history(col)
     await cold.load()
     assert [t.id for t in cold.turns] == [1, 3]
+
+
+async def test_prune_transcript_keep_last_drops_older_turns_durably() -> None:
+    """prune_transcript(keep_last=N) drops all but the last N turns; the prune persists across reload."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    for i in range(1, 6):
+        _add_answer(hist, str(i))
+    await hist.flush()
+    assert _active_ids(col) == [1, 2, 3, 4, 5]
+
+    result = await DeleteMessagesTool(hist).execute(keep_last=2)
+    assert "Deleted 3" in result  # turns 1,2,3 dropped
+    await hist.flush()
+    assert _active_ids(col) == [4, 5]
+
+    cold = _history(col)
+    await cold.load()
+    assert [t.id for t in cold.turns] == [4, 5]
 
 
 async def test_turn_marker_carries_utc_send_time_on_first_turn_and_after_gap() -> None:
