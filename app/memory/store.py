@@ -8,7 +8,7 @@ import secrets
 from enum import StrEnum
 
 from baski.primitives import datetime
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -69,6 +69,12 @@ class Memory(NisseDbModel):
     category: MemoryCategory
     source: MemorySource
     body: str
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _coerce_legacy_category(cls, v: object) -> object:
+        """Read rows written before `preference` was dropped as `fact`, so legacy data still loads."""
+        return MemoryCategory.FACT if v == "preference" else v
 
 
 class MemoryStore:
