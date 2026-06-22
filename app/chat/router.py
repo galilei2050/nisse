@@ -3,7 +3,7 @@
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
 from aiogram.types import Message
-from baski.agents import AgentRefusalError
+from baski.agents import AgentProviderUnavailableError, AgentRefusalError
 
 from app.assistant import Assistant
 from app.chat.progress import TelegramProgress
@@ -11,6 +11,10 @@ from app.chat.progress import TelegramProgress
 _NON_TEXT_REPLY = "Send me a text message."
 _REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
 _ERROR_REPLY = "Something went wrong on my side — please try again."
+_API_DOWN_REPLY = (
+    "Anthropic's API is having problems right now, so I can't reply. Please try again shortly.\n"
+    "https://status.claude.com/"
+)
 
 
 def build_router(*, assistant: Assistant) -> Router:
@@ -30,6 +34,8 @@ def build_router(*, assistant: Assistant) -> Router:
             await progress.finish(answer)
         except AgentRefusalError:
             await progress.finish(_REFUSAL_REPLY)
+        except AgentProviderUnavailableError:
+            await progress.finish(_API_DOWN_REPLY)
         except Exception:
             await progress.finish(_ERROR_REPLY)
             raise
