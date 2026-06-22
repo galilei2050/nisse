@@ -51,9 +51,10 @@ probe:
 	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
 
 # Companion to probe: dump the long-term `memories` collection (live + soft-deleted).
+# `make memories U=<conversation_id>` for one chat in full; `make memories` groups ALL chats by id.
 .PHONY: memories
 memories:
-	uv run python scripts/show_memories.py
+	uv run python scripts/show_memories.py $(U)
 
 # Companion to probe: dump one conversation's `conversation_turns` (active + soft-deleted).
 # `make turns U=<conversation_id>`. See docs/history-test-cases.md.
@@ -80,7 +81,7 @@ typecheck:
 # Functional tests — pure, no running backend. Part of `make test` / CI.
 .PHONY: test-backend
 test-backend:
-	uv run pytest tests/backend/ tests/memory/ tests/assistant/
+	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
 # Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot

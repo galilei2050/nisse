@@ -57,6 +57,10 @@ app/
     tools.py        recall_save · recall_read · recall_edit · recall_forget; index injected via the read tool's user_message()
     recall.py       (future) Active Memory — bounded pre-reply recall over LongTerm
 
+  lists/            ARTIFACT TIER: named mutable lists (shopping/todo/watchlist) — NOT memory
+    store.py        ItemList + ListStore (Mongo `lists`, one doc per (conversation_id, name); case-folded name, deduped items, in-place edit, soft-delete)
+    tools.py        list_edit (add/remove/clear in one call) · list_show; list-name index injected via list_show's user_message()
+
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
     tools.py        update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity + current focus); injected into the system EVERY turn via the tool's async system_prompt(), overwritten wholesale, size-capped so the agent keeps it lean
@@ -198,6 +202,18 @@ uniform seam ShortTerm, the memory index, and future skills all share.
 
 Future: a curated always-hot subset + Active Memory recall (`memory/recall.py`) + the
 curator promoting/expiring facts. Rationale and prior art: `IDEAS.md`.
+
+## ARTIFACT tier — lists (`lists/`), NOT a memory tier
+
+A mutable named collection the owner edits over time (shopping, todo, watchlist) is an **artifact**,
+not memory. It lives in `lists/` (Mongo `lists`, scoped per `conversation_id`), with `list_edit`
+(add/remove/clear) + `list_show` — two tools, kept minimal because every tool's schema rides the
+context window on every turn (4 verbs → 2 saved ~268 tok/turn, measured). **Do not put lists in long-term memory** — a list
+isn't a discrete `fact`/`event`, and storing one in `memories` produced duplicated, contradicting
+copies (the bug that motivated this tier). The routing the agent follows: *something you add to and
+cross off* → a list; *an inert fact recalled by topic* → memory; *a behaviour/identity rule* → core.
+Reminders/routines are already their own artifact store (`scheduling/`, `ScheduledTask`). See
+`app/lists/CLAUDE.md`.
 
 ## Manual probe (end-to-end testing — any feature)
 
