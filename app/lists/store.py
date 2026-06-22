@@ -7,6 +7,8 @@ not a thing you add to and cross off. One canonical doc per `(conversation_id, n
 edited in place.
 """
 
+from dataclasses import dataclass, field
+
 from baski.primitives import datetime
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
@@ -21,12 +23,35 @@ def _norm_name(name: str) -> str:
     return name.strip().lower()
 
 
+def _matches(items: list[str], term: str) -> list[str]:
+    """Items a removal term hits: the exact (case-insensitive) match if any, else substring matches.
+
+    The caller removes only when this returns exactly one (unique); >1 is ambiguous, 0 is missing.
+    """
+    low = term.lower()
+    exact = [i for i in items if i.lower() == low]
+    return exact or [i for i in items if low in i.lower()]
+
+
 class ItemList(NisseDbModel):
     """One named list of string items, scoped to a conversation. Lifecycle: a mutable data record."""
 
     conversation_id: int
     name: str  # canonical (normalized) name, unique with conversation_id
     items: list[str]
+
+
+@dataclass
+class RemoveResult:
+    """Outcome of a `remove` — which terms hit one item, which were ambiguous, which matched nothing.
+
+    Lets the tool tell the model to retry an ambiguous term with a more specific fragment.
+    """
+
+    updated: ItemList | None  # the list after removal, or None if no such live list
+    removed: list[str] = field(default_factory=list)  # the items actually dropped
+    ambiguous: list[str] = field(default_factory=list)  # terms whose fragment matched >1 item (left intact)
+    missing: list[str] = field(default_factory=list)  # terms matching no item
 
 
 class ListStore:
@@ -86,19 +111,38 @@ class ListStore:
         )
         return ItemList.model_validate(doc)
 
-    async def remove(self, name: str, items: list[str]) -> ItemList | None:
-        """Remove the given items (case-insensitive) from the named list; None if no such live list."""
+    async def remove(self, name: str, terms: list[str]) -> RemoveResult:
+        """Remove items matched by each term: exact (case-insensitive) first, else a UNIQUE substring.
+
+        A term that matches one item verbatim drops it; otherwise a term that occurs in exactly one
+        item drops that item — so the agent can remove a long sentence-item by a short distinctive
+        fragment. A term that hits several items (ambiguous) or none is left alone and reported, so the
+        agent retries with something more specific. `updated` is None if there is no such live list.
+        """
         existing = await self.get(name)
         if existing is None:
-            return None
-        drop = {i.lower() for i in items}
-        kept = [i for i in existing.items if i.lower() not in drop]
-        await self._collection.update_one(
-            {"conversation_id": self._conversation_id, "name": _norm_name(name), "deleted_at": None},
-            {"$set": {"items": kept, "updated_at": datetime.now()}},
-        )
-        existing.items = kept
-        return existing
+            return RemoveResult(updated=None)
+
+        result = RemoveResult(updated=existing)
+        drop_targets: set[str] = set()
+        for term in terms:
+            hits = _matches(existing.items, term)
+            if len(hits) == 1:
+                drop_targets.add(hits[0])
+                result.removed.append(hits[0])
+            elif len(hits) > 1:
+                result.ambiguous.append(term)
+            else:
+                result.missing.append(term)
+
+        if drop_targets:
+            kept = [i for i in existing.items if i not in drop_targets]
+            await self._collection.update_one(
+                {"conversation_id": self._conversation_id, "name": _norm_name(name), "deleted_at": None},
+                {"$set": {"items": kept, "updated_at": datetime.now()}},
+            )
+            existing.items = kept
+        return result
 
     async def clear(self, name: str) -> bool:
         """Soft-delete the whole named list; True if a live one was found."""

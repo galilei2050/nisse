@@ -88,14 +88,36 @@ async def test_same_name_different_case_is_one_list() -> None:
     assert lists[0].items == ["milk", "bread"]
 
 
-async def test_remove_is_case_insensitive_and_missing_list_is_none() -> None:
+async def test_remove_exact_is_case_insensitive_and_missing_list() -> None:
     col = _FakeCollection()
     store = _store(col)
     await store.add("shopping", ["Milk", "eggs"])
     result = await store.remove("shopping", ["MILK"])
-    assert result is not None
-    assert result.items == ["eggs"]
-    assert await store.remove("todo", ["x"]) is None
+    assert result.updated is not None
+    assert result.updated.items == ["eggs"]
+    assert result.removed == ["Milk"]
+    assert (await store.remove("todo", ["x"])).updated is None  # no such list
+
+
+async def test_remove_by_unique_fragment_drops_it_but_ambiguous_is_left() -> None:
+    col = _FakeCollection()
+    store = _store(col)
+    await store.add(
+        "contradictions",
+        ["Wants friends but loves coding alone", "Wants an independent yet available partner", "Likes acro"],
+    )
+    # 'Wants' occurs in two items → ambiguous, nothing removed, reported for retry (check while both present)
+    amb = await store.remove("contradictions", ["Wants"])
+    assert amb.removed == []
+    assert amb.ambiguous == ["Wants"]
+    assert len(amb.updated.items) == 3
+    # a unique fragment removes the one item that contains it
+    one = await store.remove("contradictions", ["coding alone"])
+    assert one.removed == ["Wants friends but loves coding alone"]
+    assert "Wants friends but loves coding alone" not in one.updated.items
+    # a fragment matching nothing is reported missing
+    miss = await store.remove("contradictions", ["pizza"])
+    assert miss.missing == ["pizza"]
 
 
 async def test_list_edit_tool_dispatches_add_remove_clear() -> None:

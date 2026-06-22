@@ -14,12 +14,10 @@ from pydantic import BaseModel, Field
 from app.lists.store import ItemList, ListStore
 
 _LIST_GUIDANCE = (
-    "LISTS are mutable named collections the owner keeps and edits — shopping, todo, watchlist, "
-    "packing. Use list_edit/list_show for ANYTHING the owner calls a list or adds items to over time. "
-    "Do NOT put a list in long-term memory (recall_save) — a list is an artifact you add to and cross "
-    'off, not a durable fact. "Add milk" → list_edit(name="shopping", add=["milk"]); "got the eggs" → '
-    'list_edit(name="shopping", remove=["eggs"]); "what\'s on my list" → list_show. Pick a short '
-    "lower-case name and reuse it (the same name always edits the same list)."
+    "LISTS = collections the owner adds to and crosses off (shopping, todo, or a growing log like the "
+    "owner's contradictions). Use list_edit/list_show, not long-term memory. Remove by the exact item "
+    "or a distinctive fragment (dropped only if it uniquely matches; else you're asked to be specific). "
+    "Whole items only — to revise a word inside one, use a memory body. Reuse one short lower-case name."
 )
 
 _INDEX_HEADER = (
@@ -39,9 +37,8 @@ class ListEditTool(Tool):
     name = "list_edit"
     one_line = "LIST: add and/or remove items on a named list, or clear it (creates it on first add)"
     description = (
-        "Edit a named list (e.g. shopping, todo): add and/or remove items in one call; creates the "
-        "list on first add. Set clear=true to delete the whole list instead. Same name always edits "
-        "the same list."
+        "Add and/or remove items on a named list (creates it on first add). Remove by the exact item "
+        "or a distinctive fragment of a longer one (unique match only). clear=true deletes the list."
     )
 
     class Input(BaseModel):
@@ -49,7 +46,11 @@ class ListEditTool(Tool):
 
         name: str = Field(description="Short list name, reused to edit the same list (e.g. 'shopping')")
         add: list[str] = Field(default_factory=list, description="Items to add; duplicates already present are skipped")
-        remove: list[str] = Field(default_factory=list, description="Items to remove (matched case-insensitively)")
+        remove: list[str] = Field(
+            default_factory=list,
+            description="Items to remove: the exact item, or a short distinctive fragment of a longer item "
+            "(removed only when it uniquely matches one item)",
+        )
         clear: bool = Field(default=False, description="Delete the entire list (ignores add/remove)")
 
     def __init__(self, store: ListStore) -> None:
@@ -59,17 +60,25 @@ class ListEditTool(Tool):
     async def execute(
         self, *, name: str, add: list[str] | None = None, remove: list[str] | None = None, clear: bool = False
     ) -> str:
-        """Clear, or apply add then remove, and confirm the resulting list."""
+        """Clear, or apply add then remove, and confirm the resulting list (+ any remove notes)."""
         if clear:
             return f"Cleared list '{name}'." if await self._store.clear(name) else f"No list '{name}'."
-        result: ItemList | None = None
+        current: ItemList | None = None
+        notes: list[str] = []
         if add:
-            result = await self._store.add(name, add)
+            current = await self._store.add(name, add)
         if remove:
-            result = await self._store.remove(name, remove)
-        if result is None:  # no add/remove given, or remove on a missing list
-            result = await self._store.get(name)
-        return _summary(result) if result else f"No list '{name}'."
+            outcome = await self._store.remove(name, remove)
+            current = outcome.updated
+            if outcome.ambiguous:
+                notes.append(f"ambiguous (matches several — be more specific): {', '.join(outcome.ambiguous)}")
+            if outcome.missing:
+                notes.append(f"not on the list: {', '.join(outcome.missing)}")
+        if current is None:  # no add/remove given, or remove on a missing list
+            current = await self._store.get(name)
+        if current is None:
+            return f"No list '{name}'."
+        return _summary(current) + (f"\n({'; '.join(notes)})" if notes else "")
 
     async def system_prompt(self) -> str:
         """The list-vs-memory routing policy (the load-bearing rule against the duplication bug)."""

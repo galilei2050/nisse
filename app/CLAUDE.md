@@ -116,6 +116,13 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
   a narrow domain SERVICE, never raw clients/transport** — scheduling tools get
   `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + URL. The service is the
   seam that keeps the tool ignorant of how work is dispatched.
+  - **`execute` must return a clear, actionable result.** On success, state plainly WHAT was done (the
+    new state). On failure or partial success, say WHAT went wrong and how to fix it so the model can
+    self-correct on the next turn — e.g. "ambiguous, several match — be more specific", not a bare
+    "failed" or a silent no-op. The result string is the model's only feedback channel.
+  - **Keep `description` / `system_prompt` / field descriptions CONCISE.** They ride the context
+    window on EVERY turn (measured tax — see `docs/context-pruning.md`). Every word must earn its slot;
+    cut examples and restatement, keep the load-bearing rule.
 - **Skill** = a tool bundle (and optionally a sub-agent) the toolset can load.
   Two kinds: **code skills** = a new `skills/<x>/` + one line in `skills/__init__.py`
   (dev-authored, git-versioned); **learned skills** = data specs (name + prompt +

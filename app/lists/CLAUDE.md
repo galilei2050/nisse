@@ -29,9 +29,14 @@ The routing the agent applies:
 
 - One canonical doc per `(conversation_id, name)` — the name is **case-folded** (`Shopping` ≡
   `shopping`) so a list is never forked by capitalization.
-- Items are plain strings, **de-duplicated case-insensitively** on add; removal matches
-  case-insensitively. No per-item "done" flag yet — add it only when a real need appears.
-- `list_clear` soft-deletes (NisseDbModel `deleted_at`); reads filter `{"deleted_at": None}`.
+- Items are plain strings, **de-duplicated case-insensitively** on add.
+- **Removal** matches the exact item, else a **unique substring** — so a long sentence-item is removed
+  by a short distinctive fragment. A fragment hitting several items is **ambiguous** (left intact,
+  reported so the model retries); hitting none is **missing** (reported). `RemoveResult` carries
+  removed/ambiguous/missing so `list_edit` can give the model clear, actionable feedback.
+- This makes lists usable for append-mostly *prose* logs (e.g. contradictions), but it can't edit a
+  word *inside* an item — for that, a long-term memory body (`recall_edit`) is the right home.
+- `clear=true` soft-deletes the whole list (NisseDbModel `deleted_at`); reads filter `{"deleted_at": None}`.
 
 Mirrors the `app/memory` store/tool pattern; wired in `Conversations._build_list_tools`; index
 ensured in `backend.py`.
