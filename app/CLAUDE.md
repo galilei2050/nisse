@@ -63,7 +63,7 @@ app/
 
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
-    tools.py        update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity + current focus); injected into the system EVERY turn via the tool's async system_prompt(), overwritten wholesale, size-capped so the agent keeps it lean
+    tools.py        update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity + current focus); injected into the system EVERY turn via the tool's async system_prompt(); patched in place (append/replace/remove a fragment, mirrors recall_edit) so the agent amends a line instead of resending the whole block, size-capped so it stays lean
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
     store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
