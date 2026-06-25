@@ -71,22 +71,26 @@ system the same way the memory index reaches the user block: the tool that owns 
 `CoreMemoryTool` (`update_core_memory`), holding a `PromptStore`, mirrors `RecallMemoryTool`
 (which owns the memory index): it both injects the content and edits it.
 
-```python
-async def system_prompt(self) -> str:        # injected into system every turn, read live
-    content = await self._store.get(PromptType.CORE_MEMORY)
-    return f"## Owner preferences (standing instructions — always follow)\n{content}" if content else ""
+It both injects the content (`system_prompt()`, read live every turn) and edits it (`execute`).
 
-async def execute(self, *, content: str) -> str:   # overwrite the whole document
-    await self._store.set(PromptType.CORE_MEMORY, content)
-    return "Preferences updated."
-```
+**Patch-in-place**, not overwrite-whole (decision reversed — see below). `execute(old, new)` mirrors
+`recall_edit`: append `new` when `old` is empty, replace `old` with `new`, or remove `old` when `new`
+is empty; an `old` that doesn't match verbatim changes nothing and echoes the current block to retry
+against. The size cap applies to the *result*. Tool guidance: persist standing rules about behavior,
+address form, formatting, or identity that shapes behavior; CORE is owner-knowledge only — agent
+operating procedure (context pruning, tool workflows) does NOT belong here. Keep it tight — pure
+per-turn overhead, a rulebook not a fact dump (discrete facts still go to `recall_save`). No
+`Conversation.reply` change is needed — the tool owns it end to end.
 
-**Overwrite-whole**, not patch: the current document is in the system every turn, so the model reads
-it, applies the correction, and writes the full updated version — no fragile `old`-string matching,
-no forget-then-re-add. Tool guidance: persist standing instructions about behavior, address form,
-formatting conventions, or identity facts that shape behavior; when correcting, **preserve existing
-rules and amend**. Keep it tight — it's pure per-turn overhead, a rulebook not a fact dump (discrete
-facts still go to `remember`). No `Conversation.reply` change is needed — the tool owns it end to end.
+### Why patch replaced overwrite-whole
+
+The original choice (decision #2 below) was overwrite-whole, to avoid fragile `old`-string matching.
+Real traffic showed that cost dominated the benefit: every rule addition resent the full ~2400-char
+block, repeatedly tripped the cap (~⅓ of `update_core_memory` calls rejected, forcing a
+trim-and-resend round-trip), and the lossy hand-compression dropped or weakened standing rules — the
+exact "rules don't stick" failure this store exists to fix. `recall_edit` already proves patch works
+in this codebase (its verbatim-match-or-echo fallback is safe and the agent recovers in one retry),
+so core memory now uses the same shape: the agent appends one line instead of rewriting the block.
 
 ## Relationship to `memories`, and migration
 
@@ -105,7 +109,9 @@ time the owner states a standing preference and the model calls `update_core_mem
 ## Decisions to confirm
 
 1. **Async per-turn `system_prompt()` refactor** (recommended) vs a narrower workaround.
-2. **Overwrite-whole** editing (recommended) vs patch/append semantics.
+2. ~~**Overwrite-whole** editing vs patch/append semantics.~~ **Resolved: patch/append** — overwrite-whole
+   was tried and reversed once real traffic showed the resend-churn / cap-rejection / lossy-compression
+   cost (see "Why patch replaced overwrite-whole" above).
 3. **Retire `preference`** memory category + migrate (recommended) vs keep both stores.
 
 ## Build order (two PRs, baski first — `check-baski` + `@main` pin)

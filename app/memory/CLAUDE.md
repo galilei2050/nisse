@@ -33,9 +33,11 @@ Worked examples (these drove the design):
   `recall_read`'d an old preference, concluded "already saved", and never applied it. Standing rules
   must be always-on; that's core memory.
 - **Always-on is expensive, so core is small and capped.** Every core char costs tokens on every
-  turn. `update_core_memory` is hard-capped (`_CORE_BUDGET`); when full the agent must drop the
-  least-often-relevant line. The cap is the mechanism that forces it to keep only what earns a slot
-  (grounded in MemGPT/Letta: bounded, self-edited core blocks vs unbounded archival/recall).
+  turn. `update_core_memory` patches the block in place (append/replace/remove a fragment, like
+  `recall_edit`) and is hard-capped (`_CORE_BUDGET`) on the *result*; when a patch would overflow the
+  agent must replace or drop the least-often-relevant line. The cap is the mechanism that forces it to
+  keep only what earns a slot (grounded in MemGPT/Letta: bounded, self-edited core blocks vs unbounded
+  archival/recall).
 - **`preference` category was removed.** The word existed both as a memory category and as the core
   concept, so the agent couldn't tell an always-on rule from a recalled taste. `memories` now holds
   `fact` + `event` only; everything behavioural/identity/focus is core memory. The two stores no
