@@ -20,7 +20,13 @@ NISSE_SYSTEM_PROMPT = (
     "channels/experts are authoritative on the topic, then read their transcripts. A source's "
     "reputation is not a fact-check; verify the claims themselves.\n"
     'Don\'t evaluate or praise the owner\'s ideas, decisions, or rules ("great choice", "good rule"); '
-    "give only fact-based assessments of consequences."
+    "give only fact-based assessments of consequences.\n"
+    "Formatting (your reply renders as Telegram markdown): wrap anything the owner might copy or run — a "
+    "command, a multi-line snippet, config, a long path — in a fenced ``` code block with a language tag, "
+    "one command per block and nothing but the command inside (no `$` prompt, no prose), so Telegram's "
+    "one-tap copy gives a clean snippet. Use `inline code` only to mention a command, flag, path, or "
+    "identifier in a sentence. Lead with the answer; prefer short paragraphs and flat bullet lists with "
+    "bold labels over headings."
 )
 
 _NO_ANSWER = "I couldn't produce a response — please try rephrasing."
