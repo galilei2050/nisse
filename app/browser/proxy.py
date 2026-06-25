@@ -10,9 +10,9 @@ Ban detection is the caller's job: when a proxy gets blocked on a site, call `ma
 the next assignment for that site rotates. There is no reliable automatic "you are banned" signal.
 """
 
-import os
 from urllib.parse import urlsplit
 
+from baski.env import get_env
 from pydantic import BaseModel
 
 
@@ -25,9 +25,13 @@ class ProxyServer(BaseModel):
 
 
 def parse_proxies(text: str) -> list[ProxyServer]:
-    """Parse Webshare `host:port:username:password` lines into proxies; ignore blanks/comments."""
+    """Parse Webshare `host:port:username:password` proxies into a list; ignore blanks/comments.
+
+    Accepts newline- or comma-separated entries — the Webshare download is newline-separated, but a
+    single-line `.env` value (the Makefile can't carry multiline) joins them with commas.
+    """
     proxies: list[ProxyServer] = []
-    for raw in text.splitlines():
+    for raw in text.replace(",", "\n").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -77,8 +81,5 @@ class ProxyPool:
 
 
 def load_proxy_pool() -> ProxyPool:
-    """Build the pool from BROWSER_PROXIES; unset/empty means no proxying (empty pool).
-
-    Optional config, so this reads os.environ directly rather than get_env, which rejects empty values.
-    """
-    return ProxyPool(parse_proxies(os.environ.get("BROWSER_PROXIES", "")))
+    """Build the pool from the required BROWSER_PROXIES env (Webshare host:port:user:pass lines)."""
+    return ProxyPool(parse_proxies(str(get_env("BROWSER_PROXIES"))))

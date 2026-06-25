@@ -32,6 +32,12 @@ def test_password_with_colons_is_kept_whole() -> None:
     assert proxy.password == "p:a:s:s"
 
 
+def test_comma_separated_entries() -> None:
+    # single-line .env value: the Makefile can't carry a multiline value, so proxies are comma-joined
+    proxies = parse_proxies("1.1.1.1:80:u:p,2.2.2.2:80:u:p")
+    assert [p.server for p in proxies] == ["http://1.1.1.1:80", "http://2.2.2.2:80"]
+
+
 def test_sticky_per_host() -> None:
     pool = _pool()
     first = pool.for_url("https://www.safeway.com/shop")
@@ -69,7 +75,8 @@ def test_empty_pool_returns_none() -> None:
     assert ProxyPool([]).for_url("https://x.com") is None
 
 
-def test_load_proxy_pool_unset_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    # BROWSER_PROXIES is optional; unset must yield an empty pool, not crash on startup.
-    monkeypatch.delenv("BROWSER_PROXIES", raising=False)
-    assert load_proxy_pool().for_url("https://x.com") is None
+def test_load_proxy_pool_reads_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BROWSER_PROXIES", "1.1.1.1:8000:u:p")
+    proxy = load_proxy_pool().for_url("https://x.com")
+    assert proxy is not None
+    assert proxy.server == "http://1.1.1.1:8000"

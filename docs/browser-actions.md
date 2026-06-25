@@ -133,6 +133,9 @@ the DoorDash flow is the next milestone to drive and harden.
 
 ## Configuration
 
-- `BROWSER_STATE_DIR` — where per-chat storage-state files live (default under `~/.nisse`).
-- `BROWSER_PROXIES` — `host:port:user:pass` lines (from the Webshare download); unset = direct.
+Both env vars are **required** (fail-fast on missing, like every other env in the repo):
+
+- `BROWSER_STATE_DIR` — directory holding the per-chat storage-state files.
+- `BROWSER_PROXIES` — `host:port:user:pass` lines (the Webshare "download list" output). The provider
+  API token stays out of the app — curl the list once and put the lines here.
 - Browsers: `playwright install chromium` (Dockerfile installs it `--with-deps`).

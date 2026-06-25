@@ -10,10 +10,7 @@ from pathlib import Path
 
 from baski.env import get_env
 
-_DEFAULT_DIR = Path.home() / ".nisse" / "browser_state"
-
 
 def browser_state_path(conversation_id: int) -> Path:
     """Path to the storage-state file for one chat — written by `make startbrowser`, read by the agent."""
-    state_dir = Path(str(get_env("BROWSER_STATE_DIR", str(_DEFAULT_DIR))))
-    return state_dir / f"{conversation_id}.json"
+    return Path(str(get_env("BROWSER_STATE_DIR"))) / f"{conversation_id}.json"
