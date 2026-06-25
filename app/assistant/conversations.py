@@ -7,6 +7,7 @@ from baski.clients.serpapi_client import SerpApiClient
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
+from app.browser import BrowserSession, WebClickTool, WebOpenTool, WebSnapshotTool, WebTypeTool, load_proxy_pool
 from app.lists import ListEditTool, ListShowTool, ListStore
 from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.prompts import CoreMemoryTool, PromptStore
@@ -24,6 +25,7 @@ from app.search import (
     YouTubeTranscriptTool,
 )
 from app.shared import CoreDeps
+from app.shared.browser import browser_state_path
 
 
 class Conversations:
@@ -45,6 +47,7 @@ class Conversations:
         self._system_prompt = system_prompt
         self._await_trace = await_trace
         self._local_traces_dir = local_traces_dir
+        self._proxy_pool = load_proxy_pool()  # shared so ban/rotation state is one per process
         self._conversations: dict[int, Conversation] = {}
 
     async def get(self, conversation_id: int) -> Conversation:
@@ -72,6 +75,7 @@ class Conversations:
         toolset.add(DeleteMessagesTool(history))
         for tool in [
             *self._build_web_tools(),
+            *self._build_browser_action_tools(conversation_id),
             *self._build_memory_tools(conversation_id),
             *self._build_list_tools(conversation_id),
             *self._build_scheduling_tools(conversation_id),
@@ -108,6 +112,15 @@ class Conversations:
             GoogleJobsTool(serpapi_client=serpapi),
             WebBrowseTool(playwright_client=self._deps.playwright),
         ]
+
+    def _build_browser_action_tools(self, conversation_id: int) -> list[Tool]:
+        """Logged-in browser actions — one session/context per chat, loaded with that chat's saved login."""
+        session = BrowserSession(
+            client=self._deps.playwright,
+            storage_state=str(browser_state_path(conversation_id)),
+            proxy_pool=self._proxy_pool,
+        )
+        return [WebOpenTool(session), WebSnapshotTool(session), WebClickTool(session), WebTypeTool(session)]
 
     def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
         """Long-term memory — store scoped to the chat so memories never cross conversations."""

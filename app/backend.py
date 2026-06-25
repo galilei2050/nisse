@@ -91,7 +91,7 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def _playwright(self) -> PlaywrightClient:
-        """Headless browser client."""
+        """Shared headless browser. Default context is anonymous; per-chat logged-in contexts branch off it."""
         return PlaywrightClient(headless=True, logger=self.logger)
 
     @cached_property

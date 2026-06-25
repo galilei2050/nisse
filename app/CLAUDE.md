@@ -78,6 +78,11 @@ app/
                     amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
+  browser/          logged-in browser ACTIONS (distinct from read-only browse_website) — design: docs/browser-actions.md
+    session.py      BrowserSession — one isolated Chromium context per chat (own cookie jar), read as an accessibility tree (aria_snapshot, no screenshots), acted on by role+name; lazy context, optional per-host proxy
+    tools.py        web_open · web_snapshot · web_click · web_type — each returns the post-action a11y tree; wired in Conversations._build_browser_action_tools(); session loaded from browser_state_path(chat) captured by `make startbrowser`
+    proxy.py        ProxyPool — sticky one-proxy-per-host, rotate on mark_banned; loaded from BROWSER_PROXIES (Webshare host:port:user:pass lines; token stays out of the app)
+
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
@@ -85,7 +90,8 @@ app/
   tools/            (future) more nisse-specific leaf Tool classes — one per file, thin wrapper over one API
     google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
     Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Search lives in
-    `search/` (nisse SerpApi leaves); browse uses baski's WebBrowseTool — both wired in `_build_web_tools()`.
+    `search/` (nisse SerpApi leaves); read-only browse uses baski's WebBrowseTool — both wired in `_build_web_tools()`;
+    logged-in browser actions live in `browser/`, wired in `_build_browser_action_tools()`.
     (+ external MCP servers as an optional secondary tool source — hybrid)
 
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)

@@ -44,6 +44,13 @@ backend-run:
 test-backend-dry-run:
 	uv run python -m app.backend --dry-run
 
+# Open a real browser to log in once for a chat; the session (cookies + localStorage) is
+# saved per chat-id and the assistant reuses it for logged-in browsing/actions. Re-run when
+# a login expires. `make startbrowser U=<chat-id>`. See docs/browser-actions.md.
+.PHONY: startbrowser
+startbrowser:
+	uv run python -m app.startbrowser --chat-id $(U)
+
 # Manual end-to-end probe — one Assistant.reply(); prints injected context, tool calls, answer.
 # Real API/DB calls; throwaway user. `make probe MSG="…" [U=42]`. See docs/memory-test-cases.md.
 .PHONY: probe
@@ -81,7 +88,7 @@ typecheck:
 # Functional tests — pure, no running backend. Part of `make test` / CI.
 .PHONY: test-backend
 test-backend:
-	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/
+	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/ tests/browser/
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
 # Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
