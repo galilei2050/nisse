@@ -10,9 +10,9 @@ Ban detection is the caller's job: when a proxy gets blocked on a site, call `ma
 the next assignment for that site rotates. There is no reliable automatic "you are banned" signal.
 """
 
+import os
 from urllib.parse import urlsplit
 
-from baski.env import get_env
 from pydantic import BaseModel
 
 
@@ -77,5 +77,8 @@ class ProxyPool:
 
 
 def load_proxy_pool() -> ProxyPool:
-    """Build the pool from BROWSER_PROXIES (empty when unset → no proxying)."""
-    return ProxyPool(parse_proxies(str(get_env("BROWSER_PROXIES", ""))))
+    """Build the pool from BROWSER_PROXIES; unset/empty means no proxying (empty pool).
+
+    Optional config, so this reads os.environ directly rather than get_env, which rejects empty values.
+    """
+    return ProxyPool(parse_proxies(os.environ.get("BROWSER_PROXIES", "")))

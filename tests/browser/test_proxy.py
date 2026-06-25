@@ -4,7 +4,9 @@ The point under test is stickiness — the same host keeps the same proxy across
 ban rotates to a different, non-banned proxy until the pool is exhausted.
 """
 
-from app.browser.proxy import ProxyPool, parse_proxies
+import pytest
+
+from app.browser.proxy import ProxyPool, load_proxy_pool, parse_proxies
 
 _LINES = """
 1.1.1.1:8000:user:pass
@@ -65,3 +67,9 @@ def test_exhaustion_returns_none() -> None:
 
 def test_empty_pool_returns_none() -> None:
     assert ProxyPool([]).for_url("https://x.com") is None
+
+
+def test_load_proxy_pool_unset_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    # BROWSER_PROXIES is optional; unset must yield an empty pool, not crash on startup.
+    monkeypatch.delenv("BROWSER_PROXIES", raising=False)
+    assert load_proxy_pool().for_url("https://x.com") is None
