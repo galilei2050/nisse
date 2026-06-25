@@ -14,6 +14,7 @@ from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
+from app.shared.text import match_unique
 
 _COLLECTION = "lists"
 
@@ -21,16 +22,6 @@ _COLLECTION = "lists"
 def _norm_name(name: str) -> str:
     """Canonical list key — stripped, lower-cased — so 'Shopping' and 'shopping' are one list."""
     return name.strip().lower()
-
-
-def _matches(items: list[str], term: str) -> list[str]:
-    """Items a removal term hits: the exact (case-insensitive) match if any, else substring matches.
-
-    The caller removes only when this returns exactly one (unique); >1 is ambiguous, 0 is missing.
-    """
-    low = term.lower()
-    exact = [i for i in items if i.lower() == low]
-    return exact or [i for i in items if low in i.lower()]
 
 
 class ItemList(NisseDbModel):
@@ -126,7 +117,7 @@ class ListStore:
         result = RemoveResult(updated=existing)
         drop_targets: set[str] = set()
         for term in terms:
-            hits = _matches(existing.items, term)
+            hits = match_unique(existing.items, term)
             if len(hits) == 1:
                 drop_targets.add(hits[0])
                 result.removed.append(hits[0])

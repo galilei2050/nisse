@@ -73,24 +73,27 @@ system the same way the memory index reaches the user block: the tool that owns 
 
 It both injects the content (`system_prompt()`, read live every turn) and edits it (`execute`).
 
-**Patch-in-place**, not overwrite-whole (decision reversed — see below). `execute(old, new)` mirrors
-`recall_edit`: append `new` when `old` is empty, replace `old` with `new`, or remove `old` when `new`
-is empty; an `old` that doesn't match verbatim changes nothing and echoes the current block to retry
-against. The size cap applies to the *result*. Tool guidance: persist standing rules about behavior,
-address form, formatting, or identity that shapes behavior; CORE is owner-knowledge only — agent
-operating procedure (context pruning, tool workflows) does NOT belong here. Keep it tight — pure
-per-turn overhead, a rulebook not a fact dump (discrete facts still go to `recall_save`). No
-`Conversation.reply` change is needed — the tool owns it end to end.
+**Edited like a list**, not overwrite-whole (decision reversed — see below). `execute(add, remove)`
+mirrors `list_edit`: add and/or remove whole lines in one call (replace = remove the old line + add
+the new one together). Removal matches the exact line or a unique distinctive fragment (shared
+`match_unique`); an ambiguous or missing term is reported, not guessed. The size cap applies to the
+*result*. The agent touches ONLY the lines it names — it can never rewrite the block wholesale. Tool
+guidance: standing rules about behavior, address form, formatting, or identity; CORE is owner-knowledge
+only — agent operating procedure (pruning, tool workflows) does NOT belong here. No `Conversation.reply`
+change is needed — the tool owns it end to end.
 
-### Why patch replaced overwrite-whole
+### Why list-style replaced overwrite-whole
 
-The original choice (decision #2 below) was overwrite-whole, to avoid fragile `old`-string matching.
-Real traffic showed that cost dominated the benefit: every rule addition resent the full ~2400-char
-block, repeatedly tripped the cap (~⅓ of `update_core_memory` calls rejected, forcing a
-trim-and-resend round-trip), and the lossy hand-compression dropped or weakened standing rules — the
-exact "rules don't stick" failure this store exists to fix. `recall_edit` already proves patch works
-in this codebase (its verbatim-match-or-echo fallback is safe and the agent recovers in one retry),
-so core memory now uses the same shape: the agent appends one line instead of rewriting the block.
+The original choice (decision #2 below) was overwrite-whole, to avoid fragile fragment matching. Real
+traffic killed it: across 20 overwrite-era `update_core_memory` calls the block churned **118 lines
+added / 104 removed-or-reworded** — because re-emitting the whole ~2000-char block every time, the
+model silently dropped or altered standing rules the owner never asked to touch (e.g. one "add one
+rule" turn dropped 6 unrelated rules incl. honesty + no-flattery). It also kept tripping the cap on
+every resend. A brief patch-in-place (`old`/`new` fragment, mirroring `recall_edit`) was tried first,
+then replaced with the `list_edit`-style **add/remove of whole lines**: the owner's mental model ("like
+a list"), the proven-reliable list ergonomics (add array + remove-by-unique-fragment), and — crucially —
+no whole-block parameter exists, so accidental mass-drop is structurally impossible while intentional
+remove/replace stays easy.
 
 ## Relationship to `memories`, and migration
 
@@ -109,9 +112,10 @@ time the owner states a standing preference and the model calls `update_core_mem
 ## Decisions to confirm
 
 1. **Async per-turn `system_prompt()` refactor** (recommended) vs a narrower workaround.
-2. ~~**Overwrite-whole** editing vs patch/append semantics.~~ **Resolved: patch/append** — overwrite-whole
-   was tried and reversed once real traffic showed the resend-churn / cap-rejection / lossy-compression
-   cost (see "Why patch replaced overwrite-whole" above).
+2. ~~**Overwrite-whole** editing vs patch/append semantics.~~ **Resolved: list-style add/remove** —
+   overwrite-whole was reversed once real traffic showed the lossy-compression cost (118/104 line churn);
+   a brief `old`/`new` patch was then superseded by `list_edit`-style add/remove of whole lines (see
+   "Why list-style replaced overwrite-whole" above).
 3. **Retire `preference`** memory category + migrate (recommended) vs keep both stores.
 
 ## Build order (two PRs, baski first — `check-baski` + `@main` pin)
