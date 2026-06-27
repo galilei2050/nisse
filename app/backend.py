@@ -24,6 +24,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory
+from app.browser import managed_browser_cdp_url
 from app.lists import ListStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
@@ -77,7 +78,13 @@ class NisseBot(TelegramServer):
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
+            browser_cdp_url=self._browser_cdp_url,
         )
+
+    @cached_property
+    def _browser_cdp_url(self) -> str | None:
+        """Managed remote-browser CDP endpoint (Browserbase) when configured, else None (local browser)."""
+        return managed_browser_cdp_url(self.logger)
 
     @cached_property
     def _http(self) -> httpx.AsyncClient:
@@ -91,8 +98,8 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def _playwright(self) -> PlaywrightClient:
-        """Shared headless browser. Default context is anonymous; per-chat logged-in contexts branch off it."""
-        return PlaywrightClient(headless=True, logger=self.logger)
+        """Shared browser. Local Chromium by default; a managed remote browser when BROWSERBASE_* is set."""
+        return PlaywrightClient(headless=True, logger=self.logger, cdp_url=self._browser_cdp_url)
 
     @cached_property
     def _scheduler_dep(self) -> Scheduler:

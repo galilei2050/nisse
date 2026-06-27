@@ -79,9 +79,11 @@ app/
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
   browser/          logged-in browser ACTIONS (distinct from read-only browse_website) — design: docs/browser-actions.md
-    session.py      BrowserSession — one isolated Chromium context per chat (own cookie jar), read as an accessibility tree (aria_snapshot, no screenshots), acted on by role+name; lazy context, optional per-host proxy
-    tools.py        web_open · web_snapshot · web_click · web_type — each returns the post-action a11y tree; wired in Conversations._build_browser_action_tools(); session loaded from browser_state_path(chat) captured by `make startbrowser`
-    proxy.py        ProxyPool — sticky one-proxy-per-host, rotate on mark_banned; loaded from BROWSER_PROXIES (Webshare host:port:user:pass lines; token stays out of the app)
+    session.py      BrowserSession — one isolated Chromium context per chat (own cookie jar), read as an INDEXED element listing (`[ref] role "label" — nearby text incl. price`, via DOM extraction, no screenshots), acted on by ref; clicks force=True (past Cloudflare Turnstile overlay), auto-waits out CF "just a moment" interstitial; lazy context, optional per-host proxy
+    store.py        BrowserSessionStore — per-chat storage_state (cookies+localStorage) in Mongo `browser_sessions` (one doc per conversation_id); written by `make startbrowser`, read on each action — survives stateless Cloud Run (no local dir, no BROWSER_STATE_DIR)
+    tools.py        web_open · web_snapshot · web_click(ref) · web_type(ref) · web_scroll — each returns the post-action indexed listing; wired in Conversations._build_browser_action_tools()
+    proxy.py        ProxyPool — sticky one-proxy-per-host, rotate on mark_banned; loaded from BROWSER_PROXIES (Webshare host:port:user:pass lines; token stays out of the app). Local mode only — skipped when a managed browser is used
+    managed.py      managed_browser_cdp_url — creates a Browserbase session, returns its CDP url; set BROWSERBASE_API_KEY+PROJECT_ID → agent runs on the managed remote browser (clears DoorDash Turnstile where a local browser can't); unset → local Chromium
 
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
@@ -239,10 +241,30 @@ on any feature — read from the agent's own trace:
 3. **Answer** — the final reply is sensible.
 
 ```
-make probe MSG="…" [U=<id>]      # one agent run; prints injected context, tool calls, answer
+make probe MSG="…" [U=<id>]      # one agent run; prints tool calls + answer, SAVES the trace to scratch/traces/<id>.json
 make memories                    # dump `memories` (live + soft-deleted)
 make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
 ```
+
+**Inspect a run WITHOUT re-running it (`app.trace`) — don't burn tokens re-running just to see what happened.**
+`make probe` persists every run's trace to `scratch/traces/<trace_id>.json` and prints the id + the inspect
+command. Re-view any saved trace selectively (`app/trace.py`, shared printer `app/trace_view.py`):
+
+```
+uv run python -m app.trace <trace_id>                    # tool calls + answer + stats (compact)
+uv run python -m app.trace <trace_id> --results          # + each tool RESULT (what the agent actually saw)
+uv run python -m app.trace <trace_id> --grep "Order Placed"   # only result lines matching (implies --results)
+uv run python -m app.trace <trace_id> --system --full    # + system prompt/first-turn; no truncation
+```
+
+The tool RESULTS are the ground truth for browser flows — read the actual checkout total / `/orders`
+confirmation the agent saw, instead of trusting its answer (it can confabulate success — always verify
+a real action on the real surface; see `docs/browser-actions.md`).
+
+**Browser-order e2e** (the DoorDash "order milk" target) runs through this exact path —
+`make probe U=1 MSG="закажи молоко на утро …"` → `Assistant.run` → the browser tools on the managed
+Browserbase browser. Requires `.env` with `MONGODB_URI`, `ANTHROPIC_API_KEY`, `BROWSERBASE_*`, and a
+captured DoorDash session in Mongo (`browser_sessions`). Run it as `uv run --env-file .env python -m app.probe …`.
 
 - **Injected context** is the ground truth for what the model saw — read it first.
 - **`U=` is the conversation id** (an int). Testing recall/contradiction? Use a *fresh* `U=`: in the

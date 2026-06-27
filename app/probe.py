@@ -15,8 +15,6 @@ Usage + expectation-first test cases: `app/CLAUDE.md` → "Manual probe", `docs/
 
 import argparse
 import asyncio
-import json
-import tempfile
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,67 +28,26 @@ from baski.server import Logger
 from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
+from app.browser import managed_browser_cdp_url
 from app.scheduling import LoggingScheduler
-from app.shared import CoreDeps, block_type
+from app.shared import CoreDeps
+from app.trace_view import print_trace
 
 if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase
 
-
-def _render_content(content: object) -> str:
-    """Flatten a serialized message's content (text rendered verbatim, other blocks tagged)."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content)
-    parts = []
-    for block in content:
-        btype = block_type(block)
-        if btype == "text":
-            parts.append(str(block["text"]))
-        elif btype is not None:
-            parts.append(f"<{btype}>")
-        else:
-            parts.append(str(block))
-    return "\n".join(parts)
+_TRACES_DIR = Path(__file__).resolve().parent.parent / "scratch" / "traces"  # persisted for `app.trace`
 
 
-def _print_trace(trace: TraceRecord) -> None:
-    """Print injected context (system + first-turn messages), tool calls, and the answer."""
-    print("\n=== INJECTED CONTEXT — system prompt ===\n" + trace.system_prompt)
-
-    print("\n=== INJECTED CONTEXT — messages (first turn) ===")
-    for msg in trace.turns[0].messages:  # SkipValidation kept these as raw {role, content} dicts
-        print(f"\n[{msg['role']}]\n{_render_content(msg['content'])}")
-
-    print("\n=== TOOL CALLS ===")
-    for turn in trace.turns:
-        for tc in turn.tool_calls:
-            print(f"- {tc.name}({json.dumps(tc.input, ensure_ascii=False)})")
-
-    result = trace.result
-    print("\n=== ANSWER ===\n" + ((result and result.response) or "<no answer>"))
-
-    print("\n=== PROMPT CACHE (per turn) ===")
-    for turn in trace.turns:
-        print(
-            f"turn {turn.turn_number}: input={turn.input_tokens} "
-            f"cache_read={turn.cache_read_tokens} cache_write={turn.cache_creation_tokens}"
-        )
-
-    if result:
-        print(
-            f"\n=== STATS ===\nturns={result.turn_count} tool_calls={result.tool_call_count} "
-            f"in={result.total_input_tokens} out={result.total_output_tokens} "
-            f"cost=${result.total_cost:.4f}"
-        )
-
-
-async def _run(user_id: int, message: str, traces_dir: Path) -> None:
+async def _run(user_id: int, message: str) -> None:
     logger = Logger()
+    _TRACES_DIR.mkdir(parents=True, exist_ok=True)
     async with AsyncExitStack() as resources:
         http = await resources.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)))
-        playwright = await resources.enter_async_context(PlaywrightClient(headless=True, logger=logger))
+        cdp_url = managed_browser_cdp_url(logger)
+        playwright = await resources.enter_async_context(
+            PlaywrightClient(headless=True, logger=logger, cdp_url=cdp_url)
+        )
         database: AsyncDatabase = AsyncMongoClient(str(get_env("MONGODB_URI")), tz_aware=True).get_default_database()
         deps = CoreDeps(
             logger=logger,
@@ -101,24 +58,26 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(logger),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
+            browser_cdp_url=cdp_url,
         )
-        assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
+        assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(_TRACES_DIR))
         await assistant.setup()
         result = await assistant.run(conversation_id=user_id, text=message)
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
 
-    trace = TraceRecord.model_validate_json((traces_dir / f"{result.trace_id}.json").read_text())
-    _print_trace(trace)
+    trace = TraceRecord.model_validate_json((_TRACES_DIR / f"{result.trace_id}.json").read_text())
+    print_trace(trace)  # compact by default; re-inspect richly with `uv run python -m app.trace`
+    print(f"\n=== TRACE SAVED ===\n{result.trace_id}")
+    print(f"inspect: uv run python -m app.trace {result.trace_id} --results [--grep TEXT] [--system] [--full]")
 
 
 def main() -> None:
-    """Parse CLI args and run one probe against a throwaway local trace dir."""
+    """Parse CLI args and run one probe; the trace is saved under scratch/traces/ for `app.trace`."""
     parser = argparse.ArgumentParser(description="Drive Assistant.run() once for manual end-to-end testing.")
     parser.add_argument("--user-id", type=int, default=1, help="Conversation id (acts as the owner's chat id)")
     parser.add_argument("--message", required=True, help="Text to send to the agent")
     args, _ = parser.parse_known_args()
-    with tempfile.TemporaryDirectory(prefix="nisse-probe-") as tmp:
-        asyncio.run(_run(args.user_id, args.message, Path(tmp)))
+    asyncio.run(_run(args.user_id, args.message))
 
 
 if __name__ == "__main__":

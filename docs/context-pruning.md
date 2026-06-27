@@ -160,6 +160,15 @@ when effective input nears the budget it drops the oldest turns. `truncate()` is
 already soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing
 pure-tool turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
 
+*Empirical sizing (2026-06-26 snapshot):* measured on the DoorDash browse/verify path — agent opens
+`/orders`, takes a11y snapshots, navigates into an order — with the full turn history loaded. The
+per-turn window peaked at **~47.5k tokens** (prompt + cached prefix), of which a single a11y snapshot
+is ≈**35k**. The budget is set at ~2× this: headroom for an extra in-flight snapshot, without the 4×
+waste of leaving it at the model's full window. The per-turn window is bounded by the *current*
+snapshot + history, not by turn count — old tool turns are pruned each reply — so this snapshot-driven
+sizing holds however long a flow runs. The durable takeaway is the ratio (budget ≈ 2× the heaviest
+window seen, one snapshot ≈ ¾ of it), not the absolute number.
+
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the
 model's *optional* deliberate cleanup on a topic change. It is no longer the safety net; the
