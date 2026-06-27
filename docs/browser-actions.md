@@ -97,7 +97,9 @@ the branded profile. So baski's `PlaywrightClient` now launches Chromium. It's n
 directly** (not via `playwright.launch`, whose automation flags Cloudflare detects) on a persistent
 on-disk profile, you log into the services you care about — and **save your payment card on those
 sites** — then press Enter; the session is captured over CDP and **saved to that chat's MongoDB
-document**. Re-run when a login expires (see "Honest limits").
+document**. The first page is `about:blank` by default; pass `URL=<site>` to open one directly (e.g.
+`make startbrowser U=42 URL=https://www.doordash.com`), or just navigate there once the browser is up.
+Re-run when a login expires (see "Honest limits").
 
 The same window is the answer to "I want to see a browser where I can log in": you *are* logged in
 there; the file just hands that session to the agent. There is no need (and no clean way) to push the

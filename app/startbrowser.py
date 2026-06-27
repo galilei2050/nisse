@@ -9,7 +9,8 @@ loads it and — carrying the real session, including the Cloudflare clearance c
 automated and headless. Mongo (not local disk) is also what makes the session reach production, since
 Cloud Run is stateless. See docs/browser-actions.md.
 
-Run: `make startbrowser U=<chat-id>` (chat-id = the Telegram chat the session belongs to).
+Run: `make startbrowser U=<chat-id>` (chat-id = the Telegram chat the session belongs to); add
+`URL=<site>` to open a specific page first, or just navigate there once the browser is up.
 """
 
 import argparse
@@ -25,7 +26,6 @@ from pymongo import AsyncMongoClient
 from app.browser import BrowserSessionStore
 
 _PORT = 9222
-_START_URL = "https://www.doordash.com"
 # local-only, git-ignored: the interactive login profile (kept inside the repo, never under $HOME)
 _PROFILE_ROOT = Path(__file__).resolve().parent.parent / "scratch" / "chrome-profiles"
 
@@ -60,7 +60,9 @@ def main() -> None:
     """Launch real Chrome on a persistent profile, wait for the owner to log in, save the session."""
     parser = argparse.ArgumentParser(description="Log in once in a real browser; save the session for a chat.")
     parser.add_argument("--chat-id", type=int, required=True, help="Telegram chat id the session belongs to")
-    chat_id = parser.parse_args().chat_id
+    parser.add_argument("--url", default="about:blank", help="page to open first (navigate to any site once open)")
+    args = parser.parse_args()
+    chat_id = args.chat_id
 
     profile = _PROFILE_ROOT / f"chrome-profile-{chat_id}"  # persistent → prior logins are reused next run
     profile.mkdir(parents=True, exist_ok=True)
@@ -72,7 +74,7 @@ def main() -> None:
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
-            _START_URL,
+            args.url,
         ]
     )
     try:

@@ -49,7 +49,7 @@ test-backend-dry-run:
 # a login expires. `make startbrowser U=<chat-id>`. See docs/browser-actions.md.
 .PHONY: startbrowser
 startbrowser:
-	uv run python -m app.startbrowser --chat-id $(U)
+	uv run python -m app.startbrowser --chat-id $(U) $(if $(URL),--url $(URL),)
 
 # Manual end-to-end probe — one Assistant.reply(); prints injected context, tool calls, answer.
 # Real API/DB calls; throwaway user. `make probe MSG="…" [U=42]`. See docs/memory-test-cases.md.
