@@ -2,17 +2,23 @@
 
 The generic ``baski.agents`` loop emits transport-agnostic ``AgentEvent``s; this
 listener turns them into a single Telegram message, edited in place as the agent
-works. While the model runs it shows a step checklist — each tool with its salient
-argument in a code span, and thinking (a rotating "думаю…" word when the model
-thinks without surfacing text). Once the reply text starts arriving it streams in,
-edited a sentence at a time. Only this side knows about aiogram, chat ids,
-MarkdownV2, and Telegram's flood limits.
+works. While the model runs it shows a step log — each tool with a human label
+(icon + verb) and its salient argument in a code span, thinking (a rotating
+"думаю…" word when the model thinks without surfacing text), and short process
+narration. Substantial prose the model writes *between* tool calls is kept as
+content, not a status line — it accumulates into the reply body so nothing the
+agent said is lost.
+
+``finish()`` settles the message: the step log collapses into a Telegram
+expandable blockquote (tucked under a cut), and the accumulated prose + final
+answer follow below it. Only this side knows about aiogram, chat ids, MarkdownV2,
+and Telegram's flood limits.
 """
 
 import contextlib
 import re
 import time
-from typing import assert_never
+from typing import NamedTuple, assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
@@ -26,6 +32,26 @@ _MAX_LINES = 20
 _THINKING_LIMIT = 120
 _PREVIEW_LIMIT = 80
 _CURSOR = " ▌"
+# A Message shorter than this is process narration ("Поправляю формат…") and stays in the step
+# log; anything longer is real content the model wrote and is kept in the reply body. Length is a
+# rough proxy — substantial intermediate answers run long, throwaway narration stays terse.
+_NARRATION_MAX = 200
+
+# Tool-name keyword -> (icon, human label). First substring match wins, so order matters (the
+# specific keys precede the general ones). Surfaces a tasteful step line instead of a raw tool name.
+_TOOL_LABELS = (
+    ("recall_read", "🧠", "Смотрю заметки"),
+    ("recall", "🧠", "Память"),
+    ("core_memory", "🧠", "Память"),
+    ("ai_answer", "🔍", "Спрашиваю"),
+    ("search", "🔍", "Ищу"),
+    ("browse", "🌐", "Открываю"),
+    ("list_show", "📋", "Смотрю список"),
+    ("list", "✍️", "Список"),
+    ("remind", "⏰", "Напоминаю"),
+    ("schedule", "⏰", "Расписание"),
+    ("research", "🔬", "Исследую"),
+)
 
 # Shown (rotating) when the model thinks but surfaces no readable text — Cyrillic + Latin scripts.
 _THINKING_WORDS = (
@@ -50,9 +76,19 @@ _SENTENCE_END = re.compile(r"[.!?…\n][\"»”’)\]]*\s*$")
 _PREVIEW_KEYS = ("query", "url", "title", "text", "body", "message", "name", "public_id")
 
 
-def _pretty(name: str) -> str:
-    """`google_search` -> `google search`."""
-    return name.replace("_", " ")
+class _ToolLabel(NamedTuple):
+    """How a tool's step line reads: an emoji icon and a human verb."""
+
+    icon: str
+    text: str
+
+
+def _label(name: str) -> _ToolLabel:
+    """The icon + human label for a tool name; falls back to `🔧` + the prettified name."""
+    for keyword, icon, text in _TOOL_LABELS:
+        if keyword in name:
+            return _ToolLabel(icon, text)
+    return _ToolLabel("🔧", name.replace("_", " "))
 
 
 def _brief(text: str) -> str:
@@ -84,8 +120,9 @@ class TelegramProgress:
         self._chat_id = chat_id
         self._message_id: int | None = None
         self._lines: list[str] = []
-        self._tools: dict[str, tuple[int, str]] = {}  # tool name -> (checklist line index, arg preview)
-        self._answer = ""  # the reply, accumulated from text deltas and streamed in sentence by sentence
+        self._tools: dict[str, tuple[int, str]] = {}  # tool name -> (step-log line index, arg preview)
+        self._prose = ""  # substantial narration committed from tool-calling turns — kept as content
+        self._answer = ""  # the current turn's text, streamed in sentence by sentence (live preview)
         self._think_idx = 0
         self._last_edit = 0.0
 
@@ -109,11 +146,18 @@ class TelegramProgress:
                 self._answer += text
                 return bool(_SENTENCE_END.search(self._answer))  # hold the edit until a sentence completes
             case Message(text=text):
-                self._lines.append(f"💬 {text}")
-                self._answer = ""  # narration is now a committed line; the final reply streams fresh
+                self._commit_message(text)
             case _:
                 assert_never(event)
         return True
+
+    def _commit_message(self, text: str) -> None:
+        """Finalize a tool-calling turn's text: short narration to the step log, real content to the reply."""
+        self._answer = ""  # this turn's streamed text is now finalized as `text`
+        if len(text) <= _NARRATION_MAX:
+            self._lines.append(f"💬 {text}")  # short process narration — a status line
+        else:
+            self._prose = f"{self._prose}\n\n{text}" if self._prose else text  # real content — keep it
 
     def _thinking(self, text: str) -> str:
         """A thinking line's content: the brief if there is one, else a rotating "thinking…" word."""
@@ -126,35 +170,36 @@ class TelegramProgress:
 
     def _start_tool(self, name: str, preview: str) -> None:
         """Append an in-flight tool line and remember it so ToolFinished can mark it done in place."""
-        self._lines.append(self._tool_line("🔧", name, preview, suffix="" if preview else "…"))
+        icon, label = _label(name)
+        self._lines.append(self._tool_line(icon, label, preview, suffix="" if preview else "…"))
         self._tools[name] = (len(self._lines) - 1, preview)
 
     def _finish_tool(self, event: ToolFinished) -> None:
-        """Mark this tool's in-flight line done, keeping its argument preview."""
+        """Mark this tool's in-flight line done, keeping its label and argument preview."""
         located = self._tools.get(event.name)
         if located is None:
             return
         idx, preview = located
+        _, label = _label(event.name)
         mark = "✅" if event.ok else "⚠️"
-        self._lines[idx] = self._tool_line(mark, event.name, preview, suffix=f" ({event.duration_ms / 1000:.1f}s)")
+        self._lines[idx] = self._tool_line(mark, label, preview, suffix=f" ({event.duration_ms / 1000:.1f}s)")
 
     @staticmethod
-    def _tool_line(icon: str, name: str, preview: str, *, suffix: str) -> str:
-        """One checklist line — `icon tool name `arg` suffix`, the arg as a markdown code span."""
+    def _tool_line(icon: str, label: str, preview: str, *, suffix: str) -> str:
+        """One step-log line — `icon label `arg` suffix`, the arg as a markdown code span."""
         arg = f" `{preview}`" if preview else ""
-        return f"{icon} {_pretty(name)}{arg}{suffix}"
+        return f"{icon} {label}{arg}{suffix}"
 
     def _render(self) -> str:
-        """The message body as markdown source: the step checklist, then the streaming reply."""
-        body = "\n".join(self._lines[-_MAX_LINES:])
+        """The live message as markdown source: the step log, the kept prose, then the streaming reply."""
+        parts = ["\n".join(self._lines[-_MAX_LINES:]), self._prose]
         if self._answer:
-            answer = self._answer + _CURSOR
-            body = f"{body}\n\n{answer}" if body else answer
-        return body
+            parts.append(self._answer + _CURSOR)
+        return "\n\n".join(p for p in parts if p)
 
     async def _flush(self, *, force: bool) -> None:
         """Render and deliver the live message, throttled to Telegram's edit cadence."""
-        if not self._lines and not self._answer:
+        if not self._lines and not self._prose and not self._answer:
             return
         now = time.monotonic()
         if not force and now - self._last_edit < _EDIT_INTERVAL_S:
@@ -166,11 +211,29 @@ class TelegramProgress:
             self._last_edit = now + e.retry_after  # back off; the next event retries
 
     async def finish(self, answer: str) -> None:
-        """Deliver the final answer as MarkdownV2, reusing the live message and splitting if needed."""
-        chunks = split_message(to_markdown_v2(answer))
+        """Settle the message: the step log collapses under a cut, the kept prose + answer follow.
+
+        Reuses the live message and splits to the size limit. The step log stays atomic in the
+        first chunk so the expandable blockquote is never cut mid-quote.
+        """
+        body = f"{self._prose}\n\n{answer}" if self._prose else answer
+        chunks = split_message(to_markdown_v2(body))
+        quote = self._steps_quote()
+        chunks[0] = f"{quote}\n\n{chunks[0]}" if quote else chunks[0]
         for i, chunk in enumerate(chunks):
             # First chunk edits the live message in place; the rest are new messages.
             await self._send(chunk, edit=i == 0 and self._message_id is not None)
+
+    def _steps_quote(self) -> str:
+        """The step log as a MarkdownV2 blockquote, or '' when there were none.
+
+        telegramify (``cite_expandable``, on by default) upgrades any blockquote over 200 chars to
+        a collapsed/expandable one — so a multi-step log tucks under a cut, a one-liner stays plain.
+        """
+        lines = self._lines[-_MAX_LINES:]
+        if not lines:
+            return ""
+        return to_markdown_v2("\n".join(f"> {line}" for line in lines))
 
     async def _send(self, text: str, *, edit: bool) -> None:
         """Edit/send already-converted MarkdownV2 *text*, falling back to plain text on a parse error."""

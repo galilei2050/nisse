@@ -32,10 +32,15 @@ app/
 
   chat/             Telegram I/O — the ONLY aiogram Router
     router.py       voice + text handler → transcribe → Assistant.reply(on_event=TelegramProgress) → answer
-    progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message: step checklist
-                    (each tool with its salient arg in a `code span`, thinking — a rotating "думаю…"
-                    word when thinking surfaces no text), then the reply streamed in a sentence at a
-                    time (on baski's TextDelta), throttled to 0.5s; finish() renders the final MarkdownV2.
+    progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message: a step log
+                    (each tool a human label icon+verb via `_TOOL_LABELS`, salient arg in a `code
+                    span`; thinking — a rotating "думаю…" word when it surfaces no text; short
+                    process narration as a 💬 line). Substantial prose the model writes BETWEEN tool
+                    calls (Message events > `_NARRATION_MAX` chars) is kept as content — it
+                    accumulates into the reply (`_prose`), not lost. The current turn's text streams
+                    in a sentence at a time (TextDelta), throttled to 0.5s. finish() settles it: the
+                    step log collapses into a Telegram expandable blockquote (`**>`…`||`, built over
+                    telegramify since the lib won't emit it), kept prose + final answer below.
     format.py       LLM markdown → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
