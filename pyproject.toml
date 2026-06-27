@@ -71,11 +71,11 @@ max-complexity = 8
 # so the implicit-namespace warning (INP001) is by design; `secret_id` is a GCP
 # resource name, not a credential (S106); re-export package inits need no docstring.
 "infrastructure/**" = ["INP001", "S106", "D104"]
-# probe.py, trace.py, startbrowser.py are manual CLI harnesses whose stdout IS their output (T201).
-# trace_view.print_trace exposes the view flags as keyword args — a CLI display knob set, not a god-fn (PLR0913).
+# probe.py, app/tracing, startbrowser.py are manual CLI harnesses whose stdout IS their output (T201).
+# print_trace exposes the view flags as keyword args — a CLI display knob set, not a god-fn (PLR0913).
 "app/probe.py" = ["T201"]
-"app/trace.py" = ["T201"]
-"app/trace_view.py" = ["T201", "PLR0913"]
+"app/tracing/__main__.py" = ["T201"]
+"app/tracing/view.py" = ["T201", "PLR0913"]
 "app/startbrowser.py" = ["T201"]
 
 [tool.ruff.lint.pydocstyle]

@@ -1,6 +1,6 @@
 """Inspect a saved agent trace without re-running the probe — so you don't burn tokens to see what happened.
 
-    uv run python -m app.trace <trace_id|path> [--results] [--grep TEXT] [--system] [--full] [--answer]
+    uv run python -m app.tracing <trace_id|path> [--results] [--grep TEXT] [--system] [--full] [--answer]
 
 `app.probe` saves each run to `scratch/traces/<trace_id>.json`; pass that id (or any path). Default prints
 tool calls + answer + stats (cheap); `--results` adds what the agent actually saw after each call,
@@ -12,9 +12,9 @@ from pathlib import Path
 
 from baski.agents.trace import TraceRecord
 
-from app.trace_view import print_trace
+from app.tracing.view import print_trace
 
-_TRACES = Path(__file__).resolve().parent.parent / "scratch" / "traces"
+_TRACES = Path(__file__).resolve().parent.parent.parent / "scratch" / "traces"
 
 
 def _resolve(arg: str) -> Path:

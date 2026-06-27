@@ -246,15 +246,15 @@ make memories                    # dump `memories` (live + soft-deleted)
 make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
 ```
 
-**Inspect a run WITHOUT re-running it (`app.trace`) — don't burn tokens re-running just to see what happened.**
+**Inspect a run WITHOUT re-running it (`app.tracing`) — don't burn tokens re-running just to see what happened.**
 `make probe` persists every run's trace to `scratch/traces/<trace_id>.json` and prints the id + the inspect
-command. Re-view any saved trace selectively (`app/trace.py`, shared printer `app/trace_view.py`):
+command. Re-view any saved trace selectively (`app/tracing/` — CLI `__main__.py`, renderer `view.py`):
 
 ```
-uv run python -m app.trace <trace_id>                    # tool calls + answer + stats (compact)
-uv run python -m app.trace <trace_id> --results          # + each tool RESULT (what the agent actually saw)
-uv run python -m app.trace <trace_id> --grep "Order Placed"   # only result lines matching (implies --results)
-uv run python -m app.trace <trace_id> --system --full    # + system prompt/first-turn; no truncation
+uv run python -m app.tracing <trace_id>                  # tool calls + answer + stats (compact)
+uv run python -m app.tracing <trace_id> --results        # + each tool RESULT (what the agent actually saw)
+uv run python -m app.tracing <trace_id> --grep "Order Placed"  # only result lines matching (implies --results)
+uv run python -m app.tracing <trace_id> --system --full  # + system prompt/first-turn; no truncation
 ```
 
 The tool RESULTS are the ground truth for browser flows — read the actual checkout total / `/orders`

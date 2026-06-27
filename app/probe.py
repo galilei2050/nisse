@@ -31,7 +31,7 @@ from app.assistant import Assistant
 from app.browser import managed_browser_cdp_url
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps
-from app.trace_view import print_trace
+from app.tracing import print_trace
 
 if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase
@@ -68,7 +68,7 @@ async def _run(user_id: int, message: str) -> None:
     trace = TraceRecord.model_validate_json((_TRACES_DIR / f"{result.trace_id}.json").read_text())
     print_trace(trace)  # compact by default; re-inspect richly with `uv run python -m app.trace`
     print(f"\n=== TRACE SAVED ===\n{result.trace_id}")
-    print(f"inspect: uv run python -m app.trace {result.trace_id} --results [--grep TEXT] [--system] [--full]")
+    print(f"inspect: uv run python -m app.tracing {result.trace_id} --results [--grep TEXT] [--system] [--full]")
 
 
 def main() -> None:
