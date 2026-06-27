@@ -206,6 +206,29 @@ owner in the loop (already the curator's safety invariants).
 - **event_emitter / event_call** — status edits ("transcribing… searching…") + inline-keyboard confirms;
   map the socket sink onto Telegram sendMessage/editMessageText. _src:_ `openwebui: socket/main.py`.
 
+## Browser onboarding — log into a new service from Telegram (human takeover)
+
+Today a new login is captured with `make startbrowser` (local headed Chrome). Goal: onboard a new
+service **from Telegram**, with the password **never** touching the chat, the LLM, or logs (OWASP:
+secrets never in prompt/logs). Industry pattern = **human takeover / live view**, which fits the
+managed-browser path we already run (Browserbase via CDP — see `docs/browser-actions.md`).
+
+- **Flow:** user says "connect service X" → agent opens X's login on a Browserbase session → bot sends
+  the session's **live/debug URL** to Telegram → user logs in + does 2FA **directly in the remote
+  browser** → backend detects success, saves `storage_state` to Mongo (`browser_sessions`) → agent
+  reuses it. Password stays in the browser↔site form flow only. Works in prod (remote browser, no
+  display needed) — unlike `make startbrowser`.
+- **Shape:** a `request_login(service)` tool — agent calls it, it mints the live URL, notifies the
+  owner, pauses until login completes, persists cookies. Mirror OpenAI Operator "takeover mode" (pauses,
+  hands control back, captures no screenshots of the login) and Browserbase "Remote Assist" debug URL.
+  Confirm the exact Browserbase field for the live URL (dashboard "Copy Debug URL" ⇒ a per-session API
+  field; name unverified — `debugUrl`/`liveViewUrl`, check the SDK).
+- **Preference order for credential onboarding:** OAuth/delegated tokens (scoped, revocable) where the
+  service supports it → live remote-browser takeover (arbitrary sites, 2FA, passkeys) → vault +
+  tool-injection for legacy password logins. Never the password in chat. _src:_ Browserbase Live/Debug
+  URL + Session API; OpenAI ChatGPT-agent "takeover mode"; OWASP AI-Agent Security cheat sheet; WorkOS
+  "agent credentials" (agent ≠ extension of the user; own scoped identity).
+
 ## Google Cloud Agent Platform (GCAP) — vendor prior art
 
 The Gemini Enterprise Agent Platform (ex–Vertex AI Agent Engine). Read as a vendor's

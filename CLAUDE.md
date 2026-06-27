@@ -5,6 +5,7 @@ Backend deploys to Cloud Run on GCP project `nisse2050`. Built on `baski` (https
 ## Components
 
 - `app/`        — FastAPI / TelegramServer backend. Entry point `python -m app.backend`.
+- `app/browser/` — logged-in browser **actions**: a per-chat Chromium session the agent reads as an accessibility tree and acts on (click/type), plus a residential-proxy pool. Distinct from baski's read-only `browse_website`. Captured via `make startbrowser`. See `docs/browser-actions.md`.
 - `infrastructure/` — Pulumi IaC for GCP (Cloud Run, IAM, secrets binding).
 
 ## Local vs prod — two separate bots
@@ -30,5 +31,6 @@ Design notes and deeper docs live in `docs/`. Check there before implementing; f
 
 - `make setup`       — venv + install deps
 - `make backend-run` — start backend in polling mode (background, logs to `~/Logs/backend.log`)
+- `make startbrowser U=<chat-id>` — open a real browser to log in once; saves that chat's session for the agent's logged-in browsing/actions (see `docs/browser-actions.md`)
 - `make test`        — lint + dry-run import check
 - `make cd`          — build + deploy to `nisse2050`

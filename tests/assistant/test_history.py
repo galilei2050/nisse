@@ -13,9 +13,10 @@ from baski.primitives import datetime as dt
 
 from baski.agents.tools.delete_messages import DeleteMessagesTool
 
-from app.assistant.history import MongoMessageHistory
+from app.assistant.history import _MAX_TOKENS, _TRUNCATE_THRESHOLD, MongoMessageHistory
 
-_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → triggers truncate
+# Over the truncate threshold (derived from the budget so it tracks _MAX_TOKENS changes) → triggers truncate.
+_BIG_USAGE = Usage(input_tokens=int(_MAX_TOKENS * _TRUNCATE_THRESHOLD) + 10_000, output_tokens=0)
 
 
 class _FakeCursor:

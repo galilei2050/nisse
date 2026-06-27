@@ -34,7 +34,9 @@ from app.shared.blocks import block_type
 from app.shared.models import NisseDbModel
 
 _COLLECTION = "conversation_turns"
-_MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
+_MAX_TOKENS = 96_000  # context budget: truncate() drops oldest turns once a turn's effective input
+# (prompt + cached prefix) nears this. Sized around the browser accessibility snapshots that dominate
+# context — each ≈35k tokens — so the running conversation plus ~2 snapshots fit before it trims.
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long

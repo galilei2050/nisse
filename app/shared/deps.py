@@ -28,3 +28,4 @@ class CoreDeps:
     bucket_name: str
     scheduler: Scheduler
     schedule_endpoint: str
+    browser_cdp_url: str | None  # set → browser runs on a managed remote browser (Browserbase), not local
