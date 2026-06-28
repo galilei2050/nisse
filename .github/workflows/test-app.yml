@@ -76,6 +76,11 @@ jobs:
       PRIVATE_BUCKET_NAME: ${{ vars.PRIVATE_BUCKET_NAME }}
     steps:
       - uses: actions/checkout@v4
+      # uv + python for the host-side `pytest tests/smoke/` step that probes the running container.
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       # The image builds a Cloud Tasks client at startup, whose constructor resolves Application
       # Default Credentials — on Cloud Run from the runtime SA, here minted keylessly by WIF.
       # No RPC runs during the /ping smoke, so the read-only SA is enough; backend-image-run
