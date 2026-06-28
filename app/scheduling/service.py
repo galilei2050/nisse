@@ -1,10 +1,12 @@
 """SchedulingService + LoggingScheduler — the scheduling seam a tool sees, and a no-Cloud-Tasks stand-in."""
 
 import json
+import logging
 
 from baski.clients.scheduler import Scheduler
 from baski.primitives import datetime
-from baski.server import Logger
+
+logger = logging.getLogger(__name__)
 
 # Cloud Tasks waits at most this long for /schedule/fire to answer; an agent reply fits well inside.
 _DISPATCH_DEADLINE = datetime.timedelta(minutes=10)
@@ -17,10 +19,6 @@ class LoggingScheduler:
     tested locally — the agent's `remind` call lands in the log) without a real queue or callback.
     """
 
-    def __init__(self, logger: Logger) -> None:
-        """Hold the logger every enqueue is written to."""
-        self._logger = logger
-
     async def enqueue(  # noqa: PLR0913 — mirrors CloudTasksScheduler's signature so it's a drop-in Scheduler
         self,
         *,
@@ -32,9 +30,9 @@ class LoggingScheduler:
         schedule_time: datetime.datetime | None = None,
     ) -> bool:
         """Log the task that would have been enqueued (no Cloud Tasks); always reports success."""
-        self._logger.info(
+        logger.info(
             "Scheduler (no Cloud Tasks): would enqueue",
-            labels={
+            extra={
                 "taskName": task_name,
                 "scheduleTime": str(schedule_time),
                 "endpoint": endpoint,

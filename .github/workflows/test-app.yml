@@ -62,9 +62,6 @@ jobs:
   smoke:
     name: smoke
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write          # mint the OIDC token for Workload Identity Federation
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
@@ -76,13 +73,4 @@ jobs:
       PRIVATE_BUCKET_NAME: ${{ vars.PRIVATE_BUCKET_NAME }}
     steps:
       - uses: actions/checkout@v4
-      # The image runs --cloud, so it builds a Cloud Logging client and Cloud Tasks client
-      # that need Application Default Credentials — on Cloud Run these come from the runtime
-      # service account; here WIF mints them keylessly. backend-image-run passes them in.
-      - name: Cloud SDK auth (Workload Identity Federation — keyless)
-        uses: google-github-actions/auth@v2
-        with:
-          project_id: nisse2050
-          workload_identity_provider: projects/675179615608/locations/global/workloadIdentityPools/github/providers/github-oidc
-          service_account: github-actions@nisse2050.iam.gserviceaccount.com
       - run: make test-backend-image

@@ -6,7 +6,6 @@ import httpx
 from anthropic import AsyncAnthropic
 from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import Scheduler
-from baski.server import Logger
 from pymongo.asynchronous.database import AsyncDatabase
 
 
@@ -20,7 +19,6 @@ class CoreDeps:
     in webhook mode, a `LoggingScheduler` in polling/probe — so no branch guards the scheduling tools.
     """
 
-    logger: Logger
     http: httpx.AsyncClient
     anthropic: AsyncAnthropic
     database: AsyncDatabase

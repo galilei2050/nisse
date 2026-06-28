@@ -61,13 +61,11 @@ class Conversations:
 
     async def _build(self, conversation_id: int) -> Conversation:
         """Assemble one chat's agent inline from CoreDeps. Add a tool domain → a new `_build_*_tools`."""
-        history = MongoMessageHistory(
-            logger=self._deps.logger, database=self._deps.database, conversation_id=conversation_id
-        )
+        history = MongoMessageHistory(database=self._deps.database, conversation_id=conversation_id)
         await history.load()
         short_term = ShortTermMemory()
 
-        toolset = ToolSet(logger=self._deps.logger)
+        toolset = ToolSet()
         toolset.add(short_term)
         toolset.add(DeleteMessagesTool(history))
         for tool in [
@@ -80,7 +78,6 @@ class Conversations:
             toolset.add(tool)
 
         config = AgentConfig(
-            logger=self._deps.logger,
             toolset=toolset,
             message_history=history,
             anthropic_client=self._deps.anthropic,
@@ -94,7 +91,7 @@ class Conversations:
 
     def _build_web_tools(self) -> list[Tool]:
         """Search + browsing: 10 SerpApi leaves from app.search, plus WebBrowse from baski."""
-        serpapi = SerpApiClient(logger=self._deps.logger, http_client=self._deps.http)
+        serpapi = SerpApiClient(http_client=self._deps.http)
         return [
             GoogleSearchTool(serpapi_client=serpapi),
             GoogleAiModeTool(serpapi_client=serpapi),

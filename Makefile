@@ -107,18 +107,14 @@ backend-local-wait:
 test-backend-image: backend-image-run backend-cloud-wait
 	BACKEND_URL=http://localhost:8080 uv run pytest tests/smoke/
 
-# Start the deploy image; its entrypoint runs --cloud, so it serves the webhook HTTP port
-# and builds GCP clients that need credentials. Env comes from the caller's environment (CI
-# job `env:` / local .env) — never baked in; when GCP creds are present they're mounted in.
+# Start the deploy image; its entrypoint runs --cloud, so it serves the webhook HTTP port.
+# Env comes from the caller's environment (CI job `env:` / local .env) — never baked in. No
+# GCP credentials needed: logs go to stdout and the Cloud Tasks client is built lazily.
 .PHONY: backend-image-run
 backend-image-run: backend-docker-build
 	@docker rm -f nisse-smoke 2>/dev/null || true
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
-		gcp=""; \
-		if [ -n "$$GOOGLE_APPLICATION_CREDENTIALS" ]; then \
-			gcp="-v $$GOOGLE_APPLICATION_CREDENTIALS:$$GOOGLE_APPLICATION_CREDENTIALS:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
-		fi; \
-		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 $$gcp \
+		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 \
 			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY \
 			-e GOOGLE_CLOUD_PROJECT -e GOOGLE_CLOUD_REGION -e CLOUD_TASKS_QUEUE -e PRIVATE_BUCKET_NAME \
 			${BACKEND_IMAGE_LATEST}

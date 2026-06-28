@@ -26,7 +26,6 @@ from anthropic import AsyncAnthropic
 from baski.agents.trace import TraceRecord
 from baski.clients.playwright_client import PlaywrightClient
 from baski.env import get_env
-from baski.server import Logger
 from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
@@ -87,19 +86,17 @@ def _print_trace(trace: TraceRecord) -> None:
 
 
 async def _run(user_id: int, message: str, traces_dir: Path) -> None:
-    logger = Logger()
     async with AsyncExitStack() as resources:
         http = await resources.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)))
-        playwright = await resources.enter_async_context(PlaywrightClient(headless=True, logger=logger))
+        playwright = await resources.enter_async_context(PlaywrightClient(headless=True))
         database: AsyncDatabase = AsyncMongoClient(str(get_env("MONGODB_URI")), tz_aware=True).get_default_database()
         deps = CoreDeps(
-            logger=logger,
             http=http,
             anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0),
             database=database,
             playwright=playwright,
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
-            scheduler=LoggingScheduler(logger),  # probe has no Cloud Tasks — log the enqueue instead
+            scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
         )
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
