@@ -101,8 +101,37 @@ backend-wait:
 		if grep -q 'Run polling for bot @' ~/Logs/nisse-backend.log 2>/dev/null; then echo "Backend ready (polling)!"; exit 0; fi; \
 	done; echo "Backend failed to start in 20s — see tmp/backend.log"; exit 1
 
+# Boot the real deploy image and verify it serves /ping — catches startup crashes that
+# --dry-run can't (dry-run returns before the lifespan runs, so it never launches the
+# browser or opens a client). Composed like clarity's smoke-test: run + wait. Not in `ci`
+# (needs Docker + live secrets) — runs as its own GitHub job.
+.PHONY: test-backend-image
+test-backend-image: backend-image-run backend-image-wait
+
+# Start the deploy image in webhook mode (entrypoint runs --cloud, like Cloud Run). Env
+# comes from the caller's environment (CI job `env:` / local .env) — never baked in.
+.PHONY: backend-image-run
+backend-image-run: backend-docker-build
+	@docker rm -f nisse-smoke 2>/dev/null || true
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 \
+			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY \
+			-e GOOGLE_CLOUD_PROJECT -e GOOGLE_CLOUD_REGION -e CLOUD_TASKS_QUEUE -e PRIVATE_BUCKET_NAME \
+			${BACKEND_IMAGE_LATEST}
+	@echo "Backend image started — logs: docker logs nisse-smoke"
+
+# Poll /ping until it answers; fail fast (and dump logs) if the container dies first.
+.PHONY: backend-image-wait
+backend-image-wait:
+	@for i in $$(seq 1 30); do \
+		if [ "$$(docker inspect -f '{{.State.Running}}' nisse-smoke 2>/dev/null)" != "true" ]; then echo "Container exited:"; docker logs nisse-smoke; exit 1; fi; \
+		if curl -fsS http://localhost:8080/ping >/dev/null 2>&1; then echo "Backend image ready — /ping OK"; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo "Backend image failed to start in 60s:"; docker logs nisse-smoke; exit 1
+
 # Single source of truth for CI — GitHub Actions just runs `make ci`, no copy-paste.
-# Smoke excluded: needs a live backend with a real token + public WEBHOOK_URL.
+# Smoke excluded: needs Docker + live secrets, so it runs as its own GitHub job.
 .PHONY: ci
 ci: lint typecheck test-backend test-backend-dry-run
 

@@ -31,4 +31,5 @@ Design notes and deeper docs live in `docs/`. Check there before implementing; f
 - `make setup`       — venv + install deps
 - `make backend-run` — start backend in polling mode (background, logs to `~/Logs/backend.log`)
 - `make test`        — lint + dry-run import check
+- `make test-backend-image` — build the deploy image, boot it (webhook mode), curl `/ping`; catches startup crashes dry-run misses. Runs as the CI `smoke` job (Docker + live secrets), not in `make ci`.
 - `make cd`          — build + deploy to `nisse2050`

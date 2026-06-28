@@ -55,3 +55,22 @@ jobs:
       - run: make setup
       - run: make test-backend
       - run: make test-backend-dry-run
+
+  # Boots the real deploy image and curls /ping — the only check that runs the lifespan
+  # (browser launch, client init), so it catches startup crashes that slip past dry-run.
+  # All env is live repo config; only the webhook never receives traffic in CI.
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+      GOOGLE_CLOUD_REGION: ${{ vars.GOOGLE_CLOUD_REGION }}
+      CLOUD_TASKS_QUEUE: ${{ vars.CLOUD_TASKS_QUEUE }}
+      PRIVATE_BUCKET_NAME: ${{ vars.PRIVATE_BUCKET_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-backend-image
