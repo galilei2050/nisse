@@ -139,7 +139,7 @@ ci: lint typecheck test-backend test-backend-dry-run
 test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
-# full ci + a real-bot smoke boot on push (mirrors clarity's pre-push-check).
+# full ci + a real-bot smoke boot on push.
 .PHONY: check-baski
 check-baski:
 	@git -C ../baski fetch -q origin main
