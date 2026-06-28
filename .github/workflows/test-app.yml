@@ -55,3 +55,40 @@ jobs:
       - run: make setup
       - run: make test-backend
       - run: make test-backend-dry-run
+
+  # Boots the real deploy image and runs the smoke suite against it — the only check that
+  # runs the lifespan (browser launch, client init), so it catches startup crashes that
+  # slip past dry-run. All env is live repo config; only the webhook never sees traffic in CI.
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # mint the OIDC token for Workload Identity Federation
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+      GOOGLE_CLOUD_REGION: ${{ vars.GOOGLE_CLOUD_REGION }}
+      CLOUD_TASKS_QUEUE: ${{ vars.CLOUD_TASKS_QUEUE }}
+      PRIVATE_BUCKET_NAME: ${{ vars.PRIVATE_BUCKET_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+      # uv + python for the host-side `pytest tests/smoke/` step that probes the running container.
+      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The image builds a Cloud Tasks client at startup, whose constructor resolves Application
+      # Default Credentials — on Cloud Run from the runtime SA, here minted keylessly by WIF.
+      # No RPC runs during the /ping smoke, so the read-only SA is enough; backend-image-run
+      # mounts the credentials into the container.
+      - name: Cloud SDK auth (Workload Identity Federation — keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: nisse2050
+          workload_identity_provider: projects/675179615608/locations/global/workloadIdentityPools/github/providers/github-oidc
+          service_account: github-actions@nisse2050.iam.gserviceaccount.com
+      - run: make test-backend-image

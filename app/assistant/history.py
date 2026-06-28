@@ -18,6 +18,7 @@ infrastructure/services/cloud_run_backend.py) with every entry point sharing one
 """
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Self
@@ -26,12 +27,14 @@ from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResu
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
 from baski.primitives import datetime
-from baski.server import Logger
 from pydantic import BaseModel, ConfigDict
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.blocks import block_type
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
+
+logger = logging.getLogger(__name__)
 
 _COLLECTION = "conversation_turns"
 _MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
@@ -138,9 +141,8 @@ class MongoMessageHistory(MessageHistory):
     sent. `drop_tool_turns()` removes pure tool turns from the active transcript between replies.
     """
 
-    def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
+    def __init__(self, *, database: AsyncDatabase, conversation_id: int) -> None:
         """Bind the history to one conversation and start with an empty in-memory transcript."""
-        self._logger = logger
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
 
@@ -159,8 +161,8 @@ class MongoMessageHistory(MessageHistory):
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
         col = database[_COLLECTION]
-        await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
-        await col.create_index([("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+        await ensure_index(col, [("conversation_id", 1), ("turn_id", 1)], unique=True)
+        await ensure_index(col, [("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
 
     # --- MessageHistory protocol: in-memory turn assembly ---
 
@@ -238,9 +240,9 @@ class MongoMessageHistory(MessageHistory):
         count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
         dropped, self._turns = self._turns[:count], self._turns[count:]
         self._dropped.update(turn.id for turn in dropped)
-        self._logger.info(
+        logger.info(
             "Truncated message history",
-            labels={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
+            extra={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
         )
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
@@ -250,7 +252,7 @@ class MongoMessageHistory(MessageHistory):
         self._turns = [turn for turn in self._turns if turn.id not in ids]
         removed = original - len(self._turns)
         self._dropped.update(ids)
-        self._logger.info("Turns deleted by agent", labels={"turnIds": sorted(ids), "turnsRemoved": removed})
+        logger.info("Turns deleted by agent", extra={"turnIds": sorted(ids), "turnsRemoved": removed})
         return removed
 
     # --- persistence ---

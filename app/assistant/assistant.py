@@ -1,11 +1,15 @@
 """Assistant — the thin TG↔agent layer: turns a user message into an agent reply."""
 
+import logging
+
 from baski.agents import AgentExecuteResult, Listener, noop
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
 from app.prompts import PromptStore
 from app.shared import CoreDeps
+
+logger = logging.getLogger(__name__)
 
 NISSE_SYSTEM_PROMPT = (
     "You are Nisse, a personal AI assistant for a single owner. Be concise and direct. When a question "
@@ -92,9 +96,9 @@ class Assistant:
         result = await self.run(conversation_id=conversation_id, text=text, on_event=on_event)
 
         if not result.response:
-            self._deps.logger.warning(
+            logger.warning(
                 "Agent produced no user-facing text; sending fallback",
-                labels={
+                extra={
                     "traceId": result.trace_id,
                     "turnCount": result.turn_count,
                     "toolCallCount": result.tool_call_count,

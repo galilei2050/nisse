@@ -88,8 +88,7 @@ class _FakeDatabase:
 
 
 def _history(collection: _FakeCollection, conversation_id: int = 1) -> MongoMessageHistory:
-    logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
-    return MongoMessageHistory(logger=logger, database=_FakeDatabase(collection), conversation_id=conversation_id)
+    return MongoMessageHistory(database=_FakeDatabase(collection), conversation_id=conversation_id)
 
 
 def _active_ids(collection: _FakeCollection) -> list[int]:

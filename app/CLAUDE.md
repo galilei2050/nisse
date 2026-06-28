@@ -141,7 +141,7 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 - **`shared/` only when reused** — promote code here once a *second* domain needs
   it; don't pre-share. It holds primitives (db, base models, providers), not logic.
 - Pydantic in / Pydantic out between functions; raw dicts only for pipeline
-  intermediates and logger labels. Keep `reply` / `execute` short orchestrators.
+  intermediates and log `extra` fields. Keep `reply` / `execute` short orchestrators.
 - **Every class docstring states its lifecycle** — *long-lived* (singleton / per-conversation,
   built once and reused) vs *short-lived* (per-reply glue, or a per-record data model) — so it's
   clear at a glance what's cached and what's rebuilt each time.
@@ -309,6 +309,6 @@ prompt = base `prompt.py` + overlay, learned skills = specs loaded alongside `sk
 
 `telegram.server.TelegramServer` · `telegram.receptionist.Receptionist` ·
 `telegram.history.ChatHistory` · `telegram.storage.UsersStorage` ·
-`server.AppConfig` / `Logger` · `agents.{Agent,Tool,ToolSet,MessageHistory,
+`server.AppConfig` · `agents.{Agent,Tool,ToolSet,MessageHistory,
 ShortTermMemory,TraceCollector}` · `clients.{SerpAPIClient,PlaywrightClient}` ·
 `primitives.{datetime,json,unique_id}` · `pattern.retry` · `map_async`.

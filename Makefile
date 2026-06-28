@@ -83,26 +83,61 @@ typecheck:
 test-backend:
 	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/
 
-# Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
-# Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
-# running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
+# Smoke — boot the real bot (polling) and verify it's healthy against Telegram. Leaves the
+# bot running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
 # CLAUDE.md "Local vs prod"), so this never disturbs the prod webhook. Not in GitHub `ci`.
 .PHONY: smoke-test
-smoke-test: backend-run backend-wait
+smoke-test: backend-run backend-local-wait
 	uv run pytest tests/smoke/
 
-# backend-wait — poll until healthy. Polling has no HTTP; the "Run polling for
-# bot @…" log line (aiogram getMe succeeded) is the ready signal.
-.PHONY: backend-wait
-backend-wait:
+# Readiness for the polling bot: polling opens no HTTP port, so the ready signal is the
+# "Run polling for bot @…" log line (aiogram getMe succeeded), not a port.
+.PHONY: backend-local-wait
+backend-local-wait:
 	@for i in $$(seq 1 20); do \
 		sleep 1; \
 		if ! pgrep -f '[a]pp.backend' >/dev/null; then echo "Backend died — see tmp/backend.log"; exit 1; fi; \
 		if grep -q 'Run polling for bot @' ~/Logs/nisse-backend.log 2>/dev/null; then echo "Backend ready (polling)!"; exit 0; fi; \
 	done; echo "Backend failed to start in 20s — see tmp/backend.log"; exit 1
 
+# Boot the real deploy image and run the smoke suite against it. Catches startup crashes
+# that --dry-run can't: dry-run returns before the lifespan runs, so it never launches the
+# browser or opens a client. Not in `ci` (needs Docker + live secrets) — its own GitHub job.
+.PHONY: test-backend-image
+test-backend-image: backend-image-run backend-cloud-wait
+	BACKEND_URL=http://localhost:8080 uv run pytest tests/smoke/
+
+# Start the deploy image; its entrypoint runs --cloud, so it serves the webhook HTTP port and
+# builds a Cloud Tasks client whose constructor needs Application Default Credentials. Env comes
+# from the caller's environment (CI job `env:` / local .env) — never baked in; when GCP creds are
+# present (CI mints them via WIF) they're mounted into the container.
+.PHONY: backend-image-run
+backend-image-run: backend-docker-build
+	@docker rm -f nisse-smoke 2>/dev/null || true
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+		gcp=""; \
+		if [ -n "$$GOOGLE_APPLICATION_CREDENTIALS" ]; then \
+			gcp="-v $$GOOGLE_APPLICATION_CREDENTIALS:$$GOOGLE_APPLICATION_CREDENTIALS:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
+		fi; \
+		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 $$gcp \
+			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY \
+			-e GOOGLE_CLOUD_PROJECT -e GOOGLE_CLOUD_REGION -e CLOUD_TASKS_QUEUE -e PRIVATE_BUCKET_NAME \
+			${BACKEND_IMAGE_LATEST}
+	@echo "Backend image started — logs: docker logs nisse-smoke"
+
+# Readiness for the HTTP backend (webhook mode serves a port): curl /ping until it answers;
+# fail fast and dump container logs if it dies first.
+.PHONY: backend-cloud-wait
+backend-cloud-wait:
+	@for i in $$(seq 1 30); do \
+		if [ "$$(docker inspect -f '{{.State.Running}}' nisse-smoke 2>/dev/null)" != "true" ]; then echo "Container exited:"; docker logs nisse-smoke; exit 1; fi; \
+		if curl -fsS http://localhost:8080/ping >/dev/null 2>&1; then echo "Backend image ready — /ping OK"; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo "Backend image failed to start in 60s:"; docker logs nisse-smoke; exit 1
+
 # Single source of truth for CI — GitHub Actions just runs `make ci`, no copy-paste.
-# Smoke excluded: needs a live backend with a real token + public WEBHOOK_URL.
+# Smoke excluded: needs Docker + live secrets, so it runs as its own GitHub job.
 .PHONY: ci
 ci: lint typecheck test-backend test-backend-dry-run
 
@@ -110,7 +145,7 @@ ci: lint typecheck test-backend test-backend-dry-run
 test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
-# full ci + a real-bot smoke boot on push (mirrors clarity's pre-push-check).
+# full ci + a real-bot smoke boot on push.
 .PHONY: check-baski
 check-baski:
 	@git -C ../baski fetch -q origin main

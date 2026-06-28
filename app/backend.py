@@ -69,7 +69,6 @@ class NisseBot(TelegramServer):
     def deps(self) -> CoreDeps:
         """Shared low-level clients assembled from individual cached properties."""
         return CoreDeps(
-            logger=self.logger,
             http=self._http,
             anthropic=self._anthropic,
             database=self._database,
@@ -92,7 +91,7 @@ class NisseBot(TelegramServer):
     @cached_property
     def _playwright(self) -> PlaywrightClient:
         """Headless browser client."""
-        return PlaywrightClient(headless=True, logger=self.logger)
+        return PlaywrightClient(headless=True)
 
     @cached_property
     def _scheduler_dep(self) -> Scheduler:
@@ -103,7 +102,7 @@ class NisseBot(TelegramServer):
         cloud_tasks_config() would produce two gRPC async clients on the same event loop,
         causing "Task was destroyed but it is pending!" errors.
         """
-        return self._scheduler if self.args["cloud"] else LoggingScheduler(self.logger)
+        return self._scheduler if self.args["cloud"] else LoggingScheduler()
 
     @cached_property
     def _schedule_endpoint(self) -> str:
