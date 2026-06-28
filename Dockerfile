@@ -21,7 +21,7 @@ RUN uv sync --no-sources --no-dev --no-install-project
 COPY . ./
 RUN uv sync --no-sources --no-dev && chmod +x entrypoint.sh
 
-RUN uv run --no-sync --no-dev playwright install --with-deps firefox
+RUN uv run --no-sync --no-dev playwright install --with-deps chromium
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENTRYPOINT ["/app/entrypoint.sh"]
