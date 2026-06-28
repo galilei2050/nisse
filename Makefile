@@ -116,7 +116,7 @@ backend-image-run: backend-docker-build
 	@set -a; [ -f .env ] && . ./.env || true; set +a; \
 		gcp=""; \
 		if [ -n "$$GOOGLE_APPLICATION_CREDENTIALS" ]; then \
-			gcp="-v $$RUNNER_TEMP:$$RUNNER_TEMP:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
+			gcp="-v $$GOOGLE_APPLICATION_CREDENTIALS:$$GOOGLE_APPLICATION_CREDENTIALS:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
 		fi; \
 		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 $$gcp \
 			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY \
