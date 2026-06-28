@@ -56,9 +56,9 @@ jobs:
       - run: make test-backend
       - run: make test-backend-dry-run
 
-  # Boots the real deploy image and curls /ping — the only check that runs the lifespan
-  # (browser launch, client init), so it catches startup crashes that slip past dry-run.
-  # All env is live repo config; only the webhook never receives traffic in CI.
+  # Boots the real deploy image and runs the smoke suite against it — the only check that
+  # runs the lifespan (browser launch, client init), so it catches startup crashes that
+  # slip past dry-run. All env is live repo config; only the webhook never sees traffic in CI.
   smoke:
     name: smoke
     runs-on: ubuntu-latest

@@ -84,29 +84,31 @@ test-backend:
 	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
-# Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
+# Mirrors clarity: backend-run → backend-local-wait → pytest tests/smoke. Leaves the bot
 # running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
 # CLAUDE.md "Local vs prod"), so this never disturbs the prod webhook. Not in GitHub `ci`.
 .PHONY: smoke-test
-smoke-test: backend-run backend-wait
+smoke-test: backend-run backend-local-wait
 	uv run pytest tests/smoke/
 
-# backend-wait — poll until healthy. Polling has no HTTP; the "Run polling for
-# bot @…" log line (aiogram getMe succeeded) is the ready signal.
-.PHONY: backend-wait
-backend-wait:
+# backend-local-wait — readiness for the polling bot. Polling has no HTTP, so the ready
+# signal is the "Run polling for bot @…" log line (aiogram getMe succeeded), not a port.
+# Its cloud twin is backend-cloud-wait (curl /ping), since the image opens an HTTP port.
+.PHONY: backend-local-wait
+backend-local-wait:
 	@for i in $$(seq 1 20); do \
 		sleep 1; \
 		if ! pgrep -f '[a]pp.backend' >/dev/null; then echo "Backend died — see tmp/backend.log"; exit 1; fi; \
 		if grep -q 'Run polling for bot @' ~/Logs/nisse-backend.log 2>/dev/null; then echo "Backend ready (polling)!"; exit 0; fi; \
 	done; echo "Backend failed to start in 20s — see tmp/backend.log"; exit 1
 
-# Boot the real deploy image and verify it serves /ping — catches startup crashes that
-# --dry-run can't (dry-run returns before the lifespan runs, so it never launches the
-# browser or opens a client). Composed like clarity's smoke-test: run + wait. Not in `ci`
-# (needs Docker + live secrets) — runs as its own GitHub job.
+# Boot the real deploy image and run the smoke suite against it — catches startup crashes
+# that --dry-run can't (dry-run returns before the lifespan runs, so it never launches the
+# browser or opens a client). Composed like clarity's smoke-test: run + wait, then pytest
+# against the live backend. Not in `ci` (needs Docker + live secrets) — its own GitHub job.
 .PHONY: test-backend-image
-test-backend-image: backend-image-run backend-image-wait
+test-backend-image: backend-image-run backend-cloud-wait
+	BACKEND_URL=http://localhost:8080 uv run pytest tests/smoke/
 
 # Start the deploy image in webhook mode (entrypoint runs --cloud, like Cloud Run). Env
 # comes from the caller's environment (CI job `env:` / local .env) — never baked in.
@@ -120,9 +122,11 @@ backend-image-run: backend-docker-build
 			${BACKEND_IMAGE_LATEST}
 	@echo "Backend image started — logs: docker logs nisse-smoke"
 
-# Poll /ping until it answers; fail fast (and dump logs) if the container dies first.
-.PHONY: backend-image-wait
-backend-image-wait:
+# backend-cloud-wait — readiness for the HTTP backend (webhook mode opens a port): curl
+# /ping until it answers; fail fast (and dump logs) if the container dies first. Local twin
+# is backend-local-wait (polling has no port). Used by the image smoke.
+.PHONY: backend-cloud-wait
+backend-cloud-wait:
 	@for i in $$(seq 1 30); do \
 		if [ "$$(docker inspect -f '{{.State.Running}}' nisse-smoke 2>/dev/null)" != "true" ]; then echo "Container exited:"; docker logs nisse-smoke; exit 1; fi; \
 		if curl -fsS http://localhost:8080/ping >/dev/null 2>&1; then echo "Backend image ready — /ping OK"; exit 0; fi; \
