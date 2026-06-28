@@ -32,6 +32,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.blocks import block_type
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +161,8 @@ class MongoMessageHistory(MessageHistory):
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
         col = database[_COLLECTION]
-        await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
-        await col.create_index([("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+        await ensure_index(col, [("conversation_id", 1), ("turn_id", 1)], unique=True)
+        await ensure_index(col, [("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
 
     # --- MessageHistory protocol: in-memory turn assembly ---
 

@@ -14,6 +14,7 @@ from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
 from app.shared.text import match_unique
 
 _COLLECTION = "lists"
@@ -61,7 +62,7 @@ class ListStore:
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique (conversation_id, name) — one canonical list per name per chat. Idempotent."""
-        await database[_COLLECTION].create_index([("conversation_id", 1), ("name", 1)], unique=True)
+        await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("name", 1)], unique=True)
 
     async def all(self) -> list[ItemList]:
         """Every live list in this conversation, for the always-injected index."""

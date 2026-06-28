@@ -12,6 +12,7 @@ from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
 
 _COLLECTION = "prompts"
 
@@ -41,7 +42,7 @@ class PromptStore:
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique index on (conversation_id, prompt_type) — one row per type per chat. Idempotent."""
-        await database[_COLLECTION].create_index([("conversation_id", 1), ("prompt_type", 1)], unique=True)
+        await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("prompt_type", 1)], unique=True)
 
     async def get(self, prompt_type: PromptType) -> str | None:
         """The current content for a prompt type in this conversation, or None if not set yet."""

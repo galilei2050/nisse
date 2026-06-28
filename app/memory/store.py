@@ -13,6 +13,7 @@ from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
 
 _COLLECTION = "memories"
 
@@ -85,7 +86,7 @@ class MemoryStore:
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique index on public_id — the agent-facing key. Idempotent; call once at startup."""
-        await database[_COLLECTION].create_index("public_id", unique=True)
+        await ensure_index(database[_COLLECTION], "public_id", unique=True)
 
     async def list(self) -> list[Memory]:
         """Every live memory in this conversation (not soft-deleted), for the always-injected index."""
