@@ -11,6 +11,17 @@ Backend deploys to Cloud Run on GCP project `nisse2050`. Built on `baski` (https
 
 Local dev and prod are **different Telegram bots with different `TELEGRAM_TOKEN`s** (prod's is a GCP secret bound to Cloud Run; local's is in `.env`). Prod runs in **webhook** mode; local (`make backend-run` / `smoke-test`) runs in **polling**. Because they're distinct bot identities, running the local poller never disturbs prod — Telegram only forbids webhook+polling on the *same* bot.
 
+## Decision principles
+
+The bot is a **delegate** standing in for a personal assistant — design and evaluate it by the owner's outcome and trust, not per-request cost or latency. These follow from delegation/trust research (principal-agent: Holmström 1979, Townsend 1979, Diamond 1984; trust-in-automation: Lee & See 2004, Yang/Wickens 2016; algorithm aversion: Dietvorst et al. 2015):
+
+- **Reliability beats peak quality.** A predictably good-enough answer is worth more than a higher-average but erratic one — the owner can't cheaply audit each output, and variance's low-quality tail is where undetected, trust-destroying misses hide.
+- **An unverifiable miss is disproportionately costly.** Trust builds slowly, collapses fast (≈2× asymmetry) and one salient lapse generalizes to the whole agent; machine errors are punished harder than human ones. A couple of unexplained misses make the owner re-check everything — and once verification cost ≈ doing it himself, delegation is worthless. Weigh decisions by **stakes × how-unverifiable-by-the-owner**, not by frequency.
+- **Honest self-signaling is the escape hatch.** When a reply was quick / unsure / not fully checked, say so — silent variable quality is the trust-killer; a flagged "I didn't verify X" lets the owner spot-check just that, preserving delegation's value. Pair any "I don't know" with a path forward. Composes with the "verify, don't guess" behaviour.
+- **No cost/latency machinery without amortization.** Routers, classifiers, extra model calls pay off on high-volume heterogeneous traffic, not a single-user bot. Prefer the one-line option with no new failure mode over a mechanism that taxes every message.
+- **Don't pile onto the system prompt.** It's already dense; more instructions cause over-think and diminishing returns. Add only with empirical evidence it changes behaviour.
+- **Decide empirically, via `make probe` with repeats.** A single run is noise — quality/depth vary run-to-run at fixed settings; measure the distribution (especially the shallow-rate on hard tasks), not one lucky outcome.
+
 ## Conventions
 
 - Foundation primitives (datetime, JSON, server bases) come from `baski`. Do NOT vendor a copy here.
