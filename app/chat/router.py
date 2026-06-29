@@ -1,12 +1,17 @@
 """Telegram I/O router — text message → Assistant.reply() → answer."""
 
+from typing import TYPE_CHECKING
+
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
 from aiogram.types import Message
 from baski.agents import AgentProviderUnavailableError, AgentRefusalError
 
-from app.assistant import Assistant
+from app.chat.format import compose_answer
 from app.chat.progress import TelegramProgress
+
+if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
+    from app.assistant import Assistant
 
 _NON_TEXT_REPLY = "Send me a text message."
 _REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
@@ -17,7 +22,7 @@ _API_DOWN_REPLY = (
 )
 
 
-def build_router(*, assistant: Assistant) -> Router:
+def build_router(*, assistant: "Assistant") -> Router:
     """Build the chat router whose handler delegates every text message to the assistant."""
     router = Router(name="chat")
 
@@ -30,8 +35,8 @@ def build_router(*, assistant: Assistant) -> Router:
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
-            answer = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
-            await progress.finish(answer)
+            result = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
+            await progress.finish(compose_answer(result))
         except AgentRefusalError:
             await progress.finish(_REFUSAL_REPLY)
         except AgentProviderUnavailableError:

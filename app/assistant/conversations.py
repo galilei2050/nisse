@@ -86,6 +86,7 @@ class Conversations:
             system_prompt=self._system_prompt,
             await_trace=self._await_trace,
             local_traces_dir=self._local_traces_dir,
+            judge=self._deps.judge,
         )
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import httpx
 from anthropic import AsyncAnthropic
+from baski.agents import Judge
 from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import Scheduler
 from pymongo.asynchronous.database import AsyncDatabase
@@ -26,3 +27,4 @@ class CoreDeps:
     bucket_name: str
     scheduler: Scheduler
     schedule_endpoint: str
+    judge: Judge  # cross-family completeness judge; the agent runs it at the loop's exit and retries

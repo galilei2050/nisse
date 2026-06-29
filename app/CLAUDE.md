@@ -45,17 +45,12 @@ app/
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
   assistant/        the main agent — composition root
-    assistant.py    Assistant.reply(conversation_id, text) -> str; thin TG↔agent layer over the registry
+    assistant.py    Assistant.reply(conversation_id, text) -> AgentExecuteResult; thin TG↔agent layer (the chat layer formats the result via chat/format.compose_answer)
     conversations.py Conversations — registry: builds each chat's agent once and caches it
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
     history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
-
-  judge/            provider-agnostic LLM-as-judge (Gemini grades Opus output)
-    judge.py        Judge interface + Verdict model (score / pass / rationale)
-    gemini.py       Gemini/Vertex impl — own client, own provider
-    rubric.py       scoring criteria
 
   memory/           LONG-TERM MEMORY: durable owner-facts + the recall_save/recall_read/recall_edit/recall_forget tools
     store.py        Memory model + MemoryStore (Mongo `memories`, short-id CRUD: add/overwrite/set_body/soft_delete)
@@ -100,8 +95,10 @@ app/
                     (learned skills are data specs in Mongo, not code here)
 ```
 
-`judge/`, `curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below
-describe them. Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `shared`.
+`curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below describe them.
+Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `shared`. The
+LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`), wired here via `CoreDeps.judge`
+→ `AgentConfig.judge` — not a local `app/judge/`.
 
 `Tool.system_prompt()` (baski) is **async and re-read every turn** (symmetric with `user_message()`);
 the agent reassembles its system prompt each turn, so a tool can inject live content — `prompts/`

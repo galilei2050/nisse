@@ -1,18 +1,47 @@
-"""Render an LLM markdown answer as Telegram MarkdownV2, split to the size limit.
+"""Render an agent result as the user-facing Telegram message.
 
-``Assistant.reply()`` returns standard markdown (``**bold**``, ``## headers``,
-fenced code, links, lists). :func:`to_markdown_v2` converts it to Telegram
-MarkdownV2 via the ``telegramify-markdown`` library (a real pulldown-cmark
-parser, not regex); :func:`split_message` keeps each message under Telegram's
-UTF-16 limit; :func:`strip_markdown_v2` is the plain-text fallback when Telegram
-rejects the converted entities.
+:func:`compose_answer` assembles the plain-markdown reply from a raw
+``AgentExecuteResult`` (the agent's answer + cost footer, or a fallback) — the
+Telegram layer owns this, not ``Assistant``; the completeness judge streams as
+``Judged`` step events instead. The agent emits standard markdown
+(``**bold**``, ``## headers``, fenced code, links, lists);
+:func:`to_markdown_v2` converts it to Telegram MarkdownV2 via the
+``telegramify-markdown`` library (a real pulldown-cmark parser, not regex);
+:func:`split_message` keeps each message under Telegram's UTF-16 limit;
+:func:`strip_markdown_v2` is the plain-text fallback when Telegram rejects the
+converted entities.
 """
 
 import re
 
 import telegramify_markdown
+from baski.agents import AgentExecuteResult
 
-__all__ = ["split_message", "strip_markdown_v2", "to_markdown_v2"]
+__all__ = ["compose_answer", "split_message", "strip_markdown_v2", "to_markdown_v2"]
+
+_NO_ANSWER = "I couldn't produce a response — please try rephrasing."
+
+
+def _humanize_tokens(n: int) -> str:
+    """Compact token count for the reply footer: 12_400 → '12.4k', 64_000 → '64k'."""
+    return f"{n / 1000:.1f}k".replace(".0k", "k")
+
+
+def _footer(result: AgentExecuteResult) -> str:
+    """One-line cost + current context-size note appended to every answer."""
+    return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
+
+
+def compose_answer(result: AgentExecuteResult) -> str:
+    """The user-facing reply text: the agent's answer + cost footer, or a fallback.
+
+    The completeness judge's activity is NOT appended here — it streams as `Judged` step events
+    (rendered by `TelegramProgress`, like tool use and thinking), so the owner sees it in the live log.
+    """
+    if not result.response:
+        return _NO_ANSWER
+    return result.response + _footer(result)
+
 
 # Telegram's per-message limit, counted in UTF-16 code units.
 MAX_MESSAGE_LENGTH = 4096

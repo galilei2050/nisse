@@ -46,18 +46,6 @@ NISSE_SYSTEM_PROMPT = (
     "bold labels over headings."
 )
 
-_NO_ANSWER = "I couldn't produce a response — please try rephrasing."
-
-
-def _humanize_tokens(n: int) -> str:
-    """Compact token count for the reply footer: 12_400 → '12.4k', 64_000 → '64k'."""
-    return f"{n / 1000:.1f}k".replace(".0k", "k")
-
-
-def _footer(result: AgentExecuteResult) -> str:
-    """One-line cost + current context-size note appended to every answer."""
-    return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
-
 
 class Assistant:
     """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`).
@@ -94,23 +82,24 @@ class Assistant:
     async def run(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
         """Drive the conversation's reused agent over the new message; return the raw result.
 
-        `reply()` wraps this into a user-facing string. Probe/tests call `run()` directly to read
-        the result's `trace_id` (to inspect the persisted trace) and token counts.
+        Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
+        the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
+        the result into the user-facing string.
         """
         conversation = await self._conversations.get(conversation_id)
         return await conversation.reply(text=text, on_event=on_event)
 
-    async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> str:
-        """Reply to a message within the persistent conversation; the chat router's entry point.
+    async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
+        """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
 
-        `on_event` receives step events as the agent works — the chat router passes a
-        `TelegramProgress` listener so the user sees live progress.
+        Formatting (footer, judge note, fallback) is the Telegram layer's job — see
+        `chat/format.compose_answer`. `on_event` receives step events as the agent works (the chat
+        router passes a `TelegramProgress` listener for live progress).
         """
         result = await self.run(conversation_id=conversation_id, text=text, on_event=on_event)
-
         if not result.response:
             logger.warning(
-                "Agent produced no user-facing text; sending fallback",
+                "Agent produced no user-facing text; chat layer will send fallback",
                 extra={
                     "traceId": result.trace_id,
                     "turnCount": result.turn_count,
@@ -118,8 +107,7 @@ class Assistant:
                     "outputTokens": result.total_output_tokens,
                 },
             )
-            return _NO_ANSWER
-        return result.response + _footer(result)
+        return result
 
     async def flush(self, *, conversation_id: int) -> None:
         """Await the conversation's durable history writes — called after the answer is sent."""

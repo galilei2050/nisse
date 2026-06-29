@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from anthropic import AsyncAnthropic
+from baski.agents import GeminiJudge
 from baski.agents.trace import TraceRecord
 from baski.clients.playwright_client import PlaywrightClient
 from baski.env import get_env
@@ -97,6 +98,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
+            judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT"))),
         )
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
         await assistant.setup()
