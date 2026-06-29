@@ -16,7 +16,6 @@ Usage + expectation-first test cases: `app/CLAUDE.md` → "Manual probe", `docs/
 import argparse
 import asyncio
 import json
-import tempfile
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -104,8 +103,10 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         result = await assistant.run(conversation_id=user_id, text=message)
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
 
-    trace = TraceRecord.model_validate_json((traces_dir / f"{result.trace_id}.json").read_text())
+    trace_path = traces_dir / f"{result.trace_id}.json"
+    trace = TraceRecord.model_validate_json(trace_path.read_text())
     _print_trace(trace)
+    print(f"\n=== TRACE FILE ===\n{trace_path}  (analyse: summarize.py / show_text.py)")
 
 
 def main() -> None:
@@ -114,8 +115,9 @@ def main() -> None:
     parser.add_argument("--user-id", type=int, default=1, help="Conversation id (acts as the owner's chat id)")
     parser.add_argument("--message", required=True, help="Text to send to the agent")
     args, _ = parser.parse_known_args()
-    with tempfile.TemporaryDirectory(prefix="nisse-probe-") as tmp:
-        asyncio.run(_run(args.user_id, args.message, Path(tmp)))
+    traces_dir = Path("scratch/traces")  # persist so the trace can be ANALYSED separately (no re-run)
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    asyncio.run(_run(args.user_id, args.message, traces_dir))
 
 
 if __name__ == "__main__":
