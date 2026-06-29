@@ -32,16 +32,18 @@ app/
 
   chat/             Telegram I/O — the ONLY aiogram Router
     router.py       voice + text handler → transcribe → Assistant.reply(on_event=TelegramProgress) → answer
-    progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message: a step log
-                    (each tool a human label icon+verb via `_TOOL_LABELS`, salient arg in a `code
-                    span`; thinking — a rotating "думаю…" word when it surfaces no text; short
-                    process narration as a 💬 line). Substantial prose the model writes BETWEEN tool
-                    calls (Message events > `_NARRATION_MAX` chars) is kept as content — it
-                    accumulates into the reply (`_prose`), not lost. The current turn's text streams
-                    in a sentence at a time (TextDelta), throttled to 0.5s. finish() settles it: the
-                    step log collapses into a Telegram expandable blockquote (`**>`…`||`, built over
-                    telegramify since the lib won't emit it), kept prose + final answer below.
-    format.py       LLM markdown → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
+    progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
+                    ordered list of segments (`_Seg`: process | text | judge) so tools, model text,
+                    and judge verdicts stay interleaved in the exact order they happened — nothing
+                    dropped. A process block (tools + thinking) renders as a `>` blockquote (each tool
+                    a human label icon+verb via `_TOOL_LABELS`, salient arg in a `code span`; thinking
+                    — a rotating "думаю…" word when it surfaces no text); model text (Message + the
+                    current turn streamed a sentence at a time via TextDelta, throttled to 0.5s)
+                    renders plain; a `Judged` verdict renders bold (`**⚖️ …**`) right after the text
+                    it graded (that draft is kept, never wiped). finish(result) settles the whole
+                    stream + cost footer; finish_text(text) is the error/refusal path.
+    format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
+                    → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
     transcribe.py   voice file → text (STT adapter; provider-swappable)
 
   assistant/        the main agent — composition root

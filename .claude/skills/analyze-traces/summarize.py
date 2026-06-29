@@ -26,3 +26,9 @@ for path in sys.argv[1:]:
             print(f"     RSLT {tr['tool_name']} err={tr['is_error']}: {tr.get('output', '')[:200]!r}")
         if txt:
             print(f"     TEXT: {txt[:500]}")
+    verdicts = ((t.get("result") or {}).get("judge_verdicts")) or []
+    for i, v in enumerate(verdicts, 1):
+        mark = "PASS" if v["finished"] else "REDO"
+        print(f"  JUDGE #{i} {mark} finished={v['finished']} missing={v['missing']}")
+        if v.get("feedback"):
+            print(f"     feedback: {v['feedback']}")
