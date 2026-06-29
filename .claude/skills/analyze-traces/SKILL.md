@@ -24,7 +24,8 @@ Full trace schema: `baski/agents/trace.py` (`TraceRecord` → `turns[] → TurnR
    gcloud storage cp "gs://nisse2050-private/traces/<id>.json.gz" scratch/traces/ && gunzip -f scratch/traces/<id>.json.gz
    ```
 
-3. **Summarize** with the helper (per-turn thinking size, tool calls, final text):
+3. **Summarize** with the helper (per-turn thinking size, tool calls, final text, and the completeness-judge
+   verdicts — `JUDGE #n PASS/REDO` with `missing`/`feedback`, from `result.judge_verdicts`):
    ```bash
    uv run python .claude/skills/analyze-traces/summarize.py scratch/traces/<id>.json ...
    ```

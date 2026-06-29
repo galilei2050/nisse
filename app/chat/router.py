@@ -7,7 +7,6 @@ from aiogram.enums import ChatAction
 from aiogram.types import Message
 from baski.agents import AgentProviderUnavailableError, AgentRefusalError
 
-from app.chat.format import compose_answer
 from app.chat.progress import TelegramProgress
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
@@ -36,13 +35,13 @@ def build_router(*, assistant: "Assistant") -> Router:
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
             result = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
-            await progress.finish(compose_answer(result))
+            await progress.finish(result)
         except AgentRefusalError:
-            await progress.finish(_REFUSAL_REPLY)
+            await progress.finish_text(_REFUSAL_REPLY)
         except AgentProviderUnavailableError:
-            await progress.finish(_API_DOWN_REPLY)
+            await progress.finish_text(_API_DOWN_REPLY)
         except Exception:
-            await progress.finish(_ERROR_REPLY)
+            await progress.finish_text(_ERROR_REPLY)
             raise
         finally:
             # History writes were fired during the reply; await them now the answer is delivered (on

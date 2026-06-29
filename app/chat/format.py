@@ -17,9 +17,9 @@ import re
 import telegramify_markdown
 from baski.agents import AgentExecuteResult
 
-__all__ = ["compose_answer", "split_message", "strip_markdown_v2", "to_markdown_v2"]
+__all__ = ["NO_ANSWER", "compose_answer", "footer", "split_message", "strip_markdown_v2", "to_markdown_v2"]
 
-_NO_ANSWER = "I couldn't produce a response — please try rephrasing."
+NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 
 
 def _humanize_tokens(n: int) -> str:
@@ -27,20 +27,20 @@ def _humanize_tokens(n: int) -> str:
     return f"{n / 1000:.1f}k".replace(".0k", "k")
 
 
-def _footer(result: AgentExecuteResult) -> str:
+def footer(result: AgentExecuteResult) -> str:
     """One-line cost + current context-size note appended to every answer."""
     return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
 
 
 def compose_answer(result: AgentExecuteResult) -> str:
-    """The user-facing reply text: the agent's answer + cost footer, or a fallback.
+    """The user-facing reply text for the non-streamed path (scheduling): answer + cost footer, or fallback.
 
-    The completeness judge's activity is NOT appended here — it streams as `Judged` step events
-    (rendered by `TelegramProgress`, like tool use and thinking), so the owner sees it in the live log.
+    The interactive chat path renders the chronological stream itself (`TelegramProgress.finish`); this
+    flat form is for callers without a live message (e.g. the scheduling runner).
     """
     if not result.response:
-        return _NO_ANSWER
-    return result.response + _footer(result)
+        return NO_ANSWER
+    return result.response + footer(result)
 
 
 # Telegram's per-message limit, counted in UTF-16 code units.
