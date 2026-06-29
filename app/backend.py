@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
+from baski.agents import GeminiJudge
 from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import CloudTasksConfig, Scheduler
 from baski.env import get_env
@@ -76,7 +77,13 @@ class NisseBot(TelegramServer):
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
+            judge=self._judge,
         )
+
+    @cached_property
+    def _judge(self) -> GeminiJudge:
+        """Cross-family completeness judge (Gemini/Vertex via ADC) — one shared client for the process."""
+        return GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")))
 
     @cached_property
     def _http(self) -> httpx.AsyncClient:

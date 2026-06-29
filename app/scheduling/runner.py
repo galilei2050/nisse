@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from baski.primitives import datetime
 
+from app.chat.format import compose_answer
 from app.scheduling.store import ScheduleKind, claim, mark_done, reschedule
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
@@ -51,10 +52,10 @@ class ScheduleRunner:
                 await self._scheduling.enqueue_fire(public_id=public_id, fire_at=next_fire)
 
             try:
-                answer = await self._assistant.reply(
+                result = await self._assistant.reply(
                     conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"
                 )
-                await self._bot.send_message(chat_id=task.conversation_id, text=answer)
+                await self._bot.send_message(chat_id=task.conversation_id, text=compose_answer(result))
                 if task.kind is ScheduleKind.ONCE:
                     await mark_done(self._database, public_id=public_id)
             finally:

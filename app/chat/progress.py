@@ -22,7 +22,17 @@ from typing import NamedTuple, assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from baski.agents import AgentEvent, Completed, Message, TextDelta, Thinking, ToolFinished, ToolStarted, TurnStarted
+from baski.agents import (
+    AgentEvent,
+    Completed,
+    Judged,
+    Message,
+    TextDelta,
+    Thinking,
+    ToolFinished,
+    ToolStarted,
+    TurnStarted,
+)
 
 from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
 
@@ -133,7 +143,7 @@ class TelegramProgress:
         if self._consume(event):
             await self._flush(force=False)
 
-    def _consume(self, event: ToolStarted | ToolFinished | Thinking | TextDelta | Message) -> bool:
+    def _consume(self, event: ToolStarted | ToolFinished | Thinking | TextDelta | Message | Judged) -> bool:
         """Apply the event to the render state; return whether it warrants an edit now."""
         match event:
             case ToolStarted(name=name, tool_input=tool_input):
@@ -147,8 +157,22 @@ class TelegramProgress:
                 return bool(_SENTENCE_END.search(self._answer))  # hold the edit until a sentence completes
             case Message(text=text):
                 self._commit_message(text)
+            case Judged():
+                return self._commit_judged(event)
             case _:
                 assert_never(event)
+        return True
+
+    def _commit_judged(self, event: Judged) -> bool:
+        """Self-check step — a visible step like a tool: the redo with its gaps, or a passed check."""
+        if not event.finished:
+            self._answer = ""  # the just-graded draft is being superseded — drop it from the live preview
+            gaps = ", ".join(event.missing)[:_PREVIEW_LIMIT] if event.missing else "доделываю"
+            self._lines.append(f"⚖️ Самопроверка: доделываю — {gaps}")
+        elif event.attempt > 1:
+            self._lines.append("⚖️ Самопроверка: ок (доработано)")
+        else:
+            self._lines.append("⚖️ Самопроверка: ок")
         return True
 
     def _commit_message(self, text: str) -> None:
