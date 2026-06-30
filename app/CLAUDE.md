@@ -266,9 +266,13 @@ The Mongo `traces` summary (`_id`=trace_id, `created_at`, `user_request`[:128], 
 Needs read access to GCP project `nisse2050` (the bucket name is global, but auth isn't).
 
 **Testing is part of every task — the definition of done.** Each feature has an expectation-first
-cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`). A task isn't done until you
-have: added scenarios covering the new behavior, run them, AND re-run the related existing scenarios
-to confirm no regression. New feature → new cases doc on the same pattern.
+cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judge_test_cases.md`). A
+task isn't done until you have: added scenarios covering the new behavior, run them, AND re-run the
+related existing scenarios to confirm no regression. New feature → new cases doc on the same pattern.
+
+For the **completeness judge** (baski `GeminiJudge`), the regression harness is the `replay-traces`
+skill — it re-grades catalogued production traces (FP/FN cases in `docs/judge_test_cases.md`) through
+the live judge prompt, 3× each. Run it before/after any judge-prompt change.
 
 ## Scheduling (self-invocation) — fires in webhook mode
 
