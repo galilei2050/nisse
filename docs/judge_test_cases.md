@@ -1,0 +1,153 @@
+# Completeness-judge — FP/FN regression cases
+
+A reusable catalog of real production traces that the cross-family completeness judge
+(`baski.agents.GeminiJudge`, gemini-flash) graded **wrong**, plus the cases it must keep grading
+right. Use it to (a) understand how the judge mis-reads "research depth" in both directions, and
+(b) re-run before/after any judge-prompt change so a fix in one direction doesn't regress the other.
+
+The judge grades **completeness** (did the reply finish the ask?), not factual truth. It sees the
+transcript as `[role] text` + `[tool] name(args)` lines — tool **calls with their arguments but NOT
+their outputs** (see `MessageHistory.format_for_judge` in baski) — plus the final answer and the
+owner rules. Prompt: `_DEFAULT_INSTRUCTIONS` in `baski/agents/judge.py`.
+
+## The root miscalibration
+
+The judge used to treat tool-use as a **binary**: a tool call present → "work happened, done";
+unseen output → "ungrounded". With no model of *whether the depth of investigation matched what the
+ask demanded*, that single binary produced errors in **both** directions:
+
+- **False POSITIVE (the costly one).** Real, tool-sourced, recent data was flagged as
+  "fabricated / from the future / hallucinated date" — the judge anchored to its own training cutoff
+  and distrusted any date later than what it knows. And grounded research it couldn't see the outputs
+  of was called "ungrounded". Each such redo regenerates the whole answer (≈2× cost, the owner sees a
+  near-duplicate) **and degrades a correct answer** — the worst outcome for delegation trust.
+- **False NEGATIVE.** An open advisory ask answered from one or two snippet searches with generic,
+  obvious-tier advice passed as "done", because a tool was called.
+
+## The fix (and what's actually proven)
+
+`judge.py` instructions were recalibrated on two axes:
+
+1. **Anti-cutoff-anchoring (PROVEN, the high-value win).** "Your training cutoff is NOT the current
+   date; tool-sourced or cited data dated later than what you know is REAL, not a hallucination or a
+   date error. Flag fabrication ONLY for a concrete claim with NO tool call AND NO cited source."
+2. **Depth-matches-the-ask gate (framing; not a measured behaviour change).** "Don't treat a tool
+   call as automatic proof of enough work — a casual/factual/current-events ask is done by a search
+   or two; an investigative/advisory/comparative ask warrants reading sources and comparing; but an
+   answer already carrying named sources, real figures, or a genuine comparison IS done."
+
+**Measured (replay, gemini-flash, 3 runs/case, 2026-06-30):** axis 1 flips all three FP cases robustly
+from REDO→PASS (3/3) with no regression on the held cases. Axis 2 is **inert on the cases we have**:
+the old judge *already* REDO'd blatantly-shallow (generic, sourceless) answers and passed deep ones —
+see the SHALLOW/DEEP/INCOMPLETE probe below — so the gate is kept lean (coherent framing, low token
+cost) but is not claimed as a behaviour change. The borderline mechanics FN does **not** flip (FN-1).
+
+**Replay gotcha (de-contaminate the transcript).** When you re-grade a trace that originally hit the
+retry cap, the recorded message stream contains the OLD judge's `[Completeness check] Your answer
+isn't finished…` turns. Replaying those primes the new judge to REDO ("I was told it failed") — a
+pure measurement artifact: on a fresh run the new judge passes at attempt 1 and those turns never
+exist. The harness strips them (`transcript_of` in `replay.py`). Without the strip, `a17c09ca`
+reads a flaky 1/3 PASS; with it, a robust 3/3. Always grade the answer against the *work that produced
+it*, not against the prior judge's complaints.
+
+## How to replay
+
+`replay-traces` skill (or `scratch/replay.py`): reconstructs every judge call from a downloaded
+trace and re-grades it with the current judge prompt, N times (flash is nondeterministic — measure
+the distribution, never one run). Download traces first via the `analyze-traces` skill.
+
+```
+uv run --env-file .env python <skill>/replay.py [<trace-id-prefix> …]   # all catalog cases, or a subset
+uv run --env-file .env python <skill>/depth_probe.py                    # SHALLOW vs DEEP synthetic discrimination
+```
+
+Grade the **FINAL** answer of each trace: FN wants REDO, FP/P/L want PASS. (The per-attempt rows are
+reconstructed by splitting on the `[Completeness check]` retry markers; intermediate rows are noisy —
+trust the `<FINAL>` row.)
+
+---
+
+## False NEGATIVES — judge passed shallow work it should have flagged
+
+### FN-1 — `bd4e744d` — open advisory answered from snippets *(borderline; still passes)*
+`Подумай какие есть способы чтобы достать кандидатов в механики`
+- **Did:** 2 `google_search` (generic queries), **no `browse_website`** — answered from snippets +
+  memory. Output: 6 channels ranked, owner-tailored (Clarity OS, junior-vs-experienced fork), a
+  `Источники:` line.
+- **Old verdict:** PASS. **New verdict:** PASS (3/3) — **not flipped.**
+- **Why it's not forced to REDO:** the answer is substantive, sourced, and tailored — *not* the
+  blatantly-generic answer the judge already catches. It's a "could be 30% deeper" quality
+  preference, not a completeness gap. Forcing a redo here overfits and risks FP churn on the legit
+  "deep enough" cases (c596c18b, b869e24d). **The real fix for this is agent-side** — make the agent
+  read the top sources before answering an investigative ask — not a post-hoc judge redo.
+
+## False POSITIVES — judge redid a correct, complete answer (the costly errors)
+
+### FP-1 — `a17c09ca` — real recent news called "fabricated from the future"
+`А какие новости о 40 дневном плане Украины?`
+- **Did:** `google_news` + `google_search` → 3 corroborating real links (ISW, Kyiv Independent,
+  Guardian, all dated Jun 2026), correct summary.
+- **Old verdict:** **REDO ×3** (hit the retry cap) — "ты выдумала новости из будущего (2026)",
+  "current date is May 2024", "remove fictional 2026 info". The agent even pushed back correctly.
+  Burned 3 regenerations and **degraded a correct, sourced answer**.
+- **New verdict:** PASS (3/3). ✅ The anti-cutoff-anchoring clause.
+
+### FP-2 — `c596c18b` — grounded research called "ungrounded / 2026 fictional"
+`что я могу сделать как программист чтобы заработать на чем-то неочевидном?`
+- **Did:** `recall_read` + 2 `google_search` + `youtube_search` → real market figures ($3.4B market,
+  CAGR 13%, 75–85% margins) from named sources (Persistence Market Research, Getlatka), 3 variants,
+  a sources line.
+- **Old verdict:** **REDO ×3** — "failed to use tools to ground" (it did), "hallucinated 2026 /
+  fictional stats" (real, tool-sourced), plus style nitpicks (pseudo-headings).
+- **New verdict:** PASS (3/3). ✅
+
+### FP-3 — `06447c3e` — redid only to strip a trailing offer
+`Что творится с бензом в Москве?`
+- **Did:** complete, sourced current-events answer ending with "Хочешь — могу отслеживать ситуацию…".
+- **Old verdict:** REDO — "убери предложение отслеживать (Act, don't ask)". The prompt *already* says
+  a complete answer ending in a trailing courtesy is DONE; redoing to strip it is the cosmetic FP.
+- **New verdict:** PASS (3/3). ✅
+
+## Held PASS — correct passes that must stay PASS (no over-firing)
+
+| id | request | why PASS is correct |
+|----|---------|---------------------|
+| `a36b13b0` / `f68e23aa` | "Что творится с бензом в Москве?" | current-events, search-grounded + sources — a lookup *is* the work |
+| `761e9231` | "Сколько спутников у Юпитера? 4 крупнейших" | closed factual — a single search answers it |
+| `b49a0fdf` | "Спрашивай меня утром и вечером…" | scheduling — two `schedule_routine` calls, done |
+| `311ec97f` | settlement cash-benefit estimate | grounded estimate with reasoning |
+
+## Held REDO→PASS — judge correctly caught incompleteness, then passed the fix
+
+These prove the recalibration did **not** dull the judge's legitimate completeness power. The first
+draft is genuinely incomplete (an explicit deliverable missing, or a punt); the final is complete.
+
+| id | request | legit first-draft REDO reason |
+|----|---------|-------------------------------|
+| `cf98e596` / `1c9b2768` | romantic-weekend plan (explicit: times, places, prices, links, budget) | over-budget / vague times / ended with a question |
+| `711c3e08` | "что я могу сделать как программист чтобы заработать" | withheld figures + concrete build steps pending user choice |
+| `b869e24d` | "лучше на чём-то неочевидном где можно собрать данные" | first draft admitted "based on mechanics, not fresh data" and punted |
+| `84f43c4b` | SpotHero settlement — "is this legit?" | first draft asked permission to open the site instead of opening it |
+
+### `d67d8577` — complete content, wrong language → REDO (not a regression)
+Final answer is complete (specific dates, live rates, budget under $800, links, sources) **but written
+in English to a Russian request**. De-contaminated, **OLD and NEW judge both REDO it 3/3** (identical) —
+the language mismatch is a real deficiency, and the recorded production PASS came only from the
+retry-prompt context telling the judge the prior gap was addressed. Listed as an expected **REDO**; the
+point is that it's *not* caused by this change (OLD==NEW).
+
+## SHALLOW / DEEP / INCOMPLETE probe (synthetic — `depth_probe.py`)
+
+No traces needed. Three hand-built answers graded by the current judge, 3× each:
+
+| answer | expect | result |
+|--------|--------|--------|
+| **SHALLOW** — 1 generic search, 5 generic bullets, no sources | REDO | REDO ×3 |
+| **DEEP** — targeted searches + browse, figures + named sources + comparison | PASS | PASS ×3 |
+| **INCOMPLETE** — planning ask, no times/prices/links, ends with a punt | REDO | REDO ×3 |
+
+A one-off OLD-vs-NEW comparison confirmed OLD and NEW behave identically on SHALLOW/DEEP — the judge
+already separated the extremes, which is why axis 2 isn't claimed as a behaviour change. The hard
+cases live in the middle (FN-1), where "sourced but not deeply researched" is genuinely ambiguous for
+a completeness judge — and there the right lever is the **agent reading more**, not the judge redoing
+more.
