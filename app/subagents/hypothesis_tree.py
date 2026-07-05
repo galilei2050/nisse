@@ -17,6 +17,8 @@ from enum import StrEnum
 from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
+from app.tools.registry import ToolRegistrar
+
 _HEADER = (
     "HYPOTHESIS TREE — your living investigation record, shown every turn. Lay it out BEFORE searching "
     "(add_hypothesis: root question → branches → falsifiable leaves); set each leaf's verdict the moment "
@@ -158,3 +160,8 @@ def build_hypothesis_tree_tools() -> list[Tool]:
     """A fresh shared tree + the granular add/update tools over it, for one investigation."""
     tree = HypothesisTree()
     return [AddHypothesisTool(tree), UpdateHypothesisTool(tree)]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the researcher-only hypothesis-tree tools (a fresh ephemeral tree per run)."""
+    registrar.register("hypothesis_tree", lambda _deps, _conversation_id: build_hypothesis_tree_tools())

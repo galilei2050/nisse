@@ -6,7 +6,8 @@ Also guards the one audience invariant that has no flag to enforce it: the resea
 
 import pytest
 
-from app.tools import MAIN_TOOLS, ToolRegistry
+from app.assistant.conversations import MAIN_TOOLS
+from app.tools import ToolRegistry
 
 
 def test_build_flattens_registered_factories_in_order() -> None:
@@ -36,6 +37,8 @@ def test_get_returns_none_for_unregistered() -> None:
     assert ToolRegistry().get("nope") is None
 
 
-def test_hypothesis_tree_is_not_a_main_tool() -> None:
-    """The researcher's hypothesis tree must never reach the main Assistant (owner's rule)."""
-    assert "hypothesis_tree" not in MAIN_TOOLS
+def test_main_spec_is_general_web_only_no_hypothesis_tree() -> None:
+    """Main gets general web search + the state tools — NOT the hypothesis tree nor specialized leaves."""
+    assert "hypothesis_tree" not in MAIN_TOOLS  # researcher-only (owner's rule)
+    assert "google_search" in MAIN_TOOLS  # the general web search is on the main agent
+    assert "amazon_search" not in MAIN_TOOLS  # specialized leaves stay off the always-on roster

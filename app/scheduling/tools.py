@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.scheduling.service import SchedulingService
 from app.scheduling.store import ScheduleKind, ScheduleStore
 from app.shared import CoreDeps
+from app.tools.registry import ToolRegistrar
 
 # One line of the guidance the owner asked for: derive the timezone from the owner, don't guess it.
 _TIME_GUIDANCE = (
@@ -136,3 +137,8 @@ def scheduling_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
     service = SchedulingService(scheduler=deps.scheduler, endpoint=deps.schedule_endpoint)
     store = ScheduleStore(deps.database, conversation_id=conversation_id)
     return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the reminder/routine tools under the name the main agent references."""
+    registrar.register("scheduling", scheduling_tools)

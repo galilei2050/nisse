@@ -7,7 +7,20 @@ from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 from app.shared import CoreDeps
 from app.subagents import SubagentStore, SubagentTool
-from app.tools import MAIN_TOOLS
+
+# The main Assistant's tool spec — the names it builds from the shared registry (`deps.tools`). The
+# main agent gets only the GENERAL web tools; the specialized SerpApi leaves (maps/news/events/jobs,
+# amazon/youtube) stay registered for sub-agents (e.g. retrieval) but off the always-on roster to keep
+# its per-turn schema lean. The researcher-only `hypothesis_tree` is deliberately absent.
+MAIN_TOOLS: list[str] = [
+    "google_search",
+    "google_ai_answer",
+    "browse_website",
+    "memory",
+    "lists",
+    "scheduling",
+    "core_memory",
+]
 
 
 class Conversations:

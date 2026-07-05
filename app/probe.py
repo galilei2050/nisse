@@ -31,7 +31,7 @@ from pymongo import AsyncMongoClient
 from app.assistant import Assistant
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
-from app.tools import build_tool_registry
+from app.tools.wiring import build_tool_registry
 
 if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase

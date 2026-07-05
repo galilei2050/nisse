@@ -97,9 +97,9 @@ app/
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
 
   tools/            the process-wide TOOL REGISTRY both the main agent and sub-agents build from
-    registry.py     ToolRegistry (name→factory) — generic, tool-agnostic: register/get/build
-    wiring.py       build_tool_registry() (registers every tool by name, one line each) + MAIN_TOOLS
-                    (the main agent's spec). See app/tools/CLAUDE.md.
+    registry.py     ToolRegistry (name→factory) + ToolRegistrar Protocol — generic, tool-agnostic
+    wiring.py       build_tool_registry() — calls each domain's register_tools() (ownership by
+                    domain). MAIN_TOOLS lives in app/assistant/. See app/tools/CLAUDE.md.
     (future: more nisse-specific leaf Tool classes here — gmail·calendar·perplexity, one per file;
     + external MCP servers as an optional secondary tool source — hybrid)
 
@@ -187,15 +187,17 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge) **plus the tool
 `registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`.
 
-**Tools are registered, not hand-assembled.** Each domain owns a factory `(deps, conversation_id) ->
-list[Tool]` (`memory.memory_tools`, `lists.list_tools`, `scheduling.scheduling_tools`,
-`prompts.core_memory_tools`, `search.search_leaf` per leaf, `hypothesis_tree`); `app/tools/wiring.py`
-registers each by name, one line each — like routers collected in `backend.py`. To add a tool: write
-its domain factory, then one `registry.register(...)` line in `wiring.py`.
+**Each domain registers its own tools** (ownership by domain, like routers). A domain exposes a
+factory `(deps, conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)` that
+names it — `search.register_tools` (every web tool, one explicit line each), `memory` / `lists` /
+`scheduling` / `prompts`, `subagents.register_tools` (the `hypothesis_tree`). `app/tools/wiring.py`
+`build_tool_registry()` just calls each domain's `register_tools`. To add a tool: write its factory +
+`register(...)` line in the owning domain.
 
 **Both agents build their ToolSet through the SAME registry** — no per-agent duplication:
-- main Assistant: `deps.tools.build(MAIN_TOOLS, deps, conversation_id)` — `MAIN_TOOLS` (in
-  `app/tools/wiring.py`) is its spec: every tool EXCEPT the researcher-only `hypothesis_tree`.
+- main Assistant: `deps.tools.build(MAIN_TOOLS, deps, conversation_id)` — `MAIN_TOOLS` lives in
+  `app/assistant/conversations.py` (the Assistant owns its spec): general web + state tools, NOT the
+  specialized SerpApi leaves, NOT the researcher-only `hypothesis_tree`.
 - sub-agent: `deps.tools.get(name)` per `config.tool_names` (falls through to sibling delegation).
 
 "Which agent gets which tool" is the caller's spec (a name list), not a flag on the tool. Only two

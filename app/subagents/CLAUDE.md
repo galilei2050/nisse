@@ -53,8 +53,8 @@ config). Add a verifier later only if usage shows a need.
 each. Configs are read once at conversation-build; the agent is cached, so a re-seed takes effect on
 the next process start (no cache invalidation — not needed for an admin-seeded, rarely-changing set).
 A sub-agent builds its tools through the SAME `deps.tools` registry the main agent uses (`app/tools/`)
-— the main agent's spec is `MAIN_TOOLS` (all tools bar `hypothesis_tree`), a sub-agent's is its
-`config.tool_names`.
+— the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
+sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).
 
 ## Design facts (why it's built this way)
 

@@ -1,11 +1,11 @@
 """ToolRegistry — a name→factory catalog, populated at startup, queried to build tools.
 
 Router-style: as an HTTP router maps a path to a handler, this maps a tool name to a factory that
-builds the tool(s) for that name. Factories are registered one-by-one in `backend.py` (the
-composition root) — the registry itself imports no specific tool, so it isn't the place that "knows
-all tools". Both the main Assistant and each sub-agent build their tools through this one registry:
-the caller passes the names it wants (its spec), so "which agent gets which tool" lives in the
-caller's spec, not in a flag here.
+builds the tool(s) for that name. Each domain registers its own tools via `register_tools(registrar)`,
+called from `backend.py` (the composition root) — the registry itself imports no specific tool, so it
+isn't the place that "knows all tools". Both the main Assistant and each sub-agent build their tools
+through this one registry: the caller passes the names it wants (its spec), so "which agent gets which
+tool" lives in the caller's spec, not in a flag here.
 
 A factory takes `(deps, conversation_id)`: `deps` are the shared process clients; `conversation_id`
 scopes the tools that bind a store to one chat (memory, lists, scheduling). Process-level tools (web
@@ -14,6 +14,7 @@ search, the hypothesis tree) ignore it. A factory returns a list so one name can
 """
 
 from collections.abc import Callable, Iterable
+from typing import Protocol
 
 from baski.agents.tool import Tool
 
@@ -22,11 +23,23 @@ from app.shared import CoreDeps
 ToolFactory = Callable[[CoreDeps, int], list[Tool]]
 
 
+class ToolRegistrar(Protocol):
+    """What a domain's `register_tools()` consumes: register one tool factory by name.
+
+    A Protocol (not the concrete `ToolRegistry`) so a domain depends only on the registration surface,
+    not the whole registry — and never on `app.tools` importing the domain back.
+    """
+
+    def register(self, name: str, factory: ToolFactory) -> None:
+        """Register one tool's factory under `name`."""
+        ...
+
+
 class ToolRegistry:
     """The process-wide tool catalog. Lifecycle: long-lived — one per bot, built once at startup."""
 
     def __init__(self) -> None:
-        """Start empty; `backend.py` registers each tool's factory by name."""
+        """Start empty; each domain's `register_tools` adds its factories (see `backend.py`)."""
         self._factories: dict[str, ToolFactory] = {}
 
     def register(self, name: str, factory: ToolFactory) -> None:

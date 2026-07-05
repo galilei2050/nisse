@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from app.prompts.store import PromptStore, PromptType
 from app.shared import CoreDeps
 from app.shared.text import match_unique
+from app.tools.registry import ToolRegistrar
 
 # Always-on = pure per-turn token cost, so it's hard-capped; the agent must keep only what earns a slot.
 # ~3000 chars ≈ 750 tokens/turn. Raised from 2400 once patch-in-place removed the resend-churn and real
@@ -133,3 +134,8 @@ class CoreMemoryTool(Tool):
 def core_memory_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
     """The always-on core-memory block editor, over a chat-scoped prompt store."""
     return [CoreMemoryTool(PromptStore(deps.database, conversation_id=conversation_id))]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the core-memory editor under the name the main agent references."""
+    registrar.register("core_memory", core_memory_tools)
