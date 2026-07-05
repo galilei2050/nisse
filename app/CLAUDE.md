@@ -85,8 +85,12 @@ app/
     registry.py     TOOL_REGISTRY (tool .name → factory) + build_tools; the read-only web/browse
                     leaves, doubling as the child whitelist. `_build_web_tools` builds from it too.
     tool.py         SubagentTool — wraps one config as a delegating Tool; runs a fresh isolated Agent
-                    (own model/tools/judge/context) on the pinned prompt, returns its answer
+                    (own model/tools/judge/context) on the pinned prompt, returns its answer. An
+                    orchestrator (can_delegate) may delegate to a sibling sub-agent — ONE level deep
+                    (children are leaves); a two-level research pipeline (researcher → retrieval)
                     (design + deviations: app/subagents/CLAUDE.md; research: docs/orchestrator-subagent-architecture.md)
+    hypothesis_tree.py  HypothesisTreeTool — the researcher's living investigation record, injected
+                    every turn; ephemeral per-run in-instance state (NOT a Mongo store)
 
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt

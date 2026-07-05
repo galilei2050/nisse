@@ -104,6 +104,14 @@ class Conversations:
         return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
 
     async def _build_subagent_tools(self, conversation_id: int) -> list[Tool]:
-        """Configured sub-agents (seeded in Mongo per chat), each exposed as one delegating tool."""
+        """Configured sub-agents (seeded in Mongo per chat), each exposed as one delegating tool.
+
+        Every config is passed as a sibling to every top-level tool so an orchestrator sub-agent can
+        resolve a sibling name in its `tool_names` into a child. Top-level tools get `can_delegate=True`
+        (a worker whose `tool_names` are all leaves simply never uses it); children are built as leaves,
+        capping nesting at one level.
+        """
         store = SubagentStore(self._deps.database, conversation_id=conversation_id)
-        return [SubagentTool(config, self._deps) for config in await store.list()]
+        configs = await store.list()
+        siblings = {config.name: config for config in configs}
+        return [SubagentTool(config, self._deps, siblings=siblings, can_delegate=True) for config in configs]

@@ -15,7 +15,40 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
   tool is in it, so a child can't write shared state or recurse.
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and
-  returns `result.response`, raising if it's `None` (no silent empty answer).
+  returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tool` maps
+  each `tool_names` entry to a live tool: a registry web leaf, the `hypothesis_tree` tool, or — for
+  an orchestrator (`can_delegate=True`) — a child `SubagentTool`.
+- `hypothesis_tree.py` — `HypothesisTreeTool`: the researcher's living investigation record, injected
+  every turn (same shape as core memory's `system_prompt()`), but **ephemeral in-instance state** — a
+  fresh instance per `SubagentTool.execute` run (one investigation), gone after it. No Mongo, no
+  conversation scope. Rewritten whole each call (single writer, coherent hierarchy), not line-patched.
+
+## Depth-1 nesting (two-level research pipeline)
+
+A sub-agent may delegate to *another* sub-agent, but only ONE level deep — an orchestrator delegates,
+its children are leaves. Modelled as a boolean, not a counter:
+
+- Top-level `SubagentTool`s are built with `can_delegate=True` and `siblings` = every config in the
+  conversation (`Conversations._build_subagent_tools`). `can_delegate=True` only *permits* resolving
+  a sibling name that appears in a config's `tool_names`; a worker whose names are all registry leaves
+  never uses it.
+- A child sub-agent is built as a leaf: `siblings={}` + `can_delegate=False`. Those two together cap
+  nesting at one level — a child can't see or delegate to anyone.
+- A `tool_names` entry that resolves to nothing (unknown registry key, or a sibling name at a level
+  that can't delegate) raises at build — a seed error, loud, matching the registry whitelist.
+
+`registry.py`/`build_tools` and `_build_web_tools` are unchanged; only the child-toolset path in
+`_resolve_tool` gained the `hypothesis_tree` and sibling-delegation cases.
+
+The seed pattern (`scratch/seed_subagents.py`): `researcher` (orchestrator, `tool_names =
+["retrieval", "hypothesis_tree"]`, never searches itself) + `retrieval` (worker, the web leaves).
+The researcher owns the hypothesis tree, decomposes the question, delegates each sub-question to
+`retrieval`, and synthesizes; `retrieval` answers one self-contained sub-question and returns cited
+compression. Methodology encoded in the prompts: `docs/research-subagent.md`.
+
+**v1 has no isolated verifier** (research doc §3.3 — a separate agent given only the cited sources).
+Verification hygiene is left to each sub-agent's own completeness judge (`GeminiJudge`, wired per
+config). Add a verifier later only if usage shows a need.
 
 ## Wiring
 
