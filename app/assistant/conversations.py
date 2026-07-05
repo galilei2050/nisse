@@ -2,8 +2,7 @@
 
 from baski.agents import Agent, AgentConfig, ToolSet
 from baski.agents.tool import Tool
-from baski.agents.tools import DeleteMessagesTool, ShortTermMemory, WebBrowseTool
-from baski.clients.serpapi_client import SerpApiClient
+from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
@@ -11,19 +10,8 @@ from app.lists import ListEditTool, ListShowTool, ListStore
 from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
 from app.prompts import CoreMemoryTool, PromptStore
 from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
-from app.search import (
-    AmazonProductTool,
-    AmazonSearchTool,
-    GoogleAiModeTool,
-    GoogleEventsTool,
-    GoogleJobsTool,
-    GoogleMapsSearchTool,
-    GoogleNewsTool,
-    GoogleSearchTool,
-    YouTubeSearchTool,
-    YouTubeTranscriptTool,
-)
 from app.shared import CoreDeps
+from app.subagents import TOOL_REGISTRY, SubagentStore, SubagentTool, build_tools
 
 
 class Conversations:
@@ -73,6 +61,7 @@ class Conversations:
             *self._build_memory_tools(conversation_id),
             *self._build_list_tools(conversation_id),
             *self._build_scheduling_tools(conversation_id),
+            *await self._build_subagent_tools(conversation_id),
             CoreMemoryTool(PromptStore(self._deps.database, conversation_id=conversation_id)),
         ]:
             toolset.add(tool)
@@ -91,21 +80,8 @@ class Conversations:
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
 
     def _build_web_tools(self) -> list[Tool]:
-        """Search + browsing: 10 SerpApi leaves from app.search, plus WebBrowse from baski."""
-        serpapi = SerpApiClient(http_client=self._deps.http)
-        return [
-            GoogleSearchTool(serpapi_client=serpapi),
-            GoogleAiModeTool(serpapi_client=serpapi),
-            GoogleMapsSearchTool(serpapi_client=serpapi),
-            GoogleNewsTool(serpapi_client=serpapi),
-            GoogleEventsTool(serpapi_client=serpapi),
-            AmazonSearchTool(serpapi_client=serpapi),
-            AmazonProductTool(serpapi_client=serpapi),
-            YouTubeSearchTool(serpapi_client=serpapi),
-            YouTubeTranscriptTool(serpapi_client=serpapi),
-            GoogleJobsTool(serpapi_client=serpapi),
-            WebBrowseTool(playwright_client=self._deps.playwright),
-        ]
+        """Search + browsing leaves, built from the shared tool registry (also the sub-agent whitelist)."""
+        return build_tools(TOOL_REGISTRY.keys(), self._deps)
 
     def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
         """Long-term memory — store scoped to the chat so memories never cross conversations."""
@@ -126,3 +102,8 @@ class Conversations:
         service = SchedulingService(scheduler=self._deps.scheduler, endpoint=self._deps.schedule_endpoint)
         store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
         return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+
+    async def _build_subagent_tools(self, conversation_id: int) -> list[Tool]:
+        """Configured sub-agents (seeded in Mongo per chat), each exposed as one delegating tool."""
+        store = SubagentStore(self._deps.database, conversation_id=conversation_id)
+        return [SubagentTool(config, self._deps) for config in await store.list()]

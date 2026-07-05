@@ -43,9 +43,12 @@ jobs:
     # test-backend-dry-run boots the server, which reads these at import time
     # (baski treats an empty value as unset). Sourced from repo config, not
     # hardcoded — dry-run never connects, but the values must be non-empty.
+    # GOOGLE_CLOUD_PROJECT: app.subagents reads it at import (fail-fast), so the
+    # import chain (dry-run + tests/subagents) needs it present.
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
