@@ -6,7 +6,7 @@ from baski.env import get_env
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
-from app.subagents.hypothesis_tree import HypothesisTreeTool
+from app.subagents.hypothesis_tree import build_hypothesis_tree_tools
 from app.subagents.registry import TOOL_REGISTRY
 from app.subagents.store import SubagentConfig
 
@@ -67,7 +67,8 @@ class SubagentTool(Tool):
         """Assemble the child's AgentConfig from its stored config; fresh history per call (stateless)."""
         toolset = ToolSet()
         for name in self._config.tool_names:
-            toolset.add(self._resolve_tool(name))
+            for tool in self._resolve_tools(name):
+                toolset.add(tool)
         return AgentConfig(
             toolset=toolset,
             message_history=InMemoryMessageHistory(max_tokens=self._config.context_tokens),
@@ -79,19 +80,20 @@ class SubagentTool(Tool):
             model=self._config.model,
         )
 
-    def _resolve_tool(self, name: str) -> Tool:
-        """Map one `tool_names` entry to a live tool: web leaf, hypothesis tree, or a child sub-agent.
+    def _resolve_tools(self, name: str) -> list[Tool]:
+        """Map one `tool_names` entry to live tool(s): web leaf, hypothesis-tree pair, or a child sub-agent.
 
-        A child sub-agent is built as a leaf — empty siblings + `can_delegate=False` — so nesting is
-        capped at one level. A name that resolves to nothing (or a sibling this level can't delegate
-        to) is a seed error: fail loud, like the registry whitelist.
+        Most names give one tool; `hypothesis_tree` expands to the granular add/update pair over one
+        shared, per-run tree. A child sub-agent is built as a leaf — empty siblings + `can_delegate=False`
+        — so nesting is capped at one level. A name that resolves to nothing (or a sibling this level
+        can't delegate to) is a seed error: fail loud, like the registry whitelist.
         """
         if name in TOOL_REGISTRY:
-            return TOOL_REGISTRY[name](self._deps)
+            return [TOOL_REGISTRY[name](self._deps)]
         if name == "hypothesis_tree":
-            return HypothesisTreeTool()  # fresh per run = ephemeral per investigation
+            return build_hypothesis_tree_tools()  # fresh shared tree = ephemeral per investigation
         if self._can_delegate and name in self._siblings:
-            return SubagentTool(self._siblings[name], self._deps, siblings={}, can_delegate=False)
+            return [SubagentTool(self._siblings[name], self._deps, siblings={}, can_delegate=False)]
         raise ValueError(
             f"subagent '{self.name}' references unknown tool '{name}' "
             f"(delegation {'allowed' if self._can_delegate else 'not allowed'} here)"

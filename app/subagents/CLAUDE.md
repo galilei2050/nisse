@@ -15,13 +15,17 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
   tool is in it, so a child can't write shared state or recurse.
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and
-  returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tool` maps
-  each `tool_names` entry to a live tool: a registry web leaf, the `hypothesis_tree` tool, or — for
-  an orchestrator (`can_delegate=True`) — a child `SubagentTool`.
-- `hypothesis_tree.py` — `HypothesisTreeTool`: the researcher's living investigation record, injected
-  every turn (same shape as core memory's `system_prompt()`), but **ephemeral in-instance state** — a
-  fresh instance per `SubagentTool.execute` run (one investigation), gone after it. No Mongo, no
-  conversation scope. Rewritten whole each call (single writer, coherent hierarchy), not line-patched.
+  returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tools` maps
+  each `tool_names` entry to live tool(s): a registry web leaf, the `hypothesis_tree` pair, or — for
+  an orchestrator (`can_delegate=True`) — a child `SubagentTool` (most names give one tool;
+  `hypothesis_tree` expands to two).
+- `hypothesis_tree.py` — the researcher's living investigation record, edited **node-by-node** with
+  two granular tools (`add_hypothesis` / `update_hypothesis`) over one shared `HypothesisTree`, not
+  rewritten whole (mirrors the `list_edit`/core-memory idiom: touch one node, don't resend the tree,
+  can't drop a node). `update_hypothesis.system_prompt()` injects the whole tree every turn (single
+  injection point of the pair), same shape as core memory. **Ephemeral in-instance state** — a fresh
+  shared tree per `SubagentTool.execute` run (one investigation), gone after it. No Mongo, no
+  conversation scope. `build_hypothesis_tree_tools()` makes the shared tree + its two tools.
 
 ## Depth-1 nesting (two-level research pipeline)
 

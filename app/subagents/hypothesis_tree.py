@@ -1,73 +1,160 @@
-"""Hypothesis tree: the researcher's living investigation record, injected every turn.
+"""Hypothesis tree: the researcher's living investigation record, edited node-by-node.
 
-Same injection shape as core memory (`prompts/tools.py`) — one tool that both *injects* the current
-tree into the system prompt every turn (`system_prompt()`, async/per-turn) and *rewrites* it
-(`execute`). Two deliberate differences: the tree is **ephemeral in-instance state**, not a Mongo
-store — one instance per `SubagentTool.execute` run (= one investigation), gone after it; and it's
-rewritten whole each call (single writer, coherent hierarchy) rather than patched line-by-line like
-core memory. Keeping the tree pinned in the system prompt is what holds it stable as retrieval
-results fill and truncate the run's context.
+The tree is the methodology's core artifact (`docs/research-subagent.md`): a root question, candidate
+branches, and falsifiable leaves whose verdict the researcher sets the moment evidence arrives — never
+leaving a leaf `[untested]` once a retrieval result is in. It's shown back to the researcher every
+turn, which keeps it pinned as retrieval results fill and truncate the run's context.
+
+Edited with GRANULAR tools (`add_hypothesis` / `update_hypothesis`), not a wholesale rewrite: touching
+one node at a time mirrors the codebase's `list_edit`/core-memory idiom, costs a few tokens per edit
+instead of resending the whole tree, and can't drop a node by accident. State is ephemeral,
+in-instance — one shared `HypothesisTree` per `SubagentTool.execute` run (one investigation), gone
+after it. No Mongo, no conversation scope.
 """
+
+from enum import StrEnum
 
 from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
-# The tree costs tokens every turn (injected + rewritten), so it's hard-capped; on overflow the
-# researcher must prune (collapse resolved branches to their status) rather than let it grow.
-_TREE_BUDGET = 6000  # characters
-
-_TREE_HEADER = (
-    "HYPOTHESIS TREE — your living investigation record, shown back to you every turn. Update it "
-    "with hypothesis_tree after each retrieval result; never leave a leaf [untested] once you have "
-    "evidence."
+_HEADER = (
+    "HYPOTHESIS TREE — your living investigation record, shown every turn. Lay it out BEFORE searching "
+    "(add_hypothesis: root question → branches → falsifiable leaves); set each leaf's verdict the moment "
+    "its evidence is in (update_hypothesis)."
 )
-_TREE_EMPTY = (
-    "(empty — before gathering any evidence, lay out the tree with hypothesis_tree: the root "
-    "question, candidate branches, and falsifiable leaves each tagged [untested].)"
-)
+_EMPTY = "(empty — start by adding the root question and its candidate branches with add_hypothesis.)"
 
 
-class HypothesisTreeTool(Tool):
-    """Maintain the researcher's hypothesis tree, injected into its system prompt every turn.
+class HypothesisStatus(StrEnum):
+    """A leaf's verdict — set the moment its evidence is in (methodology: never stay untested)."""
 
-    Lifecycle: short-lived — one instance per investigation (built fresh inside each
-    `SubagentTool.execute` run); the tree lives in the instance, not in any store.
-    """
+    UNTESTED = "untested"
+    VERIFIED = "verified"
+    FALSIFIED = "falsified"
+    NOT_A_FACTOR = "not a factor"  # mechanism real but too small to explain the effect
+    PARTIAL = "partial"  # real, but explains only part of the gap
+    OPEN = "open"  # data insufficient to decide — note what would close it
 
-    name = "hypothesis_tree"
-    one_line = "Maintain your hypothesis tree — the living record of the investigation"
+
+class _Node(BaseModel):
+    """One tree node: a question/branch or a falsifiable hypothesis, with its verdict and evidence."""
+
+    node_id: str
+    text: str
+    parent: str | None
+    status: HypothesisStatus
+    findings: list[str]
+
+
+class HypothesisTree:
+    """The shared, ephemeral tree state for one investigation. Lifecycle: short-lived (one run)."""
+
+    def __init__(self) -> None:
+        """Start empty; nodes are kept in insertion order (dict) for stable rendering."""
+        self._nodes: dict[str, _Node] = {}
+
+    def add(self, node_id: str, text: str, parent: str | None) -> str:
+        """Add a node as [untested]; reject a duplicate id or a parent that isn't in the tree yet."""
+        if node_id in self._nodes:
+            return f"'{node_id}' already exists — change it with update_hypothesis."
+        if parent is not None and parent not in self._nodes:
+            return f"parent '{parent}' isn't in the tree — add it first, or omit parent for a root node."
+        self._nodes[node_id] = _Node(
+            node_id=node_id, text=text, parent=parent, status=HypothesisStatus.UNTESTED, findings=[]
+        )
+        return f"Added {node_id} [{HypothesisStatus.UNTESTED}]."
+
+    def update(self, node_id: str, status: HypothesisStatus, finding: str | None) -> str:
+        """Set a node's verdict and append its key finding; reject an unknown id."""
+        node = self._nodes.get(node_id)
+        if node is None:
+            return f"'{node_id}' isn't in the tree — add it first with add_hypothesis."
+        node.status = status
+        if finding:
+            node.findings.append(finding)
+        return f"Updated {node_id} → [{status}]."
+
+    def render(self) -> str:
+        """The whole tree as indented markdown (root → branches → leaves, findings inline)."""
+        if not self._nodes:
+            return _EMPTY
+        lines: list[str] = []
+        self._render_children(None, 0, lines)
+        return "\n".join(lines)
+
+    def _render_children(self, parent: str | None, depth: int, lines: list[str]) -> None:
+        """Depth-first render of every node whose parent is `parent` (add() guarantees no orphans)."""
+        indent = "  " * depth
+        for node in self._nodes.values():
+            if node.parent == parent:
+                lines.append(f"{indent}{node.node_id}: {node.text} [{node.status}]")
+                lines.extend(f"{indent}  → {finding}" for finding in node.findings)
+                self._render_children(node.node_id, depth + 1, lines)
+
+
+class AddHypothesisTool(Tool):
+    """Add one node to the shared hypothesis tree. Lifecycle: short-lived (one investigation)."""
+
+    name = "add_hypothesis"
+    one_line = "Add one node to your hypothesis tree (a question/branch or a falsifiable leaf)"
     description = (
-        "Maintain your hypothesis tree — the living record of the investigation, shown back to you "
-        "every turn. Pass the FULL updated tree each call; it replaces the previous one whole (unlike "
-        "line-edited core memory, a hierarchical tree is clearer rewritten than patched). Lay it out "
-        "BEFORE gathering evidence: root question → candidate branches → falsifiable leaves, each "
-        "tagged [untested]. After each retrieval result, update the leaf's status: [VERIFIED] "
-        "[FALSIFIED] [NOT A FACTOR] [PARTIAL] [OPEN] (data missing — note what would close it). Keep "
-        "key numbers/quotes inline. Keep it lean — it costs tokens every turn."
+        "Add ONE node to your hypothesis tree. Lay the tree out BEFORE gathering evidence: the root "
+        "question, its candidate branches, then falsifiable leaves — each testable against what "
+        "retrieval returns. Every 'could be A or B' becomes two leaves you both test, never a question "
+        "back to the caller. New nodes start [untested]; record verdicts with update_hypothesis. You "
+        "see the whole tree every turn."
     )
 
     class Input(BaseModel):
-        """The full hypothesis tree to store — rewritten whole each call."""
+        """One node to add to the tree."""
 
-        tree: str = Field(
-            description="The complete markdown hypothesis tree (root → branches → status-tagged leaves). "
-            "Pass the whole tree every time; it replaces the previous one."
-        )
+        node_id: str = Field(description="short id, e.g. Q0 (root question), Q1 (branch), H1.1 (leaf)")
+        text: str = Field(description="the question or the falsifiable hypothesis, one line")
+        parent: str | None = Field(default=None, description="id of the parent node; omit for a root")
 
-    def __init__(self) -> None:
-        """Start with an empty tree; it lives in this instance for the one investigation."""
-        self._tree = ""
-
-    async def execute(self, *, tree: str) -> str:
-        """Replace the stored tree with the full new one; reject if it exceeds the cap."""
-        if len(tree) > _TREE_BUDGET:
-            return (
-                f"Too long: {len(tree)} chars > {_TREE_BUDGET} cap. Prune resolved branches to their "
-                f"status (drop the reasoning once a leaf is VERIFIED/FALSIFIED) and pass the tree again."
-            )
+    def __init__(self, tree: HypothesisTree) -> None:
+        """Share the one tree instance with the other tree tool for this investigation."""
         self._tree = tree
-        return "Hypothesis tree updated."
+
+    async def execute(self, *, node_id: str, text: str, parent: str | None = None) -> str:
+        """Add the node; return the outcome (or why it was rejected) for the model to self-correct."""
+        return self._tree.add(node_id, text, parent)
+
+
+class UpdateHypothesisTool(Tool):
+    """Record a verdict on one node, and inject the whole tree every turn. Lifecycle: short-lived."""
+
+    name = "update_hypothesis"
+    one_line = "Record the verdict on one hypothesis (set its status the moment evidence is in)"
+    description = (
+        "Record the verdict on ONE hypothesis the moment its evidence is in — never leave a leaf "
+        "[untested] once retrieval has answered it. status is one of: untested, verified, falsified, "
+        "'not a factor' (real but too small to matter), partial (explains only part), open (data "
+        "insufficient — say what would close it). Put the key number or quote in `finding`. You see "
+        "the whole tree every turn."
+    )
+
+    class Input(BaseModel):
+        """The verdict on one existing node."""
+
+        node_id: str = Field(description="id of the node to update (must already be in the tree)")
+        status: HypothesisStatus = Field(description="the verdict for this node")
+        finding: str | None = Field(default=None, description="the key evidence/number/quote that set it")
+
+    def __init__(self, tree: HypothesisTree) -> None:
+        """Share the one tree instance; this tool also injects the tree into the prompt each turn."""
+        self._tree = tree
+
+    async def execute(self, *, node_id: str, status: HypothesisStatus, finding: str | None = None) -> str:
+        """Set the verdict; return the outcome (or why it was rejected) for the model to self-correct."""
+        return self._tree.update(node_id, status, finding)
 
     async def system_prompt(self) -> str:
-        """The current tree, read live and injected into the system prompt every turn."""
-        return f"{_TREE_HEADER}\n\n{self._tree or _TREE_EMPTY}"
+        """Inject the current tree every turn (once — this is the single injection point of the pair)."""
+        return f"{_HEADER}\n\n{self._tree.render()}"
+
+
+def build_hypothesis_tree_tools() -> list[Tool]:
+    """A fresh shared tree + the granular add/update tools over it, for one investigation."""
+    tree = HypothesisTree()
+    return [AddHypothesisTool(tree), UpdateHypothesisTool(tree)]
