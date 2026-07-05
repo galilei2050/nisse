@@ -29,6 +29,7 @@ from app.lists import ListStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
 from app.subagents import SubagentStore
+from app.tools.wiring import build_tool_registry
 
 
 class NisseBot(TelegramServer):
@@ -69,7 +70,7 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def deps(self) -> CoreDeps:
-        """Shared low-level clients assembled from individual cached properties."""
+        """Shared clients + services assembled from individual cached properties."""
         return CoreDeps(
             http=self._http,
             anthropic=self._anthropic,
@@ -79,6 +80,7 @@ class NisseBot(TelegramServer):
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
             judge=self._judge,
+            tools=build_tool_registry(),
         )
 
     @cached_property

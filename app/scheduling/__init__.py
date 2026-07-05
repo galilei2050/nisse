@@ -4,7 +4,7 @@ from app.scheduling.router import build_fire_route
 from app.scheduling.runner import ScheduleRunner
 from app.scheduling.service import LoggingScheduler, SchedulingService
 from app.scheduling.store import ScheduleStore
-from app.scheduling.tools import CancelScheduleTool, RemindTool, RoutineTool
+from app.scheduling.tools import CancelScheduleTool, RemindTool, RoutineTool, register_tools, scheduling_tools
 
 __all__ = [
     "CancelScheduleTool",
@@ -15,4 +15,6 @@ __all__ = [
     "ScheduleStore",
     "SchedulingService",
     "build_fire_route",
+    "register_tools",
+    "scheduling_tools",
 ]

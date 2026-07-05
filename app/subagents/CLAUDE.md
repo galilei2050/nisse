@@ -9,21 +9,52 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 - `store.py` — `SubagentConfig(NisseDbModel)` (seven required config axes + `conversation_id`) +
   `SubagentStore` (scoped `list()` for the build; `save()` is seed-only; `ensure_indexes` unique on
   `(conversation_id, name)`).
-- `registry.py` — `TOOL_REGISTRY` (tool `.name` → factory) + `build_tools(names, deps)`. Holds ONLY
-  read-only web/browse leaves — the same set `_build_web_tools` gives the parent. It is the **child
-  whitelist**: a config naming anything else fails loud at build. No state-writing / send / sub-agent
-  tool is in it, so a child can't write shared state or recurse.
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and
-  returns `result.response`, raising if it's `None` (no silent empty answer).
+  returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tools` maps
+  each `tool_names` entry to live tool(s) via the shared registry `deps.tools.get(name)` (e.g.
+  `hypothesis_tree` → the add/update pair); a name that isn't a registered tool falls through to
+  sibling delegation, else fails loud. The tool catalog itself lives in `app/tools/` (not here).
+- `hypothesis_tree.py` — the researcher's living investigation record, edited **node-by-node** with
+  two granular tools (`add_hypothesis` / `update_hypothesis`) over one shared `HypothesisTree`, not
+  rewritten whole (mirrors the `list_edit`/core-memory idiom: touch one node, don't resend the tree,
+  can't drop a node). `update_hypothesis.system_prompt()` injects the whole tree every turn (single
+  injection point of the pair), same shape as core memory. **Ephemeral in-instance state** — a fresh
+  shared tree per `SubagentTool.execute` run (one investigation), gone after it. No Mongo, no
+  conversation scope. `build_hypothesis_tree_tools()` makes the shared tree + its two tools.
+
+## Depth-1 nesting (two-level research pipeline)
+
+A sub-agent may delegate to *another* sub-agent, but only ONE level deep — an orchestrator delegates,
+its children are leaves. Delegation is derived, not flagged: **a sub-agent may delegate exactly when
+it HAS siblings.**
+
+- Top-level `SubagentTool`s are built with `siblings` = every config in the conversation
+  (`Conversations._build_subagent_tools`). Having siblings only *permits* resolving a sibling name
+  that appears in a config's `tool_names`; a worker whose names are all registry tools never uses it.
+- A child sub-agent is built with `siblings={}`, so it can't see or delegate to anyone — capping
+  nesting at one level.
+- A `tool_names` entry that is neither a registered tool nor a delegable sibling raises at build — a
+  seed error, loud.
+
+The seed pattern (`scratch/seed_subagents.py`): `researcher` (orchestrator, `tool_names =
+["retrieval", "hypothesis_tree"]`, never searches itself) + `retrieval` (worker, the web leaves).
+The researcher owns the hypothesis tree, decomposes the question, delegates each sub-question to
+`retrieval`, and synthesizes; `retrieval` answers one self-contained sub-question and returns cited
+compression. Methodology encoded in the prompts: `docs/research-subagent.md`.
+
+**v1 has no isolated verifier** (research doc §3.3 — a separate agent given only the cited sources).
+Verification hygiene is left to each sub-agent's own completeness judge (`GeminiJudge`, wired per
+config). Add a verifier later only if usage shows a need.
 
 ## Wiring
 
 `Conversations._build_subagent_tools(conversation_id)` reads the configs and adds one `SubagentTool`
 each. Configs are read once at conversation-build; the agent is cached, so a re-seed takes effect on
 the next process start (no cache invalidation — not needed for an admin-seeded, rarely-changing set).
-`_build_web_tools` and the registry share one source of truth (`build_tools`); the parent gets all
-registry keys, a child gets its configured subset.
+A sub-agent builds its tools through the SAME `deps.tools` registry the main agent uses (`app/tools/`)
+— the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
+sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).
 
 ## Design facts (why it's built this way)
 

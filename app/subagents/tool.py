@@ -6,7 +6,6 @@ from baski.env import get_env
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
-from app.subagents.registry import build_tools
 from app.subagents.store import SubagentConfig
 
 _JUDGE_PROJECT = str(get_env("GOOGLE_CLOUD_PROJECT"))  # read at import — fail-fast if the secret is missing
@@ -30,13 +29,28 @@ class SubagentTool(Tool):
             )
         )
 
-    def __init__(self, config: SubagentConfig, deps: CoreDeps) -> None:
-        """Take name/description from the config (per-instance, shadowing the class defaults)."""
+    def __init__(
+        self,
+        config: SubagentConfig,
+        deps: CoreDeps,
+        *,
+        conversation_id: int,
+        siblings: dict[str, SubagentConfig],
+    ) -> None:
+        """Take name/description from the config (per-instance, shadowing the class defaults).
+
+        Builds its tools through the same registry the main agent uses (`deps.tools`), scoped to
+        `conversation_id`. `siblings` maps every config name in the conversation → its config, for
+        resolving delegation targets — a sub-agent may delegate exactly when it HAS siblings: top-level
+        tools get all configs, their children get none, so nesting is capped at one level.
+        """
         self.name = config.name
         self.description = config.description
         self.one_line = config.description
         self._config = config
         self._deps = deps
+        self._conversation_id = conversation_id
+        self._siblings = siblings
 
     async def execute(self, *, prompt: str) -> str:
         """Run the isolated sub-agent once and return its answer."""
@@ -50,8 +64,9 @@ class SubagentTool(Tool):
     def _agent_config(self) -> AgentConfig:
         """Assemble the child's AgentConfig from its stored config; fresh history per call (stateless)."""
         toolset = ToolSet()
-        for tool in build_tools(self._config.tool_names, self._deps):
-            toolset.add(tool)
+        for name in self._config.tool_names:
+            for tool in self._resolve_tools(name):
+                toolset.add(tool)
         return AgentConfig(
             toolset=toolset,
             message_history=InMemoryMessageHistory(max_tokens=self._config.context_tokens),
@@ -62,6 +77,28 @@ class SubagentTool(Tool):
             judge=self._judge(),
             model=self._config.model,
         )
+
+    def _resolve_tools(self, name: str) -> list[Tool]:
+        """Map one `tool_names` entry to live tool(s): a registry tool, or a child sub-agent to delegate to.
+
+        A registered name is built through the shared registry `deps.tools` (e.g. `hypothesis_tree`
+        yields the granular add/update pair). Otherwise it may be a sibling to delegate to — allowed
+        only when this sub-agent has siblings (children have none, capping nesting at one level). A name
+        that is neither a registered tool nor a delegable sibling is a seed error: fail loud.
+        """
+        factory = self._deps.tools.get(name)
+        if factory is not None:
+            return factory(self._deps, self._conversation_id)
+        if self._siblings and name in self._siblings:
+            return [self._child(self._siblings[name])]
+        raise ValueError(
+            f"subagent '{self.name}' references '{name}', which is neither a registered tool nor a "
+            f"delegable sibling (delegation {'allowed' if self._siblings else 'not allowed'} here)"
+        )
+
+    def _child(self, config: SubagentConfig) -> "SubagentTool":
+        """A delegated child sub-agent, built with no siblings so nesting is capped at one level."""
+        return SubagentTool(config, self._deps, conversation_id=self._conversation_id, siblings={})
 
     def _judge(self) -> Judge:
         """The child's own completeness judge, graded against its config's rubric."""

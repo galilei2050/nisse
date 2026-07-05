@@ -61,7 +61,7 @@ class Assistant:
         await_trace: bool = False,
         local_traces_dir: str | None = None,
     ) -> None:
-        """Build the conversation registry from shared deps.
+        """Build the conversation registry from shared deps (which carry the tool registry).
 
         `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
         persistence and write the full trace to a local dir instead of GCS. Off in production.
