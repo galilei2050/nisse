@@ -5,7 +5,7 @@
 # start (the built agent is cached per conversation). See app/subagents/CLAUDE.md.
 
 - name: retrieval
-  model: claude-sonnet-4-6
+  model: claude-sonnet-5
   context_tokens: 180000
   # NOT in MAIN_TOOLS: google_hotels/google_flights are reachable only by delegating here.
   tool_names:
@@ -39,7 +39,7 @@
     finished=true only when: the one sub-question is directly answered; the claims are grounded in named/linked sources (not fabricated); and it is delivered as a compressed, cited answer, not a raw dump. An honest "the evidence is thin on X" counts as finished if the rest holds. If the sub-question is unanswered or claims are ungrounded, finished=false and name the specific gap.
 
 - name: researcher
-  model: claude-sonnet-4-6
+  model: claude-sonnet-5
   context_tokens: 200000
   tool_names:
     - retrieval        # delegates all evidence-gathering to the retrieval worker (sibling)
