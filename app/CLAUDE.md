@@ -80,6 +80,14 @@ app/
                     amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
+  subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
+    store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() is seed-only)
+    registry.py     TOOL_REGISTRY (tool .name → factory) + build_tools; the read-only web/browse
+                    leaves, doubling as the child whitelist. `_build_web_tools` builds from it too.
+    tool.py         SubagentTool — wraps one config as a delegating Tool; runs a fresh isolated Agent
+                    (own model/tools/judge/context) on the pinned prompt, returns its answer
+                    (design + deviations: app/subagents/CLAUDE.md; research: docs/orchestrator-subagent-architecture.md)
+
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
@@ -95,10 +103,12 @@ app/
       agent.py      the sub-agent loop
       skill.py      delegate-to-research Tool exposed to the main agent
                     (learned skills are data specs in Mongo, not code here)
+                    NOTE: the generic, data-driven version of this now ships in `subagents/` —
+                    a research sub-agent is just a seeded SubagentConfig, no code.
 ```
 
 `curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below describe them.
-Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `shared`. The
+Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `subagents`, `shared`. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`), wired here via `CoreDeps.judge`
 → `AgentConfig.judge` — not a local `app/judge/`.
 

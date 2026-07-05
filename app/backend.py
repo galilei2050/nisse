@@ -28,6 +28,7 @@ from app.assistant.history import MongoMessageHistory
 from app.lists import ListStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
+from app.subagents import SubagentStore
 
 
 class NisseBot(TelegramServer):
@@ -138,6 +139,7 @@ class NisseBot(TelegramServer):
         await MongoMessageHistory.ensure_indexes(self._database)
         await ScheduleStore.ensure_indexes(self._database)
         await ListStore.ensure_indexes(self._database)
+        await SubagentStore.ensure_indexes(self._database)
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""
