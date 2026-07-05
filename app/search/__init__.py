@@ -11,9 +11,14 @@ from app.search.tools import (
     AmazonSearchTool,
     GoogleAiModeTool,
     GoogleEventsTool,
+    GoogleFinanceTool,
+    GoogleFlightsTool,
+    GoogleHotelsTool,
     GoogleJobsTool,
+    GoogleMapsReviewsTool,
     GoogleMapsSearchTool,
     GoogleNewsTool,
+    GoogleScholarTool,
     GoogleSearchTool,
     YouTubeSearchTool,
     YouTubeTranscriptTool,
@@ -48,6 +53,11 @@ def register_tools(registrar: ToolRegistrar) -> None:
     registrar.register("youtube_search", _serp_leaf(YouTubeSearchTool))
     registrar.register("youtube_transcript", _serp_leaf(YouTubeTranscriptTool))
     registrar.register("google_jobs", _serp_leaf(GoogleJobsTool))
+    registrar.register("google_flights", _serp_leaf(GoogleFlightsTool))
+    registrar.register("google_hotels", _serp_leaf(GoogleHotelsTool))
+    registrar.register("google_finance", _serp_leaf(GoogleFinanceTool))
+    registrar.register("google_scholar", _serp_leaf(GoogleScholarTool))
+    registrar.register("google_maps_reviews", _serp_leaf(GoogleMapsReviewsTool))
     registrar.register("browse_website", _browse)
 
 
@@ -56,9 +66,14 @@ __all__ = [
     "AmazonSearchTool",
     "GoogleAiModeTool",
     "GoogleEventsTool",
+    "GoogleFinanceTool",
+    "GoogleFlightsTool",
+    "GoogleHotelsTool",
     "GoogleJobsTool",
+    "GoogleMapsReviewsTool",
     "GoogleMapsSearchTool",
     "GoogleNewsTool",
+    "GoogleScholarTool",
     "GoogleSearchTool",
     "YouTubeSearchTool",
     "YouTubeTranscriptTool",

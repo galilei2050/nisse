@@ -74,10 +74,13 @@ app/
     runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
     router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
-  search/           SerpApi search tools — 10 leaf tools over baski's SerpApiClient
+  search/           SerpApi search tools — 15 leaf tools over baski's SerpApiClient
     serp_tool.py    SerpTool base (params→request→render) + shared format_hits (token-lean Markdown)
     tools.py        google_search · google_ai_answer · google_maps_search · google_news · google_events ·
-                    amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs
+                    amazon_search→amazon_product · youtube_search→youtube_transcript · google_jobs ·
+                    google_maps_search→google_maps_reviews · google_flights · google_hotels ·
+                    google_finance · google_scholar (last 5 are research-only: registered but off
+                    MAIN_TOOLS, for the research sub-agent's fatter roster)
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat

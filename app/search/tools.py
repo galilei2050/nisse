@@ -1,8 +1,13 @@
-"""The 10 SerpApi leaf tools: discovery tools + their paired detail tools.
+"""The SerpApi leaf tools: discovery tools + their paired detail tools.
 
 Discovery → detail chains:
-  amazon_search → amazon_product   (asin)
-  youtube_search → youtube_transcript  (video id)
+  amazon_search → amazon_product        (asin)
+  youtube_search → youtube_transcript   (video id)
+  google_maps_search → google_maps_reviews  (data_id)
+
+The general leaves ship on both the main agent and sub-agents; the research-only engines
+(flights, hotels, finance, scholar, maps_reviews) are wired onto the research sub-agent, not the
+lean main roster — see docs/serpapi-search-tools.md "Roster tiers".
 """
 
 from urllib.parse import parse_qs, urlparse
@@ -372,6 +377,214 @@ class GoogleJobsTool(SerpTool):
                 }
             )
         return format_hits("Google Jobs results", hits)
+
+
+class GoogleFlightsTool(SerpTool):
+    """Flight routes + prices between two airports for a date (research-worker tool)."""
+
+    name = "google_flights"
+    one_line = "Search Google Flights for routes and prices"
+    description = (
+        "Find flights between two airports for a date: prices, durations, stops, airlines. "
+        "Give IATA codes (e.g. CDG, JFK) and an outbound date; add a return date for a round trip."
+    )
+    engine = "google_flights"
+
+    class Input(BaseModel):
+        """Arguments for a Google Flights search."""
+
+        departure_id: str = Field(description="Departure airport IATA code, e.g. 'CDG'")
+        arrival_id: str = Field(description="Arrival airport IATA code, e.g. 'JFK'")
+        outbound_date: str = Field(description="Outbound date, YYYY-MM-DD")
+        return_date: str = Field(default="", description="Return date YYYY-MM-DD; empty = one-way")
+
+    def params(self, departure_id: str, arrival_id: str, outbound_date: str, return_date: str = "") -> dict:  # type: ignore[override]  # noqa: ANON002 — SerpAPI query params; narrower sig is intentional
+        """Map fields → Flights params; type=2 (one-way) unless a return date makes it round-trip."""
+        p = {
+            "departure_id": departure_id,
+            "arrival_id": arrival_id,
+            "outbound_date": outbound_date,
+            "type": "2",
+            "currency": "USD",
+            "gl": "us",
+            "hl": "en",
+        }
+        if return_date:
+            p["return_date"] = return_date
+            p["type"] = "1"
+        return p
+
+    def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
+        """Format best + other flights: route, price, duration, stops, airlines."""
+        groups = (results.get("best_flights") or []) + (results.get("other_flights") or [])
+        hits = []
+        for r in groups:
+            legs = r.get("flights") or []
+            airlines = ", ".join(dict.fromkeys(leg.get("airline", "") for leg in legs if leg.get("airline")))
+            dep = legs[0].get("departure_airport", {}).get("id", "") if legs else ""
+            arr = legs[-1].get("arrival_airport", {}).get("id", "") if legs else ""
+            hits.append(
+                {
+                    "": f"{dep}→{arr}" if dep and arr else "flight",
+                    "price": str(r.get("price", "")),
+                    "duration_min": str(r.get("total_duration", "")),
+                    "stops": str(max(len(legs) - 1, 0)),
+                    "airlines": airlines,
+                }
+            )
+        return format_hits("Google Flights results", hits)
+
+
+class GoogleHotelsTool(SerpTool):
+    """Bookable stays with nightly rates for a date range (research-worker tool)."""
+
+    name = "google_hotels"
+    one_line = "Search Google Hotels for stays with rates"
+    description = (
+        "Find hotels/stays for a location and date range: nightly rate, rating, reviews, class. "
+        "Give a location query and check-in/check-out dates. Maps finds places; this gives bookable rates."
+    )
+    engine = "google_hotels"
+
+    class Input(BaseModel):
+        """Arguments for a Google Hotels search."""
+
+        query: str = Field(description="Where to stay, e.g. 'hotels in Lisbon'")
+        check_in_date: str = Field(description="Check-in date, YYYY-MM-DD")
+        check_out_date: str = Field(description="Check-out date, YYYY-MM-DD")
+        adults: int = Field(default=2, description="Number of adults; defaults to 2")
+
+    def params(self, query: str, check_in_date: str, check_out_date: str, adults: int = 2) -> dict:  # type: ignore[override]  # noqa: ANON002 — SerpAPI query params; narrower sig is intentional
+        """Map fields → Hotels params."""
+        return {
+            "q": query,
+            "check_in_date": check_in_date,
+            "check_out_date": check_out_date,
+            "adults": str(adults),
+            "currency": "USD",
+            "gl": "us",
+            "hl": "en",
+        }
+
+    def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
+        """Format properties: name, type, nightly rate, rating, reviews, class."""
+        hits = [
+            {
+                "": r.get("name", ""),
+                "type": r.get("type", ""),
+                "rate/night": (r.get("rate_per_night") or {}).get("lowest", ""),
+                "rating": str(r.get("overall_rating", "")),
+                "reviews": str(r.get("reviews", "")),
+                "class": r.get("hotel_class", ""),
+            }
+            for r in results.get("properties", [])
+        ]
+        return format_hits("Google Hotels results", hits)
+
+
+class GoogleFinanceTool(SerpTool):
+    """Live quote for a ticker/FX/crypto symbol (research-worker tool)."""
+
+    name = "google_finance"
+    one_line = "Get a live quote from Google Finance"
+    description = (
+        "Fetch a live quote for a ticker, index, FX pair, or crypto: price and movement. "
+        "Use a Google Finance symbol like 'GOOGL:NASDAQ', 'EUR-USD', or 'BTC-USD'."
+    )
+    engine = "google_finance"
+
+    class Input(BaseModel):
+        """Arguments for a Google Finance quote."""
+
+        query: str = Field(description="Google Finance symbol, e.g. 'GOOGL:NASDAQ', 'EUR-USD', 'BTC-USD'")
+
+    def params(self, query: str) -> dict:  # type: ignore[override]  # noqa: ANON002 — SerpAPI query params; narrower sig is intentional
+        """Map symbol → Finance params."""
+        return {"q": query, "hl": "en"}
+
+    def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
+        """One line: title, price, movement — a single quote, not a list."""
+        summary = results.get("summary") or {}
+        move = summary.get("price_movement") or {}
+        parts = [summary.get("title", "")]
+        price = summary.get("price") or str(summary.get("extracted_price", ""))
+        if price:
+            parts.append(f"price: {price}")
+        if move:
+            parts.append(f"change: {move.get('movement', '')} {move.get('percentage', '')}%")
+        return " · ".join(p for p in parts if p)
+
+
+class GoogleScholarTool(SerpTool):
+    """Scholarly papers with citation counts (research-worker tool)."""
+
+    name = "google_scholar"
+    one_line = "Search Google Scholar for academic papers"
+    description = (
+        "Find peer-reviewed papers and preprints: title, authors/venue/year, citation count, link. "
+        "Use for scholarly evidence, not general web results (use google_search for those)."
+    )
+    engine = "google_scholar"
+
+    class Input(BaseModel):
+        """Arguments for a Google Scholar search."""
+
+        query: str = Field(description="Scholarly query; supports author: and source: operators")
+
+    def params(self, query: str) -> dict:  # type: ignore[override]  # noqa: ANON002 — SerpAPI query params; narrower sig is intentional
+        """Map query → Scholar params."""
+        return {"q": query, "hl": "en"}
+
+    def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
+        """Format results: title, publication summary, citation count, link."""
+        hits = []
+        for r in results.get("organic_results", []):
+            cited = ((r.get("inline_links") or {}).get("cited_by") or {}).get("total", "")
+            hits.append(
+                {
+                    "": r.get("title", ""),
+                    "pub": ((r.get("publication_info") or {}).get("summary") or "")[:120],
+                    "cited_by": str(cited),
+                    "link": r.get("link", ""),
+                }
+            )
+        return format_hits("Google Scholar results", hits)
+
+
+class GoogleMapsReviewsTool(SerpTool):
+    """Full review text for one place — the detail half of the maps chain (research-worker tool)."""
+
+    name = "google_maps_reviews"
+    one_line = "Read reviews for a place found via google_maps_search"
+    description = (
+        "Fetch the actual review text and ratings for one place by its data_id. "
+        "Get the data_id from google_maps_search first — this reads what reviewers wrote."
+    )
+    engine = "google_maps_reviews"
+
+    class Input(BaseModel):
+        """Arguments for fetching one place's reviews."""
+
+        data_id: str = Field(description="Place data_id, e.g. from google_maps_search")
+
+    def params(self, data_id: str) -> dict:  # type: ignore[override]  # noqa: ANON002 — SerpAPI query params; narrower sig is intentional
+        """Map data_id → Maps Reviews params."""
+        return {"data_id": data_id, "hl": "en"}
+
+    def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
+        """Format reviews: reviewer, rating, date, review text."""
+        hits = []
+        for r in results.get("reviews", []):
+            snippet = r.get("snippet") or (r.get("extracted_snippet") or {}).get("original", "")
+            hits.append(
+                {
+                    "": (r.get("user") or {}).get("name", ""),
+                    "rating": str(r.get("rating", "")),
+                    "date": r.get("date", ""),
+                    "review": (snippet or "")[:200],
+                }
+            )
+        return format_hits("Google Maps reviews", hits)
 
 
 def _parse_video_id(link: str) -> str:
