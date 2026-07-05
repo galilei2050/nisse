@@ -35,8 +35,12 @@ class ToolRegistrar(Protocol):
         ...
 
 
-class ToolRegistry:
-    """The process-wide tool catalog. Lifecycle: long-lived — one per bot, built once at startup."""
+class ToolRegistry(ToolRegistrar):
+    """The process-wide tool catalog. Lifecycle: long-lived — one per bot, built once at startup.
+
+    Implements `ToolRegistrar` explicitly (not just structurally) so the type checker verifies its
+    `register` keeps matching the Protocol the domains depend on.
+    """
 
     def __init__(self) -> None:
         """Start empty; each domain's `register_tools` adds its factories (see `backend.py`)."""
