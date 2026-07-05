@@ -31,6 +31,7 @@ from pymongo import AsyncMongoClient
 from app.assistant import Assistant
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
+from app.tools import build_tool_registry
 
 if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase
@@ -99,6 +100,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
             judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT"))),
+            tools=build_tool_registry(),
         )
         assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
         await assistant.setup()

@@ -1,12 +1,23 @@
-"""Depth-1 nesting: the tool resolver delegates one level, then caps. Pure logic, no live deps.
+"""Depth-1 nesting: the tool resolver builds from the registry, delegates one level, then caps.
 
-Only the resolver's routing + the one-level cap are unit-tested (deps are never touched on these
-paths). Whether a nested sub-agent actually runs is covered by the probe. See tests/CLAUDE.md.
+Pure logic, no live deps — a stub `deps` carries a registry with just the tools these paths touch;
+its clients are never used. Whether a nested sub-agent actually runs is covered by the probe.
 """
+
+from types import SimpleNamespace
 
 import pytest
 
 from app.subagents import AddHypothesisTool, SubagentConfig, SubagentTool, UpdateHypothesisTool
+from app.subagents.hypothesis_tree import build_hypothesis_tree_tools
+from app.tools import ToolRegistry
+
+
+def _deps() -> SimpleNamespace:
+    """A stub deps whose only used attribute is `.tools` — a registry with just `hypothesis_tree`."""
+    registry = ToolRegistry()
+    registry.register("hypothesis_tree", lambda _deps, _conversation_id: build_hypothesis_tree_tools())
+    return SimpleNamespace(tools=registry)
 
 
 def _config(name: str, tool_names: list[str]) -> SubagentConfig:
@@ -23,30 +34,30 @@ def _config(name: str, tool_names: list[str]) -> SubagentConfig:
     )
 
 
-def _tool(config: SubagentConfig, siblings: dict[str, SubagentConfig], *, can_delegate: bool) -> SubagentTool:
-    return SubagentTool(config, deps=None, siblings=siblings, can_delegate=can_delegate)  # deps unused on these paths
+def _tool(config: SubagentConfig, siblings: dict[str, SubagentConfig]) -> SubagentTool:
+    return SubagentTool(config, _deps(), conversation_id=1, siblings=siblings)
 
 
 def test_hypothesis_tree_expands_to_the_granular_pair() -> None:
-    """The literal 'hypothesis_tree' name expands to the ephemeral add/update tools over one tree."""
-    orchestrator = _tool(_config("researcher", ["hypothesis_tree"]), {}, can_delegate=True)
+    """The registered 'hypothesis_tree' name expands to the ephemeral add/update tools over one tree."""
+    orchestrator = _tool(_config("researcher", ["hypothesis_tree"]), {})
     resolved = orchestrator._resolve_tools("hypothesis_tree")
     assert [type(t) for t in resolved] == [AddHypothesisTool, UpdateHypothesisTool]
 
 
 def test_orchestrator_delegates_to_sibling_and_child_is_a_capped_leaf() -> None:
-    """can_delegate resolves a sibling into a child; the child is a leaf that can't delegate again."""
+    """A name not in the registry but a sibling resolves to a child; the child (no siblings) can't again."""
     worker = _config("retrieval", ["google_search"])
-    orchestrator = _tool(_config("researcher", ["retrieval"]), {"retrieval": worker}, can_delegate=True)
+    orchestrator = _tool(_config("researcher", ["retrieval"]), {"retrieval": worker})
     (child,) = orchestrator._resolve_tools("retrieval")
     assert isinstance(child, SubagentTool)
-    # The child is a leaf: empty siblings + can_delegate=False → it can't resolve any sub-agent name.
+    # The child is a leaf: no siblings → it can't resolve any sub-agent name.
     with pytest.raises(ValueError, match="delegation not allowed"):
         child._resolve_tools("retrieval")
 
 
 def test_leaf_referencing_a_subagent_raises_loud() -> None:
-    """A worker (can_delegate=False) naming a sibling is a seed error — fail loud, not a silent leaf."""
-    orchestrator = _tool(_config("worker", ["researcher"]), {"researcher": _config("researcher", [])}, can_delegate=False)
-    with pytest.raises(ValueError, match="unknown tool 'researcher'"):
-        orchestrator._resolve_tools("researcher")
+    """A leaf (no siblings) naming an unregistered tool is a seed error — fail loud, not a silent leaf."""
+    leaf = _tool(_config("worker", ["researcher"]), {})
+    with pytest.raises(ValueError, match="neither a registered tool nor a delegable sibling"):
+        leaf._resolve_tools("researcher")

@@ -82,25 +82,26 @@ app/
 
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
     store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() is seed-only)
-    registry.py     TOOL_REGISTRY (tool .name → factory) + build_tools; the read-only web/browse
-                    leaves, doubling as the child whitelist. `_build_web_tools` builds from it too.
     tool.py         SubagentTool — wraps one config as a delegating Tool; runs a fresh isolated Agent
-                    (own model/tools/judge/context) on the pinned prompt, returns its answer. An
-                    orchestrator (can_delegate) may delegate to a sibling sub-agent — ONE level deep
-                    (children are leaves); a two-level research pipeline (researcher → retrieval)
+                    (own model/tools/judge/context) on the pinned prompt, returns its answer. Builds
+                    its tools through the shared `deps.tools` registry (same as the main agent). A
+                    sub-agent may delegate to a sibling — ONE level deep (children get no siblings;
+                    delegation ≡ has siblings); a two-level research pipeline (researcher → retrieval)
                     (design + deviations: app/subagents/CLAUDE.md; research: docs/orchestrator-subagent-architecture.md)
-    hypothesis_tree.py  HypothesisTreeTool — the researcher's living investigation record, injected
-                    every turn; ephemeral per-run in-instance state (NOT a Mongo store)
+    hypothesis_tree.py  add_hypothesis/update_hypothesis over one ephemeral per-run tree — the
+                    researcher's living investigation record, injected every turn (NOT a Mongo store)
+    registry.py     TOMBSTONE — the tool registry moved to `app/tools/`; delete this file
 
   curator/          nightly self-maintenance agent (off the request path)
     curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
     router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
 
-  tools/            (future) more nisse-specific leaf Tool classes — one per file, thin wrapper over one API
-    google/ (gmail·calendar·tasks·drive) / perplexity.py … — created when needed
-    Each is WIRED in `Conversations._build_<domain>_tools()` (no provider registry). Search lives in
-    `search/` (nisse SerpApi leaves); browse uses baski's WebBrowseTool — both wired in `_build_web_tools()`.
-    (+ external MCP servers as an optional secondary tool source — hybrid)
+  tools/            the process-wide TOOL REGISTRY both the main agent and sub-agents build from
+    registry.py     ToolRegistry (name→factory) — generic, tool-agnostic: register/get/build
+    wiring.py       build_tool_registry() (registers every tool by name, one line each) + MAIN_TOOLS
+                    (the main agent's spec). See app/tools/CLAUDE.md.
+    (future: more nisse-specific leaf Tool classes here — gmail·calendar·perplexity, one per file;
+    + external MCP servers as an optional secondary tool source — hybrid)
 
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)
     research/       research SUB-AGENT (own Agent + search tools)
@@ -129,8 +130,8 @@ exactly **one** name from its `__init__.py` — `router` (Telegram/HTTP),
 - **Tool** = subclass `baski.agents.Tool`; declare `name / one_line / description /
   input_schema`; `async execute(**kwargs) -> str`. One-shot. Stateless by default; a tool that
   **persists across replies** (Mongo-backed, e.g. memory) MUST be **scoped to `conversation_id`**
-  so chats never cross. baski is persistence-agnostic — the scope is bound *here* in
-  `Conversations._build_<domain>_tools(conversation_id)` (see Dependency wiring). **A tool talks to
+  so chats never cross. baski is persistence-agnostic — the scope is bound in the domain's tool
+  factory `(deps, conversation_id) -> list[Tool]` (see Dependency wiring). **A tool talks to
   a narrow domain SERVICE, never raw clients/transport** — scheduling tools get
   `SchedulingService.enqueue_fire(...)`, not the Cloud Tasks scheduler + URL. The service is the
   seam that keeps the tool ignorant of how work is dispatched.
@@ -180,16 +181,26 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
   toolset selects which skills to expose per request and injects only their
   schemas — the model never sees the full catalog at once.
 
-## Dependency wiring — assemble tools inline in `Conversations._build`
+## Dependency wiring — a process-wide tool registry (`app/tools/`)
 
-`CoreDeps` (`shared/deps.py`) holds the network+auth clients built once in `backend.py` (logger,
-http, anthropic, database, playwright, bucket, scheduler, schedule_endpoint). Everything else —
-per-domain stores, services, tools — is assembled on the stack in `Conversations._build` from
-`CoreDeps` alone.
+`CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
+anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge) **plus the tool
+`registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`.
 
-**The pattern: one `_build_<domain>_tools(conversation_id)` per domain**, returning `list[Tool]`.
-To add a tool domain, write one and call it — nothing else changes. A stateful tool gets its
-conversation-scoped store built here; no provider registry, no flatten indirection. The scheduler
+**Tools are registered, not hand-assembled.** Each domain owns a factory `(deps, conversation_id) ->
+list[Tool]` (`memory.memory_tools`, `lists.list_tools`, `scheduling.scheduling_tools`,
+`prompts.core_memory_tools`, `search.search_leaf` per leaf, `hypothesis_tree`); `app/tools/wiring.py`
+registers each by name, one line each — like routers collected in `backend.py`. To add a tool: write
+its domain factory, then one `registry.register(...)` line in `wiring.py`.
+
+**Both agents build their ToolSet through the SAME registry** — no per-agent duplication:
+- main Assistant: `deps.tools.build(MAIN_TOOLS, deps, conversation_id)` — `MAIN_TOOLS` (in
+  `app/tools/wiring.py`) is its spec: every tool EXCEPT the researcher-only `hypothesis_tree`.
+- sub-agent: `deps.tools.get(name)` per `config.tool_names` (falls through to sibling delegation).
+
+"Which agent gets which tool" is the caller's spec (a name list), not a flag on the tool. Only two
+loop-bound primitives are still wired by hand in `Conversations._build`: the short-term scratchpad
+(handed to `Conversation`) and `DeleteMessagesTool` (needs the agent's live history). The scheduler
 is always present (a `LoggingScheduler` stand-in in polling/probe), so scheduling tools exist in
 every mode — only webhook mode actually fires the callback.
 

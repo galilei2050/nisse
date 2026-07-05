@@ -11,6 +11,7 @@ from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
 from app.memory.store import MemoryCategory, MemorySource, MemoryStore, SourceKind
+from app.shared import CoreDeps
 
 # Index groups follow the category's own declaration order — one source of truth, so a new
 # category can never silently drop out of the index.
@@ -216,3 +217,9 @@ class ForgetTool(Tool):
     async def system_prompt(self) -> str:
         """When to forget."""
         return _FORGET_GUIDANCE
+
+
+def memory_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
+    """Long-term memory — one store scoped to the chat, its four CRUD tools over it."""
+    store = MemoryStore(deps.database, conversation_id=conversation_id)
+    return [RememberTool(store), RecallMemoryTool(store), EditMemoryTool(store), ForgetTool(store)]

@@ -6,12 +6,10 @@ from app.subagents.hypothesis_tree import (
     UpdateHypothesisTool,
     build_hypothesis_tree_tools,
 )
-from app.subagents.registry import TOOL_REGISTRY, build_tools
 from app.subagents.store import SubagentConfig, SubagentStore
 from app.subagents.tool import SubagentTool
 
 __all__ = [
-    "TOOL_REGISTRY",
     "AddHypothesisTool",
     "HypothesisStatus",
     "SubagentConfig",
@@ -19,5 +17,4 @@ __all__ = [
     "SubagentTool",
     "UpdateHypothesisTool",
     "build_hypothesis_tree_tools",
-    "build_tools",
 ]
