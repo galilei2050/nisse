@@ -254,13 +254,13 @@ model chooses right): AI Mode returns one synthesized answer + sources (`reconst
 best for "explain / compare / what's the best…" questions; `google_search` returns raw organic
 links, best when the owner wants the sources themselves or a specific site/page.
 
-**Deferred** (keep the roster sharp; add on real need):
+**Deferred** (keep the *main* roster sharp; add on real need):
 - `youtube_video` (`youtube_video`, param `v`) — richer video metadata (likes, description).
   Transcript is the asked-for depth; add this only if metadata alone is needed.
-- Maps place details / reviews (`google_maps_reviews` — client method already exists) —
-  add a detail tool if "find a shop" routinely needs review text.
-- Flights / Hotels (`google_flights`, `google_hotels`) — `google.com/travel` is low (125).
 - Yelp (`yelp` — already in baski) — Maps supersedes it for this owner (not in top-30).
+
+**Flights, hotels, finance, scholar, and maps-reviews are no longer deferred** — they're implemented
+as leaves and registered, routed to the *research sub-agent*, not the main agent (see "Roster tiers").
 
 **Beyond SerpApi — a Perplexity research tool (separate integration).** Perplexity is *not*
 a SerpApi engine, so it's not a `SerpTool` leaf — it's its own tool over its own client
@@ -272,12 +272,56 @@ gives raw links. Wire it for "research X thoroughly / compare options with sourc
 search tools in `app/search/` (or its own `app/research/`); same `Tool` contract, different
 backend.
 
+## Roster tiers: lean main agent, fuller research sub-agent
+
+The context-budget cap in "Problem" above is a **per-turn tax on the main loop** — every tool's
+schema + roster line rides *every* owner-facing turn, so the main agent's roster must stay sharp. A
+focused sub-agent does **not** pay that tax: the research `retrieval` worker is invoked *selectively*
+(only for a research delegation), is stateless and isolated, and answers **one narrow question** per
+call. Its tool schemas never touch the owner-facing turns. So the two rosters split by consumer, and
+a fatter roster is fine — even wanted — on the worker:
+
+- **Main agent** (`MAIN_TOOLS` in `app/tools/wiring.py`) — the lean everyday set the owner routes by
+  hand: `google_search`, `google_ai_answer`, `google_maps_search`, `google_news`, `google_events`,
+  the Amazon/YouTube chains, `google_jobs`, `browse_website`.
+- **Research `retrieval` sub-agent** (`tool_names` in `scratch/seed_subagents.py`) — carries the
+  fuller *research* roster; fill its context freely, that's the point of a focused worker.
+
+**The research-worker roster (implemented + registered, off `MAIN_TOOLS`):**
+
+- **`youtube_search`** — the pairing partner for `youtube_transcript` (its video-id source). The
+  transcript tool is inert without it — a worker seeded with only `youtube_transcript` has no way to
+  get a video id.
+- **`google_flights`** — engine `google_flights`, params `departure_id` / `arrival_id` /
+  `outbound_date` (+ `return_date`; `type` derived: one-way unless a return date makes it round-trip).
+  Flight routes + prices for travel research.
+- **`google_hotels`** — engine `google_hotels`, params `q` / `check_in_date` / `check_out_date`
+  (+ `adults`, `currency`). Bookable stays with rates for a date range (Maps gives places, not rates).
+- **`google_finance`** — engine `google_finance`, param `q` (`GOOGL:NASDAQ` / `EUR-USD` / `BTC-USD`).
+  A single live quote + movement — rendered as one line, not a hit list.
+- **`google_scholar`** — engine `google_scholar`, param `q`. Papers with citation counts — the most
+  common research add-on across mature agents.
+- **`google_maps_reviews`** — engine `google_maps_reviews`, param `data_id` (from `google_maps_search`).
+  The review-text detail half of the maps chain; needs `google_maps_search` alongside it to obtain the
+  `data_id`.
+
+**Mechanism (register once, route by spec).** Each engine is a leaf in `app/search/tools.py`,
+registered by name in `search.register_tools` (`app/search/__init__.py`). The main agent's
+`MAIN_TOOLS` (`app/assistant/conversations.py`) is an explicit list and deliberately omits these five,
+so they exist only for callers that name them. A sub-agent gets them by listing the names in its
+config's `tool_names`. "Which agent gets which tool" is the caller's spec, not a flag on the tool.
+
+**No lightweight URL-fetch leaf.** Mature research agents ship a cheap URL→text fetch beside their
+browser; nisse deliberately does not. Page reading stays on Playwright `browse_website` — the owner's
+call: **accuracy over speed**, a rendered read over a fast static grab.
+
 ## Why this is optimal
 
 **Context cost stays bounded.** Ten search tools ≈ ten roster lines + ten schemas ≈
 ~1.4k tokens, fixed per turn. All ~90 engines would be ~13k and a confused model. **Selection**
-keeps it lean, and `_build_web_tools` is the one obvious place selection happens — to add or
-drop an engine, edit one list.
+keeps it lean, and the main agent's tool spec is the one obvious place selection happens — to add or
+drop an engine, edit one list. This bound is the *main agent's*; a focused research sub-agent is off
+the per-turn path and can carry a fuller roster (see "Roster tiers").
 
 **Detail tools are why the assistant exceeds the daily routine.** The owner already searches
 Maps and Amazon by hand; a tool that only mirrors that adds little. The leverage is in the
