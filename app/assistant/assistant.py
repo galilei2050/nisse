@@ -3,6 +3,7 @@
 import logging
 
 from baski.agents import AgentExecuteResult, Listener, noop
+from baski.server.logger import log_context
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
@@ -80,8 +81,9 @@ class Assistant:
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
         the result into the user-facing string.
         """
-        conversation = await self._conversations.get(conversation_id)
-        return await conversation.reply(text=text, on_event=on_event)
+        with log_context(conversationId=conversation_id):  # every log this reply emits (incl. sub-agents) carries it
+            conversation = await self._conversations.get(conversation_id)
+            return await conversation.reply(text=text, on_event=on_event)
 
     async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
         """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
@@ -95,6 +97,7 @@ class Assistant:
             logger.warning(
                 "Agent produced no user-facing text; chat layer will send fallback",
                 extra={
+                    "conversationId": conversation_id,
                     "traceId": result.trace_id,
                     "turnCount": result.turn_count,
                     "toolCallCount": result.tool_call_count,

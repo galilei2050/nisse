@@ -37,11 +37,17 @@ it HAS siblings.**
 - A `tool_names` entry that is neither a registered tool nor a delegable sibling raises at build — a
   seed error, loud.
 
-The seed pattern (`scratch/seed_subagents.py`): `researcher` (orchestrator, `tool_names =
-["retrieval", "hypothesis_tree"]`, never searches itself) + `retrieval` (worker, the web leaves).
-The researcher owns the hypothesis tree, decomposes the question, delegates each sub-question to
-`retrieval`, and synthesizes; `retrieval` answers one self-contained sub-question and returns cited
-compression. Methodology encoded in the prompts: `docs/research-subagent.md`.
+Sub-agent definitions (name, description, prompts, model, tool_names, judge) live in **`agents.yml`** —
+the source of truth; **read it** for the current roster rather than trusting a list here. Seed them per
+conversation with **`make seed U=<id>`** (`scripts/seed_subagents.py`, upsert on (conversation_id,
+name)). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
+question, delegates each sub-question, synthesizes) over a `retrieval` worker (answers one
+self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
+Methodology behind the prompts: `docs/research-subagent.md`.
+
+`register_tools` (this package's `__init__.py`) registers the sub-agent-facing registry tools that
+aren't plain web leaves — `hypothesis_tree` (the add/update pair) and `short_term` (a fresh
+`ShortTermMemory`/`working_note` for holding findings across turns). Both build a fresh instance per run.
 
 **v1 has no isolated verifier** (research doc §3.3 — a separate agent given only the cited sources).
 Verification hygiene is left to each sub-agent's own completeness judge (`GeminiJudge`, wired per

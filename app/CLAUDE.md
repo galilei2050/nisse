@@ -280,9 +280,9 @@ make turns U=<id>                # dump one conversation's `conversation_turns` 
   call, not what the child did inside). The child traces persist locally too (probe sets the trace-sink
   on `CoreDeps`); walk the whole delegation tree with
   `uv run python .claude/skills/analyze-traces/trace_tree.py <trace_id>` (main → researcher → retrieval
-  → leaf tools, via baski's `sub_trace_ids`). To exercise a sub-agent, seed it first:
-  `PYTHONPATH=. uv run --env-file .env python scratch/seed_subagents.py --user-id <id>` and probe the
-  **same** `<id>` (configs are per-conversation).
+  → leaf tools, via baski's `sub_trace_ids`). To exercise a sub-agent, seed it first with
+  `make seed U=<id>` (definitions in `app/subagents/agents.yml`) and probe the **same** `<id>`
+  (configs are per-conversation).
 
 Real API/DB calls (env from `.env`) — use a throwaway `U=`. Write expectations **before** running.
 

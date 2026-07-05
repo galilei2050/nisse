@@ -50,6 +50,11 @@ test-backend-dry-run:
 probe:
 	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
 
+# Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>`.
+.PHONY: seed
+seed:
+	uv run python -m scripts.seed_subagents $(U)
+
 # Companion to probe: dump the long-term `memories` collection (live + soft-deleted).
 # `make memories U=<conversation_id>` for one chat in full; `make memories` groups ALL chats by id.
 .PHONY: memories

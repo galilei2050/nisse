@@ -256,3 +256,28 @@ built for fleets of enterprise agents; nisse is one owner-only bot. Verdict per 
 - Hermes platform breadth (terminal-backend zoo, Kanban, 8 memory plugins, ~60-param ctor) — take patterns, not platform.
 - chatui word-slice truncation (`prompt.split(" ").slice(-N)`) — anti-pattern; do real token-budget compaction.
 - `middleware.py` at 5k+ lines / heavy try/catch swallowing — mine ideas, not structure (conflicts with fail-fast).
+
+## Owner wishlist — requested features
+
+Unlike the prior-art catalogue above, these are features the **owner has asked for** — nisse's own
+backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
++ a design doc when it's picked up.
+
+- **Multi-type inbound messages** — handle **Audio, Photo, and Documents** (today only voice→text).
+  Audio files (beyond voice notes), photos (vision), document ingestion (PDF/text → content). Touches
+  `chat/` ingress + `transcribe.py`. _cf._ openclaw voice-codec negotiation + sticker→vision (Telegram
+  hardening section).
+- **Remember reactions** — capture Telegram emoji reactions on messages as a signal (feedback / fact
+  to store).
+- **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
+- **Commands to view lists & notes** — Telegram bot commands to show current `lists/` (shopping / todo
+  / watchlist) and `memory/` notes on demand. _cf._ central command registry → auto-derived BotCommand
+  menu (Adding-tools section).
+- **Knowledge-consolidation bot** — an agent that consolidates and updates stored knowledge. This is
+  the nightly **curator** (see "Self-improvement (curator)" above + `curator/` in `CLAUDE.md`) — track
+  the ask against that design.
+- **Convenient sub-agent management (gap)** — editing sub-agents still means editing YAML +
+  re-seeding: definitions live in `app/subagents/agents.yml`, seeded per conversation via
+  `make seed U=<id>` (`SubagentStore.save()` is seed-only). Want a convenient flow (command / tool /
+  admin surface) to create and tune sub-agents without touching files. Must stay a **trusted admin surface** (`subagents/CLAUDE.md`: it drives
+  which tools/model/prompts run — never wire a naive user-facing writer to it).
