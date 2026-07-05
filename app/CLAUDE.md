@@ -276,6 +276,13 @@ make turns U=<id>                # dump one conversation's `conversation_turns` 
 - **`U=` is the conversation id** (an int). Testing recall/contradiction? Use a *fresh* `U=`: in the
   same conversation the fact is still in the transcript, so the long-term path never runs.
 - The probe shows what the agent *did*; `make memories`/`make turns` show the durable *result* in Mongo.
+- **Sub-agent runs:** the probe's tool-call list shows only the main agent (a `retrieval`/`researcher`
+  call, not what the child did inside). The child traces persist locally too (probe sets the trace-sink
+  on `CoreDeps`); walk the whole delegation tree with
+  `uv run python .claude/skills/analyze-traces/trace_tree.py <trace_id>` (main → researcher → retrieval
+  → leaf tools, via baski's `sub_trace_ids`). To exercise a sub-agent, seed it first:
+  `PYTHONPATH=. uv run --env-file .env python scratch/seed_subagents.py --user-id <id>` and probe the
+  **same** `<id>` (configs are per-conversation).
 
 Real API/DB calls (env from `.env`) — use a throwaway `U=`. Write expectations **before** running.
 

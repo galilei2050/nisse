@@ -56,6 +56,16 @@ A sub-agent builds its tools through the SAME `deps.tools` registry the main age
 — the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
 sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).
 
+**The main agent won't delegate without being told to.** With general web tools in `MAIN_TOOLS`, it
+answers even hotel/flight lookups itself via `google_search` unless the system prompt tells it to
+route specialized/deep work to a sub-agent (`NISSE_SYSTEM_PROMPT`, the "Delegate to your sub-agents"
+clause — prod-safe: it only bites when a sub-agent tool is present). Routing is driven by each
+sub-agent's `description` (e.g. `retrieval` owns hotels/flights — the only path to `google_hotels`).
+
+**Trace-sink flows via `deps`.** A sub-agent's child `Agent` gets `await_trace`/`local_traces_dir`
+from `CoreDeps` (default off → GCS; a probe run sets them so the whole delegation tree persists
+locally and links via baski's `sub_trace_ids`). Walk it with `analyze-traces/trace_tree.py <id>`.
+
 ## Design facts (why it's built this way)
 
 - **The child owns the return-path compression.** A sub-agent's `system_prompt` MUST demand a

@@ -101,8 +101,10 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             schedule_endpoint="http://localhost/schedule/fire",
             judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT"))),
             tools=build_tool_registry(),
+            local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
+            await_trace=True,
         )
-        assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
+        assistant = Assistant(deps=deps)
         await assistant.setup()
         result = await assistant.run(conversation_id=user_id, text=message)
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
