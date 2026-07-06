@@ -26,6 +26,7 @@ from baski.agents import GeminiJudge
 from baski.agents.trace import TraceRecord
 from baski.clients.playwright_client import PlaywrightClient
 from baski.env import get_env
+from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
@@ -101,8 +102,10 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             schedule_endpoint="http://localhost/schedule/fire",
             judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT"))),
             tools=build_tool_registry(),
+            local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
+            await_trace=True,
         )
-        assistant = Assistant(deps=deps, await_trace=True, local_traces_dir=str(traces_dir))
+        assistant = Assistant(deps=deps)
         await assistant.setup()
         result = await assistant.run(conversation_id=user_id, text=message)
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
@@ -119,6 +122,7 @@ def main() -> None:
     parser.add_argument("--user-id", type=int, default=1, help="Conversation id (acts as the owner's chat id)")
     parser.add_argument("--message", required=True, help="Text to send to the agent")
     args, _ = parser.parse_known_args()
+    configure_logging(cloud=False, debug=False)  # readable logs carrying ambient labels (conversationId)
     traces_dir = Path("scratch/traces")  # persist so the trace can be ANALYSED separately (no re-run)
     traces_dir.mkdir(parents=True, exist_ok=True)
     asyncio.run(_run(args.user_id, args.message, traces_dir))

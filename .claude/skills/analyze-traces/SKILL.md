@@ -30,6 +30,8 @@ Full trace schema: `baski/agents/trace.py` (`TraceRecord` → `turns[] → TurnR
    uv run python .claude/skills/analyze-traces/summarize.py scratch/traces/<id>.json ...
    ```
    To read a full answer verbatim: `show_text.py <file.json>` prints user request, tools, and the final text.
+   For a **multi-agent run** (sub-agent delegation), `trace_tree.py <trace_id>` walks `sub_trace_ids`
+   and prints the nested tool-call tree (main → researcher → retrieval → leaf tools).
 
 ## What "didn't think enough" actually looks like
 

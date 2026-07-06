@@ -34,3 +34,6 @@ class CoreDeps:
     schedule_endpoint: str
     judge: Judge  # cross-family completeness judge; the agent runs it at the loop's exit and retries
     tools: "ToolRegistry"  # the process-wide name→factory tool catalog (app/tools)
+    # Trace sink for main agent + every sub-agent; probe sets both to read the whole chain locally.
+    local_traces_dir: str | None = None  # None → GCS
+    await_trace: bool = False

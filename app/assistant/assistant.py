@@ -3,6 +3,7 @@
 import logging
 
 from baski.agents import AgentExecuteResult, Listener, noop
+from baski.server.logger import log_context
 
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
@@ -26,6 +27,12 @@ NISSE_SYSTEM_PROMPT = (
     "contradicts what you assumed, trust the check. Settled common knowledge (basic math, Ohm's law) "
     "needs no lookup. When the missing piece is the owner's call — a decision, budget, taste, or an "
     "ambiguous requirement, not a checkable fact — ask instead of guessing.\n"
+    "Delegate to your sub-agents instead of doing their job. A single specialized lookup (one hotel "
+    "or flight search, one factual question) → the retrieval worker. A multi-part investigation that "
+    "must be split into several questions and synthesized — a comparison, 'research/plan X across "
+    "options', multi-destination trip planning → hand the WHOLE thing to the research orchestrator as "
+    "one brief; do NOT break it into pieces and run them yourself. They have tools and isolated "
+    "context you lack; don't fall back to your own general search.\n"
     "Ground analysis, not only facts: if the task is to build a model, compare options, recommend, "
     "estimate, or analyse anything involving real-world quantities (prices, market size, specs, rates, "
     "volumes), you MUST gather current data with your tools BEFORE writing the answer — never assemble it "
@@ -53,26 +60,14 @@ class Assistant:
     Lifecycle: long-lived — one per bot (cached_property in NisseBot), reused for every message.
     """
 
-    def __init__(
-        self,
-        *,
-        deps: CoreDeps,
-        system_prompt: str = NISSE_SYSTEM_PROMPT,
-        await_trace: bool = False,
-        local_traces_dir: str | None = None,
-    ) -> None:
+    def __init__(self, *, deps: CoreDeps, system_prompt: str = NISSE_SYSTEM_PROMPT) -> None:
         """Build the conversation registry from shared deps (which carry the tool registry).
 
-        `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
-        persistence and write the full trace to a local dir instead of GCS. Off in production.
+        The trace-sink testing knobs (`await_trace` / `local_traces_dir`, see `app/probe.py`) ride
+        `deps` so the main agent and every sub-agent share them; off in production (traces → GCS).
         """
         self._deps = deps
-        self._conversations = Conversations(
-            deps=deps,
-            system_prompt=system_prompt,
-            await_trace=await_trace,
-            local_traces_dir=local_traces_dir,
-        )
+        self._conversations = Conversations(deps=deps, system_prompt=system_prompt)
 
     async def setup(self) -> None:
         """One-time startup: ensure the memory and prompt stores' indexes exist."""
@@ -86,8 +81,9 @@ class Assistant:
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
         the result into the user-facing string.
         """
-        conversation = await self._conversations.get(conversation_id)
-        return await conversation.reply(text=text, on_event=on_event)
+        with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
+            conversation = await self._conversations.get(conversation_id)
+            return await conversation.reply(text=text, on_event=on_event)
 
     async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
         """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
@@ -101,6 +97,7 @@ class Assistant:
             logger.warning(
                 "Agent produced no user-facing text; chat layer will send fallback",
                 extra={
+                    "conversationId": conversation_id,
                     "traceId": result.trace_id,
                     "turnCount": result.turn_count,
                     "toolCallCount": result.tool_call_count,

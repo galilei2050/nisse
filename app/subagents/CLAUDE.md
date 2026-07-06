@@ -37,11 +37,17 @@ it HAS siblings.**
 - A `tool_names` entry that is neither a registered tool nor a delegable sibling raises at build — a
   seed error, loud.
 
-The seed pattern (`scratch/seed_subagents.py`): `researcher` (orchestrator, `tool_names =
-["retrieval", "hypothesis_tree"]`, never searches itself) + `retrieval` (worker, the web leaves).
-The researcher owns the hypothesis tree, decomposes the question, delegates each sub-question to
-`retrieval`, and synthesizes; `retrieval` answers one self-contained sub-question and returns cited
-compression. Methodology encoded in the prompts: `docs/research-subagent.md`.
+Sub-agent definitions (name, description, prompts, model, tool_names, judge) live in **`agents.yml`** —
+the source of truth; **read it** for the current roster rather than trusting a list here. Seed them per
+conversation with **`make seed U=<id>`** (`scripts/seed_subagents.py`, upsert on (conversation_id,
+name)). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
+question, delegates each sub-question, synthesizes) over a `retrieval` worker (answers one
+self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
+Methodology behind the prompts: `docs/research-subagent.md`.
+
+`register_tools` (this package's `__init__.py`) registers the sub-agent-facing registry tools that
+aren't plain web leaves — `hypothesis_tree` (the add/update pair) and `short_term` (a fresh
+`ShortTermMemory`/`working_note` for holding findings across turns). Both build a fresh instance per run.
 
 **v1 has no isolated verifier** (research doc §3.3 — a separate agent given only the cited sources).
 Verification hygiene is left to each sub-agent's own completeness judge (`GeminiJudge`, wired per
@@ -55,6 +61,16 @@ the next process start (no cache invalidation — not needed for an admin-seeded
 A sub-agent builds its tools through the SAME `deps.tools` registry the main agent uses (`app/tools/`)
 — the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
 sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).
+
+**The main agent won't delegate without being told to.** With general web tools in `MAIN_TOOLS`, it
+answers even hotel/flight lookups itself via `google_search` unless the system prompt tells it to
+route specialized/deep work to a sub-agent (`NISSE_SYSTEM_PROMPT`, the "Delegate to your sub-agents"
+clause — prod-safe: it only bites when a sub-agent tool is present). Routing is driven by each
+sub-agent's `description` (e.g. `retrieval` owns hotels/flights — the only path to `google_hotels`).
+
+**Trace-sink flows via `deps`.** A sub-agent's child `Agent` gets `await_trace`/`local_traces_dir`
+from `CoreDeps` (default off → GCS; a probe run sets them so the whole delegation tree persists
+locally and links via baski's `sub_trace_ids`). Walk it with `analyze-traces/trace_tree.py <id>`.
 
 ## Design facts (why it's built this way)
 

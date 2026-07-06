@@ -155,7 +155,9 @@ class TelegramProgress:
         if isinstance(event, TurnStarted | Completed):
             return  # turn boundary / final answer (delivered by finish()) — nothing to render here
         if self._consume(event):
-            await self._flush(force=False)
+            # Force an edit on tool boundaries so a long-running call (a sub-agent minutes deep) always
+            # shows its in-flight then ✅-done line — never a frozen cursor while it works.
+            await self._flush(force=isinstance(event, ToolStarted | ToolFinished))
 
     def _consume(self, event: ToolStarted | ToolFinished | Thinking | TextDelta | Message | Judged) -> bool:
         """Apply the event to the render state; return whether it warrants an edit now."""

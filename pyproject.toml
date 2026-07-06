@@ -21,6 +21,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pre-commit",
+    "pyyaml>=6.0.3",
 ]
 
 [tool.uv.sources]

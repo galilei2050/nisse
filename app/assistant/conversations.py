@@ -29,19 +29,10 @@ class Conversations:
     Lifecycle: long-lived — one registry for the bot (holds the per-conversation cache).
     """
 
-    def __init__(
-        self,
-        *,
-        deps: CoreDeps,
-        system_prompt: str,
-        await_trace: bool = False,
-        local_traces_dir: str | None = None,
-    ) -> None:
-        """Hold the shared deps (which carry the tool registry) and reply settings for every agent."""
+    def __init__(self, *, deps: CoreDeps, system_prompt: str) -> None:
+        """Hold the shared deps (which carry the tool registry + trace-sink settings) and the prompt."""
         self._deps = deps
         self._system_prompt = system_prompt
-        self._await_trace = await_trace
-        self._local_traces_dir = local_traces_dir
         self._conversations: dict[int, Conversation] = {}
 
     async def get(self, conversation_id: int) -> Conversation:
@@ -83,8 +74,8 @@ class Conversations:
             database=self._deps.database,
             bucket_name=self._deps.bucket_name,
             system_prompt=self._system_prompt,
-            await_trace=self._await_trace,
-            local_traces_dir=self._local_traces_dir,
+            await_trace=self._deps.await_trace,
+            local_traces_dir=self._deps.local_traces_dir,
             judge=self._deps.judge,
         )
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)

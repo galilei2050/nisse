@@ -1,8 +1,9 @@
 """SubagentTool — wraps one configured sub-agent as a delegating Tool (prompt in → result out)."""
 
-from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolSet
+from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
 from baski.agents.tool import Tool
 from baski.env import get_env
+from baski.server.logger import log_context
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
@@ -52,14 +53,20 @@ class SubagentTool(Tool):
         self._conversation_id = conversation_id
         self._siblings = siblings
 
-    async def execute(self, *, prompt: str) -> str:
-        """Run the isolated sub-agent once and return its answer."""
-        agent = Agent(self._agent_config())
-        agent.add_pinned_text(prompt)  # task mode — the prompt IS the child's whole request
-        result = await agent.execute()
+    async def execute(self, *, prompt: str) -> ToolResult:
+        """Run the isolated sub-agent once; return its answer plus its cost and trace for the parent.
+
+        Returning a `ToolResult` (not a bare str) is what folds this run's spend into the caller's
+        turn cost and links its trace under the parent's — so `total_cost` and the trace tree cover
+        the whole delegation, at any depth.
+        """
+        with log_context(agent=self.name):  # tag every log this sub-agent (and its children) emits
+            agent = Agent(self._agent_config())
+            agent.add_pinned_text(prompt)  # task mode — the prompt IS the child's whole request
+            result = await agent.execute()
         if result.response is None:
             raise RuntimeError(f"subagent '{self.name}' produced no response (trace {result.trace_id})")
-        return result.response
+        return ToolResult(content=result.response, cost=result.total_cost, sub_trace_ids=[result.trace_id])
 
     def _agent_config(self) -> AgentConfig:
         """Assemble the child's AgentConfig from its stored config; fresh history per call (stateless)."""
@@ -76,6 +83,8 @@ class SubagentTool(Tool):
             system_prompt=self._config.system_prompt,
             judge=self._judge(),
             model=self._config.model,
+            await_trace=self._deps.await_trace,
+            local_traces_dir=self._deps.local_traces_dir,
         )
 
     def _resolve_tools(self, name: str) -> list[Tool]:
