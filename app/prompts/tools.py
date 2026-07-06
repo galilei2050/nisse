@@ -20,9 +20,9 @@ from app.shared.text import match_unique
 from app.tools.registry import ToolRegistrar
 
 # Always-on = pure per-turn token cost, so it's hard-capped; the agent must keep only what earns a slot.
-# ~3000 chars ≈ 750 tokens/turn. Raised from 2400 once patch-in-place removed the resend-churn and real
-# traffic kept the block pinned at the old cap (more standing rules than fit → rules got dropped).
-_CORE_BUDGET = 3000  # characters
+# ~4500 chars ≈ 1125 tokens/turn. Raised x1.5 from 3000 — real traffic kept the block pinned at the cap,
+# so standing rules were still getting dropped for lack of room.
+_CORE_BUDGET = 4500  # characters
 
 _CORE_HEADER = (
     "CORE MEMORY — your always-on standing context (the only owner-knowledge injected automatically). "
