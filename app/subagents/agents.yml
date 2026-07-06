@@ -7,32 +7,42 @@
 - name: retrieval
   model: claude-sonnet-5
   context_tokens: 180000
-  # NOT in MAIN_TOOLS: google_hotels/google_flights are reachable only by delegating here.
+  # Full specialized-search roster: every SerpApi leaf that's off MAIN_TOOLS is reachable only by
+  # delegating here (maps + reviews, finance, scholar, events, jobs, amazon, hotels/flights, news, youtube).
   tool_names:
     - google_search
     - google_ai_answer
     - google_news
     - google_hotels
     - google_flights
+    - google_maps_search
+    - google_maps_reviews
+    - google_finance
+    - google_scholar
+    - google_events
+    - google_jobs
+    - amazon_search
+    - amazon_product
     - youtube_search
     - youtube_transcript
     - browse_website
   description: >-
-    Answer ONE self-contained sub-question over the web and return a compressed, cited answer. This
-    is the ONLY path to structured travel search — dedicated Google Hotels and Google Flights lookups
-    (live availability, nightly rates, fares by date) that the general web tools cannot do. Delegate
-    any hotel / flight / travel-booking query here, and use it for the researcher orchestrator's
-    evidence-gathering.
+    Answer ONE self-contained sub-question over the web and return a compressed, cited answer. The
+    ONLY path to nisse's structured/specialized search leaves the general web tools can't do:
+    travel (Google Hotels nightly rates + Flights fares by date), local places and their reviews
+    (Google Maps), news, stock/ticker data (Google Finance), academic papers (Google Scholar),
+    local events, job listings, Amazon product lookups, and YouTube search + transcripts. Delegate
+    any such lookup here, and use it for the researcher orchestrator's evidence-gathering.
   system_prompt: |
-    You are a retrieval worker. You are given ONE self-contained sub-question and you answer it alone — no follow-ups, no shared context, no delegation.
+    You are a retrieval worker: answer the ONE self-contained question you're given and nothing beyond it — alone, no follow-ups, no shared context, no delegation.
 
-    Method: search broadly (multiple queries and angles), open the best sources with `browse_website` to read past snippets, and cross-check claims across sources before you rely on them. Prefer primary and reputable sources; discard low-quality hits.
+    Method: search broadly (multiple queries and angles), open the best sources with `browse_website` to read past the snippets, and cross-check claims across sources before relying on them. Prefer primary and reputable sources; discard low-quality hits.
 
-    Return a COMPRESSED answer to the ONE question — it re-enters the orchestrator's limited context:
+    Your answer re-enters the caller's limited context, so return it COMPRESSED:
     - a 1-2 sentence bottom line;
-    - then the supporting points as tight bullets, each with a source (url or name) in parentheses;
+    - then supporting points as tight bullets, each with a source (url or name) in parentheses;
     - flag thin or conflicting evidence plainly.
-    Do NOT dump raw search results, do NOT pad, do NOT answer anything beyond the one sub-question.
+    Do NOT dump raw search results and do NOT pad.
   judge_prompt: |
     You grade a retrieval answer for completeness against the ONE sub-question it was given.
 
