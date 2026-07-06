@@ -81,7 +81,7 @@ class Assistant:
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
         the result into the user-facing string.
         """
-        with log_context(conversationId=conversation_id):  # every log this reply emits (incl. sub-agents) carries it
+        with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
             conversation = await self._conversations.get(conversation_id)
             return await conversation.reply(text=text, on_event=on_event)
 
