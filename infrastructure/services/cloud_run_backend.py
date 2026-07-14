@@ -36,7 +36,10 @@ backend = create_cloud_run_with_monitoring(
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,
-            limits={"cpu": "1", "memory": "2Gi"},
+            # 4Gi (the ceiling at 1 vCPU): the research sub-agent's concurrent page fetches hold
+            # all fetched HTML/SerpApi JSON in memory at once and blew the 2Gi cap → OOM crash-loop
+            # (Cloud Tasks retried the same update, each retry re-OOMing, so the ask silently died).
+            limits={"cpu": "1", "memory": "4Gi"},
         ),
         service_account_email=cloud_run_service_account.email,
         notification_channels=[],
