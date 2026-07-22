@@ -2,12 +2,15 @@
 
 Each YAML entry becomes one delegating tool on that conversation's main agent. Upserts on
 (conversation_id, name), so re-running updates in place. The definitions live in the YAML; this
-only binds them to a conversation id.
+only binds them to a conversation id. Pass `all` to re-seed every conversation that already has
+configs — the rollout for an agents.yml change (e.g. a new required field like max_turns), so no
+live conversation is left on a stale/invalid config.
 
 Run as a module (repo root on sys.path, so `app` imports without a path hack):
 
-    make seed U=<conversation_id>
-    uv run --env-file .env python -m scripts.seed_subagents <conversation_id>
+    make seed U=<conversation_id>        # one conversation
+    make seed U=all                      # re-seed every existing conversation
+    uv run --env-file .env python -m scripts.seed_subagents <conversation_id|all>
 """
 
 import asyncio
@@ -17,24 +20,36 @@ from pathlib import Path
 
 import yaml
 from pymongo import AsyncMongoClient
+from pymongo.asynchronous.database import AsyncDatabase
 
 from app.subagents import SubagentConfig, SubagentStore
 
 _AGENTS_YML = Path(__file__).resolve().parent.parent / "app" / "subagents" / "agents.yml"
 
 
-async def main(conversation_id: int) -> None:
+async def _seed_one(database: AsyncDatabase, conversation_id: int, definitions: list[dict]) -> None:
     """Upsert every agent defined in agents.yml for one conversation."""
-    definitions = yaml.safe_load(_AGENTS_YML.read_text())
-    database = AsyncMongoClient(os.environ["MONGODB_URI"], tz_aware=True).get_default_database()
-    await SubagentStore.ensure_indexes(database)
     store = SubagentStore(database, conversation_id=conversation_id)
     for definition in definitions:
         saved = await store.save(SubagentConfig(conversation_id=conversation_id, **definition))
         print(f"seeded '{saved.name}' for conversation {conversation_id} (tools: {', '.join(saved.tool_names)})")
 
 
+async def main(target: str) -> None:
+    """Seed one conversation id, or `all` to re-seed every conversation that already has configs."""
+    definitions = yaml.safe_load(_AGENTS_YML.read_text())
+    database = AsyncMongoClient(os.environ["MONGODB_URI"], tz_aware=True).get_default_database()
+    await SubagentStore.ensure_indexes(database)
+    if target == "all":
+        conversation_ids = await SubagentStore.all_conversation_ids(database)
+        print(f"re-seeding {len(conversation_ids)} conversations: {conversation_ids}")
+    else:
+        conversation_ids = [int(target)]
+    for conversation_id in conversation_ids:
+        await _seed_one(database, conversation_id, definitions)
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        sys.exit("usage: python -m scripts.seed_subagents <conversation_id>")
-    asyncio.run(main(int(sys.argv[1])))
+        sys.exit("usage: python -m scripts.seed_subagents <conversation_id|all>")
+    asyncio.run(main(sys.argv[1]))
