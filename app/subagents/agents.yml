@@ -7,6 +7,7 @@
 - name: retrieval
   model: claude-sonnet-5
   context_tokens: 180000
+  max_turns: 8  # one self-contained sub-question — a few searches + browses, then answer. Forced synthesis on turn 8.
   # Full specialized-search roster: every SerpApi leaf that's off MAIN_TOOLS is reachable only by
   # delegating here (maps + reviews, finance, scholar, events, jobs, amazon, hotels/flights, news, youtube).
   tool_names:
@@ -51,6 +52,7 @@
 - name: researcher
   model: claude-sonnet-5
   context_tokens: 200000
+  max_turns: 15  # hypothesis tree + ≤~8 retrieval delegations + synthesis; caps runaway depth. Forced synthesis on turn 15.
   tool_names:
     - retrieval        # delegates all evidence-gathering to the retrieval worker (sibling)
     - hypothesis_tree

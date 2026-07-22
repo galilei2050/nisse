@@ -83,6 +83,7 @@ class SubagentTool(Tool):
             system_prompt=self._config.system_prompt,
             judge=self._judge(),
             model=self._config.model,
+            max_turns=self._config.max_turns,
             await_trace=self._deps.await_trace,
             local_traces_dir=self._deps.local_traces_dir,
         )

@@ -30,6 +30,7 @@ def _config(name: str, tool_names: list[str]) -> SubagentConfig:
         model="claude-sonnet-4-6",
         tool_names=tool_names,
         context_tokens=1000,
+        max_turns=5,
         judge_prompt="x",
     )
 
