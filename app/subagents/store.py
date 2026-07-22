@@ -28,6 +28,7 @@ class SubagentConfig(NisseDbModel):
     model: str  # concrete model id, e.g. a cheaper one for the child
     tool_names: list[str]  # registry keys, "hypothesis_tree", and/or sibling sub-agent names (resolved at build)
     context_tokens: int  # the child's ephemeral history budget for one run
+    max_turns: int  # hard cap on the child's loop; told its budget each turn, forced to answer on the last
     judge_prompt: str  # the child's completeness rubric (its own GeminiJudge instructions)
 
 

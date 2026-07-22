@@ -6,7 +6,8 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 
 ## Shape
 
-- `store.py` — `SubagentConfig(NisseDbModel)` (seven required config axes + `conversation_id`) +
+- `store.py` — `SubagentConfig(NisseDbModel)` (eight required config axes incl. `max_turns` — the hard
+  cap on the child's loop, passed to `AgentConfig.max_turns` — + `conversation_id`) +
   `SubagentStore` (scoped `list()` for the build; `save()` is seed-only; `ensure_indexes` unique on
   `(conversation_id, name)`).
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
