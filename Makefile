@@ -50,7 +50,7 @@ test-backend-dry-run:
 probe:
 	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
 
-# Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>`.
+# Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>` (or U=all).
 .PHONY: seed
 seed:
 	uv run python -m scripts.seed_subagents $(U)

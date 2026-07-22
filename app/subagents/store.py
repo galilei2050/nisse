@@ -48,6 +48,11 @@ class SubagentStore:
         """Unique (conversation_id, name) so names never collide in the parent's toolset."""
         await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("name", 1)], unique=True)
 
+    @staticmethod
+    async def all_conversation_ids(database: AsyncDatabase) -> list[int]:
+        """Every conversation that has live sub-agent configs — for `seed all` (re-seed after a config change)."""
+        return sorted(await database[_COLLECTION].distinct("conversation_id", {"deleted_at": None}))
+
     async def list(self) -> list[SubagentConfig]:
         """Every live sub-agent config in this conversation."""
         query = {"conversation_id": self._conversation_id, "deleted_at": None}

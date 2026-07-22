@@ -41,7 +41,9 @@ it HAS siblings.**
 Sub-agent definitions (name, description, prompts, model, tool_names, judge) live in **`agents.yml`** —
 the source of truth; **read it** for the current roster rather than trusting a list here. Seed them per
 conversation with **`make seed U=<id>`** (`scripts/seed_subagents.py`, upsert on (conversation_id,
-name)). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
+name)); **`make seed U=all`** re-seeds every conversation that already has configs — the rollout after
+an `agents.yml` change, so no live conversation is left on a stale config (a new required field like
+`max_turns` breaks reads until every doc is re-seeded). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
 question, delegates each sub-question, synthesizes) over a `retrieval` worker (answers one
 self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
 Methodology behind the prompts: `docs/research-subagent.md`.
