@@ -16,6 +16,7 @@ from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import CloudTasksConfig, Scheduler
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
+from elevenlabs import AsyncElevenLabs
 from fastapi import FastAPI
 from google.cloud import tasks_v2
 from pymongo import AsyncMongoClient
@@ -25,6 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory
+from app.chat.transcribe import Transcriber
 from app.lists import ListStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
@@ -37,7 +39,7 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(assistant=self.assistant)
+        router = chat.build_router(assistant=self.assistant, transcriber=self._transcriber)
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
         return [router]
@@ -97,6 +99,11 @@ class NisseBot(TelegramServer):
     def _anthropic(self) -> AsyncAnthropic:
         """Anthropic async client."""
         return AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0)
+
+    @cached_property
+    def _transcriber(self) -> Transcriber:
+        """Voice → text adapter (ElevenLabs Scribe v2), used by the chat router on voice messages."""
+        return Transcriber(client=AsyncElevenLabs(api_key=str(get_env("ELEVENLABS_API_KEY"))))
 
     @cached_property
     def _playwright(self) -> PlaywrightClient:

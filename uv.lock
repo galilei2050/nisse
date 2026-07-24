@@ -650,6 +650,23 @@ wheels = [
 ]
 
 [[package]]
+name = "elevenlabs"
+version = "2.59.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/54/198bf4ab4ba88455466963c733473fbab6b3c34910807c71b412c4ee7220/elevenlabs-2.59.0.tar.gz", hash = "sha256:b05cc41636bef94172e1b9343b650f5cc5e543fc88afe06c12217e0120fd1238", size = 717248, upload-time = "2026-07-22T10:13:24.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/49/6ed4f12b1451714972d38ce1c0df446414acdd08f08336fc298901b68e95/elevenlabs-2.59.0-py3-none-any.whl", hash = "sha256:cdd048dc380733f81ee512baa3e9b333c11f4f466aa84301b946fe5354a3b6da", size = 1902619, upload-time = "2026-07-22T10:13:22.582Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.136.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1761,6 +1778,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "baski" },
+    { name = "elevenlabs" },
     { name = "pymongo" },
     { name = "telegramify-markdown" },
 ]
@@ -1779,6 +1797,7 @@ dev = [
 requires-dist = [
     { name = "anthropic" },
     { name = "baski", editable = "../baski" },
+    { name = "elevenlabs" },
     { name = "pymongo", specifier = ">=4.9" },
     { name = "telegramify-markdown", specifier = ">=1.1.5" },
 ]

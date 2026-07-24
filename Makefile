@@ -125,7 +125,7 @@ backend-image-run: backend-docker-build
 			gcp="-v $$GOOGLE_APPLICATION_CREDENTIALS:$$GOOGLE_APPLICATION_CREDENTIALS:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
 		fi; \
 		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 $$gcp \
-			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY \
+			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY -e ELEVENLABS_API_KEY \
 			-e GOOGLE_CLOUD_PROJECT -e GOOGLE_CLOUD_REGION -e CLOUD_TASKS_QUEUE -e PRIVATE_BUCKET_NAME \
 			${BACKEND_IMAGE_LATEST}
 	@echo "Backend image started — logs: docker logs nisse-smoke"

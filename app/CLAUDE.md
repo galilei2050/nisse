@@ -44,7 +44,7 @@ app/
                     stream + cost footer; finish_text(text) is the error/refusal path.
     format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
                     → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
-    transcribe.py   voice file → text (STT adapter; provider-swappable)
+    transcribe.py   voice file → text (Transcriber; ElevenLabs Scribe v2, language auto-detected; provider-swappable)
 
   assistant/        the main agent — composition root
     assistant.py    Assistant.reply(conversation_id, text) -> AgentExecuteResult; thin TG↔agent layer (the chat layer formats the result via chat/format.compose_answer)

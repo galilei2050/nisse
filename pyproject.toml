@@ -10,6 +10,7 @@ authors = [{ name = "Vladimir Baskakov" }]
 dependencies = [
     "baski @ git+https://github.com/galilei2050/baski.git@main",
     "anthropic",
+    "elevenlabs",
     "pymongo>=4.9",
     "telegramify-markdown>=1.1.5",
 ]
