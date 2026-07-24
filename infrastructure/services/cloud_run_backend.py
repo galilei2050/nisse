@@ -18,6 +18,7 @@ telegram_token_env = create_cloud_run_secret_env("TELEGRAM_TOKEN", "backend")
 anthropic_api_key_env = create_cloud_run_secret_env("ANTHROPIC_API_KEY", "backend")
 mongodb_uri_env = create_cloud_run_secret_env("MONGODB_URI", "backend")
 serpapi_api_key_env = create_cloud_run_secret_env("SERPAPI_API_KEY", "backend")
+elevenlabs_api_key_env = create_cloud_run_secret_env("ELEVENLABS_API_KEY", "backend")
 
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(
@@ -33,6 +34,7 @@ backend = create_cloud_run_with_monitoring(
             anthropic_api_key_env,
             mongodb_uri_env,
             serpapi_api_key_env,
+            elevenlabs_api_key_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,

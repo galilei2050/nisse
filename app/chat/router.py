@@ -1,18 +1,21 @@
-"""Telegram I/O router — text message → Assistant.reply() → answer."""
+"""Telegram I/O router — text or voice message → Assistant.reply() → answer."""
 
+from io import BytesIO
 from typing import TYPE_CHECKING
 
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
-from aiogram.types import Message
+from aiogram.types import Message, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.progress import TelegramProgress
+from app.chat.transcribe import Transcriber
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
     from app.assistant import Assistant
 
-_NON_TEXT_REPLY = "Send me a text message."
+_NON_TEXT_REPLY = "Send me a text or voice message."
+_TRANSCRIBE_FAILED_REPLY = "I couldn't make out that voice message — please try again."
 _REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
 _ERROR_REPLY = "Something went wrong on my side — please try again."
 _API_DOWN_REPLY = (
@@ -26,20 +29,20 @@ _BILLING_REPLY = (
 )
 
 
-def build_router(*, assistant: "Assistant") -> Router:
-    """Build the chat router whose handler delegates every text message to the assistant."""
+def build_router(*, assistant: "Assistant", transcriber: Transcriber) -> Router:
+    """Build the chat router whose handler delegates every text/voice message to the assistant."""
     router = Router(name="chat")
 
     @router.message()
     async def handle(message: Message, bot: Bot) -> None:
-        """Delegate a text message to the assistant and send back its reply."""
-        if not message.text:
-            await message.answer(_NON_TEXT_REPLY)
+        """Resolve a text or voice message to text, delegate to the assistant, send back its reply."""
+        text = await _resolve_text(message, bot, transcriber)
+        if not text:  # non-text/voice, or empty transcript — already answered by _resolve_text
             return
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
-            result = await assistant.reply(conversation_id=message.chat.id, text=message.text, on_event=progress)
+            result = await assistant.reply(conversation_id=message.chat.id, text=text, on_event=progress)
             await progress.finish(result)
         except AgentRefusalError:
             await progress.finish_text(_REFUSAL_REPLY)
@@ -56,3 +59,30 @@ def build_router(*, assistant: "Assistant") -> Router:
             await assistant.flush(conversation_id=message.chat.id)
 
     return router
+
+
+async def _resolve_text(message: Message, bot: Bot, transcriber: Transcriber) -> str | None:
+    """A text message's text, or a voice note's transcript; None (after answering) if neither."""
+    if message.text:
+        return message.text
+    if message.voice:
+        return await _transcribe_voice(message, message.voice, bot, transcriber)
+    await message.answer(_NON_TEXT_REPLY)
+    return None
+
+
+async def _transcribe_voice(message: Message, voice: Voice, bot: Bot, transcriber: Transcriber) -> str:
+    """Download the voice note, transcribe it, and echo the transcript so a mis-hear is visible."""
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+    buf = BytesIO()
+    await bot.download(voice, destination=buf)
+    try:
+        text = await transcriber.transcribe(buf.getvalue())
+    except Exception:
+        await message.reply(_TRANSCRIBE_FAILED_REPLY)
+        raise
+    if not text:  # silence / too short to make out anything
+        await message.reply(_TRANSCRIBE_FAILED_REPLY)
+        return ""
+    await message.reply(f"🎤 {text}")
+    return text
