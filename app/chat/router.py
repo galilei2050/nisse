@@ -1,18 +1,22 @@
-"""Telegram I/O router — text or voice message → Assistant.reply() → answer."""
+"""Telegram I/O router — text or voice message → Assistant.reply() → answer (voiced back if inbound was voice)."""
 
+import logging
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
-from aiogram.types import Message, Voice
+from aiogram.types import BufferedInputFile, Message, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.progress import TelegramProgress
+from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
     from app.assistant import Assistant
+
+logger = logging.getLogger(__name__)
 
 _NON_TEXT_REPLY = "Send me a text or voice message."
 _TRANSCRIBE_FAILED_REPLY = "I couldn't make out that voice message — please try again."
@@ -29,7 +33,7 @@ _BILLING_REPLY = (
 )
 
 
-def build_router(*, assistant: "Assistant", transcriber: Transcriber) -> Router:
+def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: Speaker) -> Router:
     """Build the chat router whose handler delegates every text/voice message to the assistant."""
     router = Router(name="chat")
 
@@ -44,6 +48,8 @@ def build_router(*, assistant: "Assistant", transcriber: Transcriber) -> Router:
         try:
             result = await assistant.reply(conversation_id=message.chat.id, text=text, on_event=progress)
             await progress.finish(result)
+            if message.voice and result.response:  # voice in → voice out, alongside the text reply above
+                await _voice_reply(message, bot, speaker, result.response)
         except AgentRefusalError:
             await progress.finish_text(_REFUSAL_REPLY)
         except AgentProviderUnavailableError:
@@ -69,6 +75,20 @@ async def _resolve_text(message: Message, bot: Bot, transcriber: Transcriber) ->
         return await _transcribe_voice(message, message.voice, bot, transcriber)
     await message.answer(_NON_TEXT_REPLY)
     return None
+
+
+async def _voice_reply(message: Message, bot: Bot, speaker: Speaker, text: str) -> None:
+    """Voice the text answer back (voice-message turns only).
+
+    Best-effort: the text reply is already delivered, so any failure in this add-on — Anthropic/ElevenLabs
+    synthesis OR the Telegram send — logs and is dropped rather than turning a good answer into an error message.
+    """
+    try:
+        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.RECORD_VOICE)
+        audio = await speaker.speak(text)
+        await message.answer_voice(BufferedInputFile(audio, filename="reply.ogg"))
+    except Exception:  # noqa: BLE001 — intentional degrade for a non-essential add-on; text answer already sent
+        logger.warning("Voice reply failed; text answer already sent", exc_info=True)
 
 
 async def _transcribe_voice(message: Message, voice: Voice, bot: Bot, transcriber: Transcriber) -> str:
