@@ -20,6 +20,7 @@ MAIN_TOOLS: list[str] = [
     "lists",
     "scheduling",
     "core_memory",
+    "ask_user",  # mid-turn clarifying question with tappable options (Telegram-only; off in probe)
 ]
 
 

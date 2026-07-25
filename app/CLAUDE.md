@@ -32,7 +32,15 @@ app/
 
   chat/             Telegram I/O — the ONLY aiogram Router
     router.py       voice + text handler → transcribe → Assistant.reply(on_event=TelegramProgress) → answer
-                    (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer)
+                    (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer).
+                    Also registers the ask.py callback_query handler (button taps aren't messages).
+    ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
+                    any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
+                    until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
+                    these"). One process/event loop (max_instances=1) so the tap resolves the parked turn's
+                    Future in memory — no queue. The callback handler resolves it DIRECTLY, never via
+                    Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot;
+                    its factory yields nothing where there's no bot (probe). Timeout is a module constant (300s).
     progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
                     ordered list of segments (`_Seg`: process | text | judge) so tools, model text,
                     and judge verdicts stay interleaved in the exact order they happened — nothing
@@ -190,15 +198,18 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 ## Dependency wiring — a process-wide tool registry (`app/tools/`)
 
 `CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
-anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge) **plus the tool
-`registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`.
+anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`) **plus the tool
+`registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`. `bot` is
+the aiogram client for the rare tool that messages the owner directly (`ask_user`); it's `None`
+off-transport (the probe CLI), where that tool's factory then yields nothing.
 
 **Each domain registers its own tools** (ownership by domain, like routers). A domain exposes a
 factory `(deps, conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)` that
 names it — `search.register_tools` (every web tool, one explicit line each), `memory` / `lists` /
-`scheduling` / `prompts`, `subagents.register_tools` (the `hypothesis_tree`). `app/tools/wiring.py`
-`build_tool_registry()` just calls each domain's `register_tools`. To add a tool: write its factory +
-`register(...)` line in the owning domain.
+`scheduling` / `prompts`, `subagents.register_tools` (the `hypothesis_tree`), `chat.ask` (`ask_user`,
+the transport-coupled clarifying-question tool). `app/tools/wiring.py` `build_tool_registry()` just
+calls each domain's `register_tools`. To add a tool: write its factory + `register(...)` line in the
+owning domain.
 
 **Both agents build their ToolSet through the SAME registry** — no per-agent duplication:
 - main Assistant: `deps.tools.build(MAIN_TOOLS, deps, conversation_id)` — `MAIN_TOOLS` lives in
