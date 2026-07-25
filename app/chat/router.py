@@ -80,16 +80,15 @@ async def _resolve_text(message: Message, bot: Bot, transcriber: Transcriber) ->
 async def _voice_reply(message: Message, bot: Bot, speaker: Speaker, text: str) -> None:
     """Voice the text answer back (voice-message turns only).
 
-    Best-effort: the text reply is already delivered, so a TTS/adapt failure (any Anthropic or ElevenLabs
-    error) logs and is dropped rather than turning a good answer into an error message.
+    Best-effort: the text reply is already delivered, so any failure in this add-on — Anthropic/ElevenLabs
+    synthesis OR the Telegram send — logs and is dropped rather than turning a good answer into an error message.
     """
-    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.RECORD_VOICE)
     try:
+        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.RECORD_VOICE)
         audio = await speaker.speak(text)
+        await message.answer_voice(BufferedInputFile(audio, filename="reply.ogg"))
     except Exception:  # noqa: BLE001 — intentional degrade for a non-essential add-on; text answer already sent
         logger.warning("Voice reply failed; text answer already sent", exc_info=True)
-        return
-    await message.answer_voice(BufferedInputFile(audio, filename="reply.ogg"))
 
 
 async def _transcribe_voice(message: Message, voice: Voice, bot: Bot, transcriber: Transcriber) -> str:
