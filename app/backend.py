@@ -26,6 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory
+from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.lists import ListStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
@@ -39,7 +40,7 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(assistant=self.assistant, transcriber=self._transcriber)
+        router = chat.build_router(assistant=self.assistant, transcriber=self._transcriber, speaker=self._speaker)
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
         return [router]
@@ -101,9 +102,19 @@ class NisseBot(TelegramServer):
         return AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0)
 
     @cached_property
+    def _elevenlabs(self) -> AsyncElevenLabs:
+        """Shared ElevenLabs client — Scribe v2 (STT, inbound) and text-to-speech (voice replies)."""
+        return AsyncElevenLabs(api_key=str(get_env("ELEVENLABS_API_KEY")))
+
+    @cached_property
     def _transcriber(self) -> Transcriber:
         """Voice → text adapter (ElevenLabs Scribe v2), used by the chat router on voice messages."""
-        return Transcriber(client=AsyncElevenLabs(api_key=str(get_env("ELEVENLABS_API_KEY"))))
+        return Transcriber(client=self._elevenlabs)
+
+    @cached_property
+    def _speaker(self) -> Speaker:
+        """Text → voice adapter (Haiku adapt + ElevenLabs TTS) — voices the reply on voice-message turns."""
+        return Speaker(elevenlabs=self._elevenlabs, anthropic=self._anthropic)
 
     @cached_property
     def _playwright(self) -> PlaywrightClient:
