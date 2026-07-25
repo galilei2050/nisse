@@ -7,6 +7,7 @@ duplicated per entry point. The generic `ToolRegistry` (registry.py) stays tool-
 """
 
 from app import lists, memory, prompts, scheduling, search, subagents
+from app.chat import ask
 from app.tools.registry import ToolRegistry
 
 
@@ -19,4 +20,5 @@ def build_tool_registry() -> ToolRegistry:
     scheduling.register_tools(registry)
     prompts.register_tools(registry)
     subagents.register_tools(registry)  # the researcher-only hypothesis tree
+    ask.register_tools(registry)  # the clarifying-question tool (Telegram transport, off in probe)
     return registry

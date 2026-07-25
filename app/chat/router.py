@@ -9,6 +9,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import BufferedInputFile, Message, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
+from app.chat.ask import register_ask_handler
 from app.chat.progress import TelegramProgress
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
@@ -36,6 +37,7 @@ _BILLING_REPLY = (
 def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: Speaker) -> Router:
     """Build the chat router whose handler delegates every text/voice message to the assistant."""
     router = Router(name="chat")
+    register_ask_handler(router)  # resolves ask_user button taps (callback_query, not a message)
 
     @router.message()
     async def handle(message: Message, bot: Bot) -> None:

@@ -84,6 +84,7 @@ class NisseBot(TelegramServer):
             schedule_endpoint=self._schedule_endpoint,
             judge=self._judge,
             tools=build_tool_registry(),
+            bot=self.bot,  # lets transport tools (ask_user) message the owner directly
         )
 
     @cached_property
