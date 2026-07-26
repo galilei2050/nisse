@@ -263,10 +263,6 @@ Unlike the prior-art catalogue above, these are features the **owner has asked f
 backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
 + a design doc when it's picked up.
 
-- **Multi-type inbound messages** — handle **Audio, Photo, and Documents** (today only voice→text).
-  Audio files (beyond voice notes), photos (vision), document ingestion (PDF/text → content). Touches
-  `chat/` ingress + `transcribe.py`. _cf._ openclaw voice-codec negotiation + sticker→vision (Telegram
-  hardening section).
 - **Remember reactions** — capture Telegram emoji reactions on messages as a signal (feedback / fact
   to store).
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
