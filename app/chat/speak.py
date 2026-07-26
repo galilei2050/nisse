@@ -1,4 +1,4 @@
-"""Text → voice — the TTS adapter: adapt the reply for speech (Haiku), then synthesize it (ElevenLabs)."""
+"""Text → voice — the TTS adapter: adapt the reply for speech (Sonnet), then synthesize it (ElevenLabs)."""
 
 import logging
 
@@ -16,8 +16,10 @@ TTS_MODEL = "eleven_multilingual_v2"
 # Ogg/Opus @48kHz is exactly Telegram's voice-note format — the bytes go straight to answer_voice, no transcode.
 TTS_FORMAT = "opus_48000_64"
 
-# Cheap/fast pass that rewrites the markdown answer into something that reads naturally aloud.
-_ADAPT_MODEL = "claude-haiku-4-5"
+# Rewrites the markdown answer into something that reads naturally aloud. Sonnet, not Haiku: the pass
+# must faithfully RE-VOICE the reply, but Haiku treats the text as a prompt to answer — it invents a
+# lecture and drops the real content. Sonnet keeps every fact (measured: Haiku ~2x length + hallucinated).
+_ADAPT_MODEL = "claude-sonnet-5"
 _ADAPT_MAX_TOKENS = 2048
 _ADAPT_PROMPT = (
     "You rewrite an assistant's reply so it sounds natural read aloud by a text-to-speech voice. "
@@ -28,7 +30,7 @@ _ADAPT_PROMPT = (
 
 
 class Speaker:
-    """Voices an assistant reply: adapt-for-speech via Haiku, then TTS via ElevenLabs.
+    """Voices an assistant reply: adapt-for-speech via Sonnet, then TTS via ElevenLabs.
 
     Lifecycle: long-lived — one per process (built once in `backend.py`).
     """
@@ -44,7 +46,7 @@ class Speaker:
         return await self._synthesize(spoken)
 
     async def _adapt(self, text: str) -> str:
-        """Rewrite the markdown reply into speech-friendly plain text via a cheap Haiku pass."""
+        """Rewrite the markdown reply into speech-friendly plain text (faithful re-voicing, Sonnet)."""
         message = await self._anthropic.messages.create(
             model=_ADAPT_MODEL,
             max_tokens=_ADAPT_MAX_TOKENS,

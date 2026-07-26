@@ -54,8 +54,9 @@ app/
     format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
                     → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
     transcribe.py   voice file → text (Transcriber; ElevenLabs Scribe v2, language auto-detected; provider-swappable)
-    speak.py        text → voice (Speaker; Haiku adapts the markdown reply for speech, then ElevenLabs TTS →
-                    Ogg/Opus). Voice id + models are module constants (easy to swap); neutral female by default
+    speak.py        text → voice (Speaker; Sonnet re-voices the markdown reply for speech — Haiku derailed,
+                    treating the text as a prompt to answer — then ElevenLabs TTS → Ogg/Opus). Voice id +
+                    models are module constants (easy to swap); neutral female by default
 
   assistant/        the main agent — composition root
     assistant.py    Assistant.reply(conversation_id, text) -> AgentExecuteResult; thin TG↔agent layer (the chat layer formats the result via chat/format.compose_answer)
