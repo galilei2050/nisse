@@ -8,6 +8,8 @@ from app.assistant.history import MongoMessageHistory
 from app.shared import CoreDeps
 from app.subagents import SubagentStore, SubagentTool
 
+MAIN_MODEL = "claude-opus-5"  # the main agent's model (sub-agents pick their own in agents.yml)
+
 # The main Assistant's tool spec — the names it builds from the shared registry (`deps.tools`). The
 # main agent gets only the GENERAL web tools; the specialized SerpApi leaves (maps/news/events/jobs,
 # amazon/youtube) stay registered for sub-agents (e.g. retrieval) but off the always-on roster to keep
@@ -70,6 +72,7 @@ class Conversations:
 
         config = AgentConfig(
             toolset=toolset,
+            model=MAIN_MODEL,
             message_history=history,
             anthropic_client=self._deps.anthropic,
             database=self._deps.database,

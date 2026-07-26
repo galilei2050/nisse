@@ -9,6 +9,7 @@ from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
 from app.prompts import PromptStore
 from app.shared import CoreDeps
+from app.shared.blocks import Media
 
 logger = logging.getLogger(__name__)
 
@@ -74,25 +75,29 @@ class Assistant:
         await MemoryStore.ensure_indexes(self._deps.database)
         await PromptStore.ensure_indexes(self._deps.database)
 
-    async def run(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
+    async def run(
+        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
+    ) -> AgentExecuteResult:
         """Drive the conversation's reused agent over the new message; return the raw result.
 
         Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
-        the result into the user-facing string.
+        the result into the user-facing string. `media` is a photo/PDF on the message (if any).
         """
         with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
             conversation = await self._conversations.get(conversation_id)
-            return await conversation.reply(text=text, on_event=on_event)
+            return await conversation.reply(text=text, media=media, on_event=on_event)
 
-    async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
+    async def reply(
+        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
+    ) -> AgentExecuteResult:
         """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
 
         Formatting (footer, judge note, fallback) is the Telegram layer's job — see
         `chat/format.compose_answer`. `on_event` receives step events as the agent works (the chat
         router passes a `TelegramProgress` listener for live progress).
         """
-        result = await self.run(conversation_id=conversation_id, text=text, on_event=on_event)
+        result = await self.run(conversation_id=conversation_id, text=text, media=media, on_event=on_event)
         if not result.response:
             logger.warning(
                 "Agent produced no user-facing text; chat layer will send fallback",

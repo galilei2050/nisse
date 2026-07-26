@@ -1,25 +1,38 @@
 """Telegram I/O router — text or voice message → Assistant.reply() → answer (voiced back if inbound was voice)."""
 
+import base64
 import logging
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
-from aiogram.types import BufferedInputFile, Message, Voice
+from aiogram.types import BufferedInputFile, Document, Message, PhotoSize, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.ask import register_ask_handler
 from app.chat.progress import TelegramProgress
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
+from app.shared.blocks import Media, MediaType
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
     from app.assistant import Assistant
 
 logger = logging.getLogger(__name__)
 
-_NON_TEXT_REPLY = "Send me a text or voice message."
+
+class _Resolved(NamedTuple):
+    """A resolved inbound message: the text (caption/transcript, maybe empty) and any photo/PDF."""
+
+    text: str
+    media: Media | None
+
+
+_NON_TEXT_REPLY = "Send me text, a voice message, a photo, or a PDF."
+_UNSUPPORTED_FILE_REPLY = "I can open images and PDFs — that file type I can't read yet."
+_FILE_TOO_LARGE_REPLY = "That file is too large for me to open (limit 20 MB)."
+_MAX_FILE_BYTES = 20 * 1024 * 1024  # Telegram's own getFile/download ceiling
 _TRANSCRIBE_FAILED_REPLY = "I couldn't make out that voice message — please try again."
 _REFUSAL_REPLY = "I couldn't answer that one — the model declined. Try rephrasing."
 _ERROR_REPLY = "Something went wrong on my side — please try again."
@@ -41,14 +54,16 @@ def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: S
 
     @router.message()
     async def handle(message: Message, bot: Bot) -> None:
-        """Resolve a text or voice message to text, delegate to the assistant, send back its reply."""
-        text = await _resolve_text(message, bot, transcriber)
-        if not text:  # non-text/voice, or empty transcript — already answered by _resolve_text
+        """Resolve a text/voice/photo/document message, delegate to the assistant, send back its reply."""
+        resolved = await _resolve_message(message, bot, transcriber)
+        if resolved is None:  # unsupported or empty — already answered by _resolve_message
             return
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
         try:
-            result = await assistant.reply(conversation_id=message.chat.id, text=text, on_event=progress)
+            result = await assistant.reply(
+                conversation_id=message.chat.id, text=resolved.text, media=resolved.media, on_event=progress
+            )
             await progress.finish(result)
             if message.voice and result.response:  # voice in → voice out, alongside the text reply above
                 await _voice_reply(message, bot, speaker, result.response)
@@ -69,14 +84,46 @@ def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: S
     return router
 
 
-async def _resolve_text(message: Message, bot: Bot, transcriber: Transcriber) -> str | None:
-    """A text message's text, or a voice note's transcript; None (after answering) if neither."""
+async def _resolve_message(message: Message, bot: Bot, transcriber: Transcriber) -> _Resolved | None:
+    """Resolve any inbound message to text + optional media; None (after answering) if unsupported/empty."""
     if message.text:
-        return message.text
+        return _Resolved(message.text, None)
     if message.voice:
-        return await _transcribe_voice(message, message.voice, bot, transcriber)
+        text = await _transcribe_voice(message, message.voice, bot, transcriber)
+        return _Resolved(text, None) if text else None
+    if message.photo:
+        return await _resolve_photo(message, message.photo[-1], bot)  # last = highest resolution
+    if message.document:
+        return await _resolve_document(message, message.document, bot)
     await message.answer(_NON_TEXT_REPLY)
     return None
+
+
+async def _resolve_photo(message: Message, photo: PhotoSize, bot: Bot) -> _Resolved:
+    """A photo → a JPEG image (Telegram always sends photos as JPEG); the caption is the prompt."""
+    data = await _download_b64(bot, photo)
+    return _Resolved(message.caption or "", Media(data=data, media_type=MediaType.JPEG))
+
+
+async def _resolve_document(message: Message, document: Document, bot: Bot) -> _Resolved | None:
+    """A document → an image or PDF the model can read; else decline (after answering)."""
+    if document.file_size and document.file_size > _MAX_FILE_BYTES:
+        await message.reply(_FILE_TOO_LARGE_REPLY)
+        return None
+    try:
+        media_type = MediaType(document.mime_type or "")
+    except ValueError:  # not an image/PDF the model reads
+        await message.reply(_UNSUPPORTED_FILE_REPLY)
+        return None
+    data = await _download_b64(bot, document)
+    return _Resolved(message.caption or "", Media(data=data, media_type=media_type))
+
+
+async def _download_b64(bot: Bot, file: PhotoSize | Document) -> str:
+    """Download a Telegram file and base64-encode it for an Anthropic image/document block."""
+    buf = BytesIO()
+    await bot.download(file, destination=buf)
+    return base64.standard_b64encode(buf.getvalue()).decode()
 
 
 async def _voice_reply(message: Message, bot: Bot, speaker: Speaker, text: str) -> None:

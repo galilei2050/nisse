@@ -6,6 +6,7 @@ from baski.agents import Agent, AgentExecuteResult, Listener, noop
 from baski.agents.tools import ShortTermMemory
 
 from app.assistant.history import MongoMessageHistory
+from app.shared.blocks import Media, MediaType
 
 
 class Conversation:
@@ -23,18 +24,25 @@ class Conversation:
         self._short_term = short_term
         self._lock = asyncio.Lock()
 
-    async def reply(self, *, text: str, on_event: Listener = noop) -> AgentExecuteResult:
+    async def reply(self, *, text: str, media: Media | None = None, on_event: Listener = noop) -> AgentExecuteResult:
         """Run one reply over the reused agent: reset the scratchpad, append the message, drive the loop.
 
-        `short_term` is a per-reply scratchpad, cleared each time; `on_event` is the fresh
-        live-progress listener for this message. Serialized so two replies never drive the one
-        agent's history at once.
+        `media` is a photo/PDF the user attached (None for a text/voice turn) — added as its own user
+        message, with the caption text as a second one. `short_term` is a per-reply scratchpad, cleared
+        each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
+        the one agent's history at once.
         """
         async with self._lock:
             self._short_term.clear()
             self._agent.on_event = on_event
             with self._history:
-                self._history.add_user_text(text)
+                if media is not None:
+                    if media.media_type is MediaType.PDF:
+                        self._history.add_document(data=media.data)
+                    else:
+                        self._history.add_photo(data=media.data, media_type=media.media_type)
+                if text:
+                    self._history.add_user_text(text)
             result = await self._agent.execute()
             self._history.drop_tool_turns()
         return result

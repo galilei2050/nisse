@@ -21,9 +21,19 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Literal, Self, cast
 
-from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
+from anthropic.types import (
+    ContentBlock,
+    DocumentBlockParam,
+    ImageBlockParam,
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    Usage,
+)
+from anthropic.types.base64_image_source_param import Base64ImageSourceParam
+from anthropic.types.base64_pdf_source_param import Base64PDFSourceParam
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
 from baski.primitives import datetime
@@ -35,6 +45,8 @@ from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
 
 logger = logging.getLogger(__name__)
+
+_ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 _COLLECTION = "conversation_turns"
 _MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
@@ -207,6 +219,18 @@ class MongoMessageHistory(MessageHistory):
     def add_user_text(self, text: str) -> None:
         """Append a plain user-text message to the open turn."""
         self._turn.messages.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=text)]))
+
+    def add_photo(self, *, data: str, media_type: str) -> None:
+        """Append a user image message — a photo the model reads as vision (media_type checked upstream)."""
+        source = Base64ImageSourceParam(type="base64", media_type=cast("_ImageMediaType", media_type), data=data)
+        self._turn.messages.append(MessageParam(role="user", content=[ImageBlockParam(type="image", source=source)]))
+
+    def add_document(self, *, data: str) -> None:
+        """Append a user PDF-document message the model reads natively."""
+        source = Base64PDFSourceParam(type="base64", media_type="application/pdf", data=data)
+        self._turn.messages.append(
+            MessageParam(role="user", content=[DocumentBlockParam(type="document", source=source)])
+        )
 
     def format_for_api(self) -> list[MessageParam]:
         """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
