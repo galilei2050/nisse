@@ -85,25 +85,6 @@ def _dump_message(message: MessageParam) -> MessageParam:  # noqa: ANON002 — M
     return MessageParam(role=message["role"], content=[_dump_block(b) for b in content])  # type: ignore[misc]  # list[object] → content union at runtime (SDK blocks → plain dicts)
 
 
-# Image/PDF blocks carry a big base64 blob; persist a tiny marker instead so Mongo never stores it.
-# The real blob stays in the in-memory transcript, so follow-up turns in the same session still see it.
-_ATTACHMENT_MARKERS = {"image": "[image]", "document": "[PDF]"}
-
-
-def _strip_attachment_blobs(message: MessageParam) -> MessageParam:  # noqa: ANON002 — Anthropic SDK TypedDict
-    """Replace any image/PDF block with a small text marker so the base64 blob never reaches Mongo."""
-    content = message["content"]
-    if isinstance(content, str):
-        return message
-    stripped = [
-        TextBlockParam(type="text", text=marker) if (marker := _ATTACHMENT_MARKERS.get(block_type(b) or "")) else b
-        for b in content
-    ]
-    if all(a is b for a, b in zip(content, stripped, strict=True)):  # nothing stripped — keep the original
-        return message
-    return MessageParam(role=message["role"], content=stripped)
-
-
 class ConversationTurn(NisseDbModel):
     """One agent turn persisted to Mongo — all messages for one reply cycle.
 
@@ -361,7 +342,7 @@ class MongoMessageHistory(MessageHistory):
                 "$set": {
                     "conversation_id": self._conversation_id,
                     "turn_id": turn.id,
-                    "messages": [_dump_message(_strip_attachment_blobs(m)) for m in turn.messages],
+                    "messages": [_dump_message(m) for m in turn.messages],
                     "updated_at": now,
                     "deleted_at": deleted_at,
                 },
