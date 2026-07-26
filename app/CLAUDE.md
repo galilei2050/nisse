@@ -31,7 +31,9 @@ app/
     providers.py    role → model_id presets (main · judge · curator · task)
 
   chat/             Telegram I/O — the ONLY aiogram Router
-    router.py       voice + text handler → transcribe → Assistant.reply(on_event=TelegramProgress) → answer
+    router.py       text/voice/photo/PDF handler → transcribe voice / attach photo+PDF (Media) →
+                    Assistant.reply(on_event=TelegramProgress) → answer. Photos → JPEG image block;
+                    documents → image or application/pdf block if the model reads it (else declined); >20MB declined
                     (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer).
                     Also registers the ask.py callback_query handler (button taps aren't messages).
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
@@ -60,9 +62,10 @@ app/
 
   assistant/        the main agent — composition root
     assistant.py    Assistant.reply(conversation_id, text) -> AgentExecuteResult; thin TG↔agent layer (the chat layer formats the result via chat/format.compose_answer)
-    conversations.py Conversations — registry: builds each chat's agent once and caches it
+    conversations.py Conversations — registry: builds each chat's agent once and caches it (main model
+                    `MAIN_MODEL = claude-opus-5`; sub-agents pick their own in agents.yml)
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
-    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter
+    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter. `add_photo`/`add_document` append a user image/PDF message the model reads natively; the base64 blob is NOT persisted — `_strip_attachment_blobs` swaps it for a `[image]`/`[PDF]` marker on the Mongo write, while the in-memory transcript keeps the real blob for follow-ups in the same session
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 

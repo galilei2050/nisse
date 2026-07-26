@@ -1,4 +1,13 @@
-"""Anthropic content-block helpers — the one place that reads a block's `type` discriminator."""
+"""Anthropic content-block helpers — read a block's `type`; carry a user attachment (photo/PDF)."""
+
+from typing import NamedTuple
+
+
+class Media(NamedTuple):
+    """A photo or PDF the user attached: base64-encoded data and its media type."""
+
+    data: str
+    media_type: str
 
 
 def block_type(block: object) -> str | None:

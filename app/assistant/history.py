@@ -21,9 +21,19 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Literal, Self, cast
 
-from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
+from anthropic.types import (
+    ContentBlock,
+    DocumentBlockParam,
+    ImageBlockParam,
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    Usage,
+)
+from anthropic.types.base64_image_source_param import Base64ImageSourceParam
+from anthropic.types.base64_pdf_source_param import Base64PDFSourceParam
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
 from baski.primitives import datetime
@@ -35,6 +45,8 @@ from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
 
 logger = logging.getLogger(__name__)
+
+_ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 _COLLECTION = "conversation_turns"
 _MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
@@ -71,6 +83,25 @@ def _dump_message(message: MessageParam) -> MessageParam:  # noqa: ANON002 — M
     if isinstance(content, str):
         return MessageParam(role=message["role"], content=content)
     return MessageParam(role=message["role"], content=[_dump_block(b) for b in content])  # type: ignore[misc]  # list[object] → content union at runtime (SDK blocks → plain dicts)
+
+
+# Image/PDF blocks carry a big base64 blob; persist a tiny marker instead so Mongo never stores it.
+# The real blob stays in the in-memory transcript, so follow-up turns in the same session still see it.
+_ATTACHMENT_MARKERS = {"image": "[image]", "document": "[PDF]"}
+
+
+def _strip_attachment_blobs(message: MessageParam) -> MessageParam:  # noqa: ANON002 — Anthropic SDK TypedDict
+    """Replace any image/PDF block with a small text marker so the base64 blob never reaches Mongo."""
+    content = message["content"]
+    if isinstance(content, str):
+        return message
+    stripped = [
+        TextBlockParam(type="text", text=marker) if (marker := _ATTACHMENT_MARKERS.get(block_type(b) or "")) else b
+        for b in content
+    ]
+    if all(a is b for a, b in zip(content, stripped, strict=True)):  # nothing stripped — keep the original
+        return message
+    return MessageParam(role=message["role"], content=stripped)
 
 
 class ConversationTurn(NisseDbModel):
@@ -208,6 +239,18 @@ class MongoMessageHistory(MessageHistory):
         """Append a plain user-text message to the open turn."""
         self._turn.messages.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=text)]))
 
+    def add_photo(self, *, data: str, media_type: str) -> None:
+        """Append a user image message — a photo the model reads as vision (media_type checked upstream)."""
+        source = Base64ImageSourceParam(type="base64", media_type=cast("_ImageMediaType", media_type), data=data)
+        self._turn.messages.append(MessageParam(role="user", content=[ImageBlockParam(type="image", source=source)]))
+
+    def add_document(self, *, data: str) -> None:
+        """Append a user PDF-document message the model reads natively."""
+        source = Base64PDFSourceParam(type="base64", media_type="application/pdf", data=data)
+        self._turn.messages.append(
+            MessageParam(role="user", content=[DocumentBlockParam(type="document", source=source)])
+        )
+
     def format_for_api(self) -> list[MessageParam]:
         """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
         result: list[MessageParam] = []
@@ -318,7 +361,7 @@ class MongoMessageHistory(MessageHistory):
                 "$set": {
                     "conversation_id": self._conversation_id,
                     "turn_id": turn.id,
-                    "messages": [_dump_message(m) for m in turn.messages],
+                    "messages": [_dump_message(_strip_attachment_blobs(m)) for m in turn.messages],
                     "updated_at": now,
                     "deleted_at": deleted_at,
                 },
