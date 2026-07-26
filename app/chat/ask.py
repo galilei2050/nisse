@@ -116,6 +116,7 @@ class AskUserTool(Tool):
         try:
             return await asyncio.wait_for(pending.future, timeout=_ANSWER_TIMEOUT)
         except TimeoutError:
+            logger.warning("ask_user timed out — no tap arrived", extra={"timeout_s": _ANSWER_TIMEOUT})
             await message.delete()
             return _TIMEOUT_ANSWER
         finally:
@@ -125,6 +126,7 @@ class AskUserTool(Tool):
 async def _handle_callback(query: CallbackQuery, callback_data: AskCallback) -> None:
     """Resolve or update one ask_user question from a button tap (wired on the chat router)."""
     pending = _pending.get(callback_data.token)
+    logger.info("ask_user tap", extra={"action": callback_data.action, "known": pending is not None})
     if pending is None:  # stale tap — the question already resolved or timed out
         await query.answer()
         return
@@ -154,13 +156,19 @@ async def _finish(query: CallbackQuery, pending: _Pending, answer: str) -> None:
     """Deliver the answer to the parked agent turn and delete the question message."""
     if not pending.future.done():
         pending.future.set_result(answer)
+    logger.info("ask_user resolved", extra={"chars": len(answer)})
     await query.answer()
     if isinstance(query.message, Message):
         await query.message.delete()
 
 
 def register_ask_handler(router: Router) -> None:
-    """Wire the ask_user button-tap handler onto the chat router."""
+    """Wire the ask_user button-tap handler onto the chat router.
+
+    Taps arrive as callback_query updates — Telegram delivers them ONLY if the webhook's
+    allowed_updates includes "callback_query" (baski derives that from the registered handlers). A
+    webhook pinned to message-only silently drops every tap and the tool waits out its timeout.
+    """
     router.callback_query.register(_handle_callback, AskCallback.filter())
 
 
