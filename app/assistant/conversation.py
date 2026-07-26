@@ -6,7 +6,7 @@ from baski.agents import Agent, AgentExecuteResult, Listener, noop
 from baski.agents.tools import ShortTermMemory
 
 from app.assistant.history import MongoMessageHistory
-from app.shared.blocks import Media
+from app.shared.blocks import Media, MediaType
 
 
 class Conversation:
@@ -37,7 +37,7 @@ class Conversation:
             self._agent.on_event = on_event
             with self._history:
                 if media is not None:
-                    if media.media_type == "application/pdf":
+                    if media.media_type is MediaType.PDF:
                         self._history.add_document(data=media.data)
                     else:
                         self._history.add_photo(data=media.data, media_type=media.media_type)
