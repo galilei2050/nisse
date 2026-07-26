@@ -24,24 +24,14 @@ Pointer format: _src:_ `repo: path/to/file` → resolves to `.references/repo/pa
 
 ## Memory — three tiers (decided for nisse)
 
-- **ShortTerm** — per-Turn working scratchpad. Lives during one `Assistant.reply()`,
-  wiped when the reply is ready (today's in-memory ShortTermMemory accumulation).
-- **LongTermHot** — small curated core, **always injected in every chat/turn** as a
-  frozen snapshot in the volatile prompt tier. Durable in Mongo; curator keeps it tight.
-- **LongTerm** — large durable fact store (Mongo + rebuildable vector index). NOT
-  injected wholesale; surfaced by **Active Memory pre-reply recall**. Promotion
-  LongTerm→LongTermHot is recall-gated (usage evidence), done by the curator.
+The three tiers are shipped — **ShortTerm** (per-turn scratchpad), an always-injected durable
+**core** (agent-maintained, `prompts/`), and a durable **LongTerm** Mongo fact store with
+model-called `recall_*` tools and a `category` tag; see `CLAUDE.md`. The patterns below are the
+parts still unbuilt (most wait on the curator):
 
-Supporting patterns:
-- **Dual-store** — durable DB = source of truth, vector index = disposable projection
-  rebuilt from it; `add/replace/delete/list` by id (same ops for agent & curator).
-  _src:_ `openwebui: backend/open_webui/models/memories.py`, `routers/memories.py`.
-- **Memory as native tools** (add/replace/delete/list) — model decides when to persist.
-  _src:_ `openwebui: backend/open_webui/tools/builtin.py`; `hermes: tools/memory_tool.py` (Hermes: add/replace/remove over fixed memory/user files — no `list`).
-- **Frozen-snapshot + 3-tier-by-volatility prompt** (stable persona/overlay → context →
-  volatile[facts+date]); snapshot once per run, writes durable-but-deferred to next run
-  to preserve prompt cache; **date-only timestamp** (no minutes) or the cache dies.
-  _src:_ `hermes: agent/system_prompt.py`, docs `prompt-assembly.md`.
+- **Dual-store — vector projection** — the durable DB as source of truth with id-addressed
+  add/replace/delete/list is shipped; the **disposable vector index rebuilt from it** is the
+  unbuilt half. _src:_ `openwebui: backend/open_webui/routers/memories.py`.
 - **Active Memory — pre-reply recall**: bounded recall sub-agent runs BEFORE the main
   reply, injects facts as **untrusted** context; hard timeout + circuit breaker; query
   modes `message`/`recent`/`full`; cheap model (Gemini Flash).
@@ -53,18 +43,14 @@ Supporting patterns:
   recall≥3 / ≥2 unique queries`, decay half-life 14d (evergreen exempt). Start simpler
   (count≥3 across≥2 queries) and add weights only if recall gets noisy.
   _src:_ `openclaw: extensions/memory-core/src/short-term-promotion.ts`, `src/memory/{temporal-decay,mmr}.ts`.
-- **Invalidate-on-contradiction (not append)** — when a new fact contradicts an existing one,
-  mark the old one invalid rather than storing both; retrieval then never surfaces stale prefs.
-  Stronger than decay alone for evolving user state. Lean: invalidate for user prefs, decay for the rest.
-  _src:_ Zep temporal-KG fact-invalidation (getzep.com; arxiv 2501.13956) — crib the rule, not the graph engine.
-- **Content-type tag on stored facts** — label each LongTerm fact `episodic | semantic | procedural`
-  so recall can filter by kind and the curator can promote the right ones. Cheap field; LangMem advises
-  mapping needs→types before storage. _src:_ `langchain.com/blog/langmem-sdk-launch`.
+- **Auto-invalidate + decay** — nisse already invalidates in place (agent-driven overwrite /
+  soft-delete); unbuilt: **automatic** contradiction detection at write time, and temporal
+  **decay** for the non-preference tail. _src:_ Zep temporal-KG (getzep.com; arxiv 2501.13956) — crib the rule, not the graph engine.
 - **Relevance-threshold on top-k** — drop below-threshold kNN hits so irrelevant facts
   aren't injected every turn. _src:_ `openwebui: routers/memories.py` (RELEVANCE_THRESHOLD).
-- **Write-discipline as prompt guidance** — store declarative facts not imperatives;
-  no task progress / ephemera; never harden tool-failures into permanent constraints.
-  _src:_ `hermes: agent/prompt_builder.py` (MEMORY_GUIDANCE), `agent/background_review.py` ("do NOT capture" list).
+- **Write-discipline: don't harden tool-failures** — the declarative-facts / no-ephemera guidance
+  is shipped; the unshipped rule: never harden a transient tool-failure into a permanent stored
+  constraint. _src:_ `hermes: agent/background_review.py` ("do NOT capture" list).
 - **Memory-context fencing** — wrap recalled memory in `<memory-context>`, scrub tags from
   model output, streaming scrubber across chunk boundaries. _src:_ `hermes: agent/memory_manager.py`.
 - **Flush before compaction** — extract durable facts from full transcript before compacting.
@@ -74,14 +60,10 @@ Supporting patterns:
 
 ## Function calling / the loop
 
-- **Native provider tool-calls at runtime** — never parse XML in the live path; Hermes-XML
-  is only for training/trajectory serialization. _src:_ `hermes: agent/agent_runtime_helpers.py`.
-- **Bounded loop** — hard cap on iterations (`for loop < 10`) as a fail-loud runaway guard.
-  _src:_ `chatui: src/lib/server/textGeneration/mcp/runMcpFlow.ts`.
-- **Parallel exec, re-ordered to call order, error fed back as `tool_result`** (don't swallow).
-  _src:_ `chatui: .../mcp/toolInvocation.ts`. (baski.ToolSet already runs parallel.)
-- **Think-block hygiene** — strip `<think>` from the assistant message resubmitted with tool_calls.
-  _src:_ `chatui: .../mcp/runMcpFlow.ts`.
+Native provider tool-calls, a bounded loop (force-answer at the cap), parallel exec with tool
+errors fed back as `tool_result`, and think-block hygiene are all shipped in `baski.agents` —
+see `CLAUDE.md`. Still parked:
+
 - **Tool-call repair** for weak/non-native models (promote text tool-calls → native). LATER.
   _src:_ `openclaw: packages/tool-call-repair/`.
 - **Programmatic Tool Calling** — model writes a script calling tools via RPC; only stdout
@@ -90,16 +72,12 @@ Supporting patterns:
 
 ## Adding tools (ergonomics) — nisse = HYBRID (native baski.Tool + optional MCP)
 
-- **docstring + type hints → schema** — write a typed Python function, get the model schema
-  for free (no hand-written input_schema). _src:_ `openwebui: utils/tools.py` (convert_function_to_pydantic_model).
+Shipped: typed `baski.Tool` subclasses (schema from declarations), the register-vs-expose split
+(process-wide registry + per-agent name-lists, `app/tools/`), and framework-injected deps (scoped
+in the domain tool factory) — see `CLAUDE.md`. Still menu items:
+
 - **Self-registering registry + AST auto-discovery + `check_fn`** — drop a file, it's found;
   exposed only if its env/key exists. _src:_ `hermes: tools/registry.py`.
-- **Register-vs-expose split** (toolsets + core) — registered globally, shown only if name is
-  in the active toolset = always-on + loaded-per-skill + env-gating from one primitive.
-  _src:_ `hermes: toolsets.py`.
-- **Dunder param injection** — tool declares `__user__`/`__chat_id__`/`__event_emitter__`,
-  framework binds via functools.partial and strips them from the model-facing schema.
-  _src:_ `openwebui: utils/tools.py`.
 - **Skills as data + progressive disclosure** — only a `<available_skills>` manifest (name+desc)
   in the prompt; body loaded on demand via one `view_skill(id)` tool. = our learned-skills + tiers.
   _src:_ `openwebui: models/skills.py` + `tools/builtin.py` (view_skill); `openclaw: skills/<name>/SKILL.md` frontmatter.
@@ -165,10 +143,12 @@ owner in the loop (already the curator's safety invariants).
 
 ## Scheduling / self-invocation
 
-- **DB-backed RRULE scheduler + atomic claim_due** (advance-then-execute) + run-history audit.
-  _src:_ `openwebui: models/automations.py`, `utils/automations.py`.
-- **Single pipeline reuse** — a scheduled run builds the SAME request object as a live message
-  (zero behavioural drift). _src:_ `openwebui: utils/automations.py` (execute_automation).
+The DB-backed scheduler with atomic CAS-claim and single-pipeline reuse (a fire builds the same
+request as a live turn) are shipped — see `CLAUDE.md`. Still menu items:
+
+- **RRULE recurrence + run-history audit** — nisse does every-N-hours only; unbuilt are
+  calendar-grade **RRULE** recurrence and a per-fire **run-history** audit record.
+  _src:_ `openwebui: models/automations.py`.
 - **Standing Orders (WHAT, in always-injected prompt) vs cron (WHEN, references them)** — schedules stay thin.
   _src:_ `openclaw: docs/automation/standing-orders.md`, `docs/automation/cron-jobs.md`.
 - **Commitments** — hidden post-reply pass extracts *inferred* follow-ups ("interview tomorrow"),
@@ -178,33 +158,38 @@ owner in the loop (already the curator's safety invariants).
 
 ## Sub-agents
 
-- **Agents-as-tools, leaf-role blocklist** (no delegate/memory/send), **summary-only** return to parent.
-  _src:_ `hermes: tools/delegate_tool.py`.
-- **Push/announce completion, never poll**; child output = **untrusted evidence**; cheaper model for children.
+Agents-as-tools with summary-only return, one-level-deep delegation (keep-shallow), and cheaper
+child models are shipped in `subagents/` — see `CLAUDE.md`. Unbuilt:
+
+- **Child output as untrusted evidence** — the wrap + tag-scrub fencing the memory tier plans is
+  explicitly deferred for sub-agents; child output rides back as a plain `tool_result` today.
   _src:_ `openclaw: docs/tools/subagents.md`.
-- **Keep shallow** — avoid manager-of-managers (explicit non-goal). _src:_ `openclaw: VISION.md`.
 
 ## Multi-provider / judge / eval
 
-- **role→model_id indirection** — main / judge / curator / task each resolve to their own model via config.
+- **role→model_id config indirection** — distinct models per role already exist (Opus main /
+  Gemini judge / Sonnet sub-agents+speech) but as scattered hardcoded constants; unbuilt is the
+  **config/registry-preset** layer (and the curator/task roles it names don't exist yet).
   _src:_ `openwebui: utils/task.py` (get_task_model_id), `models/models.py` (registry-row-as-preset).
 - **Feedback row = `{rating, model_id, reason, snapshot, tags}`** append-only — the join point for
   judge + offline evals + curator analytics; leaderboard/Elo are read-side functions over it.
   _src:_ `openwebui: models/feedbacks.py`, `routers/evaluations.py`.
-- **Cheap task-model** for titles / intent classification / query-rewrite; reserve the big model for replies.
+- **Shared cheap task-model role** — reserving Opus for replies while a cheaper model does secondary
+  LLM work is already true (Sonnet: speech-adapt + sub-agents); unbuilt is a *named* task-model role
+  for titles / query-rewrite (intent-classification is a rejected direction for a single-user bot).
   _src:_ `openwebui: utils/task.py`.
 - **Provider normalization** — one canonical wire format + thin bidirectional adapters.
   _src:_ `openwebui: utils/anthropic.py`.
 
 ## Telegram hardening (we are Telegram-only)
 
-- **`extensions/telegram/`** is a master-class for a personal bot: durable ingress spool with crash-safe
-  claim/lease, update-offset store, voice codec negotiation (voice-note vs audio file), sticker→vision,
-  DM pairing allowlist. Most directly relevant code to read. _src:_ `openclaw: extensions/telegram/`.
-- **keepAlive heartbeat** to keep Telegram "typing…" alive while a slow tool runs.
-  _src:_ `chatui: src/lib/server/textGeneration/index.ts` (mergeAsyncGenerators).
-- **event_emitter / event_call** — status edits ("transcribing… searching…") + inline-keyboard confirms;
-  map the socket sink onto Telegram sendMessage/editMessageText. _src:_ `openwebui: socket/main.py`.
+Shipped: an owner allowlist (`access.py`), voice-note/audio-file handling + transcription, live
+status edits and inline-keyboard confirms (`progress.py`, `ask.py`) — see `CLAUDE.md`. Still worth
+mining `openclaw: extensions/telegram/` for:
+
+- **Durable ingress spool** — crash-safe claim/lease on inbound updates + an update-offset store
+  (nisse leans on Cloud Tasks for inbound durability, no app-level spool). _src:_ `openclaw: extensions/telegram/`.
+- **sticker→vision** — turn a sticker into an image the model reads. _src:_ `openclaw: extensions/telegram/`.
 
 ## Google Cloud Agent Platform (GCAP) — vendor prior art
 
@@ -263,10 +248,6 @@ Unlike the prior-art catalogue above, these are features the **owner has asked f
 backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
 + a design doc when it's picked up.
 
-- **Multi-type inbound messages** — handle **Audio, Photo, and Documents** (today only voice→text).
-  Audio files (beyond voice notes), photos (vision), document ingestion (PDF/text → content). Touches
-  `chat/` ingress + `transcribe.py`. _cf._ openclaw voice-codec negotiation + sticker→vision (Telegram
-  hardening section).
 - **Remember reactions** — capture Telegram emoji reactions on messages as a signal (feedback / fact
   to store).
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.

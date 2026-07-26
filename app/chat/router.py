@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
-from aiogram.types import BufferedInputFile, Document, Message, PhotoSize, Voice
+from aiogram.types import Audio, BufferedInputFile, Document, Message, PhotoSize, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.ask import register_ask_handler
@@ -29,7 +29,7 @@ class _Resolved(NamedTuple):
     media: Media | None
 
 
-_NON_TEXT_REPLY = "Send me text, a voice message, a photo, or a PDF."
+_NON_TEXT_REPLY = "Send me text, a voice message, an audio file, a photo, or a PDF."
 _UNSUPPORTED_FILE_REPLY = "I can open images and PDFs — that file type I can't read yet."
 _FILE_TOO_LARGE_REPLY = "That file is too large for me to open (limit 20 MB)."
 _MAX_FILE_BYTES = 20 * 1024 * 1024  # Telegram's own getFile/download ceiling
@@ -54,7 +54,7 @@ def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: S
 
     @router.message()
     async def handle(message: Message, bot: Bot) -> None:
-        """Resolve a text/voice/photo/document message, delegate to the assistant, send back its reply."""
+        """Resolve a text/voice/audio/photo/document message, delegate to the assistant, send back its reply."""
         resolved = await _resolve_message(message, bot, transcriber)
         if resolved is None:  # unsupported or empty — already answered by _resolve_message
             return
@@ -88,8 +88,9 @@ async def _resolve_message(message: Message, bot: Bot, transcriber: Transcriber)
     """Resolve any inbound message to text + optional media; None (after answering) if unsupported/empty."""
     if message.text:
         return _Resolved(message.text, None)
-    if message.voice:
-        text = await _transcribe_voice(message, message.voice, bot, transcriber)
+    audio = message.voice or message.audio  # a voice note or an audio file sent as a file → transcribe
+    if audio:
+        text = await _transcribe_audio(message, audio, bot, transcriber)
         return _Resolved(text, None) if text else None
     if message.photo:
         return await _resolve_photo(message, message.photo[-1], bot)  # last = highest resolution
@@ -140,11 +141,11 @@ async def _voice_reply(message: Message, bot: Bot, speaker: Speaker, text: str) 
         logger.warning("Voice reply failed; text answer already sent", exc_info=True)
 
 
-async def _transcribe_voice(message: Message, voice: Voice, bot: Bot, transcriber: Transcriber) -> str:
-    """Download the voice note, transcribe it, and echo the transcript so a mis-hear is visible."""
+async def _transcribe_audio(message: Message, audio: Voice | Audio, bot: Bot, transcriber: Transcriber) -> str:
+    """Download a voice note or audio file, transcribe it, and echo the transcript so a mis-hear is visible."""
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
     buf = BytesIO()
-    await bot.download(voice, destination=buf)
+    await bot.download(audio, destination=buf)
     try:
         text = await transcriber.transcribe(buf.getvalue())
     except Exception:

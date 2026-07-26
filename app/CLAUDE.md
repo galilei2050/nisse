@@ -31,7 +31,7 @@ app/
     providers.py    role → model_id presets (main · judge · curator · task)
 
   chat/             Telegram I/O — the ONLY aiogram Router
-    router.py       text/voice/photo/PDF handler → transcribe voice / attach photo+PDF (Media) →
+    router.py       text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
                     Assistant.reply(on_event=TelegramProgress) → answer. Photos → JPEG image block;
                     documents → image or application/pdf block if the model reads it (else declined); >20MB declined
                     (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer).
