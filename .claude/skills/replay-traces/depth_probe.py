@@ -4,14 +4,16 @@ Grades three hand-built answers to investigative asks with the CURRENT judge, N 
 the judge still separates them. Catches a judge-prompt change that either dulls the redo (SHALLOW /
 INCOMPLETE start passing) or over-fires (DEEP starts failing). Run from the repo root:
 
-    uv run --env-file .env python .claude/skills/replay-traces/depth_probe.py
+    PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/depth_probe.py
 """
 import asyncio
 
 from baski.agents import GeminiJudge
 from baski.env import get_env
 
-RULES = "Owner: Vova, runs an auto-repair shop. Act, don't ask. Ground analysis in real data; cite sources."
+from app.assistant.judge_prompt import NISSE_JUDGE_PROMPT
+
+RULES ="Owner: Vova, runs an auto-repair shop. Act, don't ask. Ground analysis in real data; cite sources."
 ASK = "[user] Подумай какие есть способы чтобы достать кандидатов в механики"
 PLAN_ASK = "[user] Спланируй романтические выходные у океана, бюджет $800: план по часам, места, цены, ссылки."
 
@@ -48,7 +50,7 @@ async def grade(judge, transcript, answer):
 
 
 async def main():
-    judge = GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")))
+    judge = GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT)
     for name, (expect, tr, ans) in CASES.items():
         res = await asyncio.gather(*[grade(judge, tr, ans) for _ in range(3)])
         verdict = "PASS" if res.count("PASS") >= 2 else "REDO"

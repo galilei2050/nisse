@@ -5,8 +5,8 @@ times (flash is nondeterministic — measure the distribution, never one run), a
 expected verdict. Download the traces first with the `analyze-traces` skill (they live, gitignored,
 in scratch/traces/). Run from the repo root:
 
-    uv run --env-file .env python .claude/skills/replay-traces/replay.py            # all catalog cases
-    uv run --env-file .env python .claude/skills/replay-traces/replay.py a17c09ca   # a subset by id-prefix
+    PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/replay.py           # all cases
+    PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/replay.py a17c09ca  # one prefix
 
 Rationale + per-case write-ups: docs/judge_test_cases.md.
 """
@@ -17,6 +17,8 @@ import sys
 
 from baski.agents import GeminiJudge
 from baski.env import get_env
+
+from app.assistant.judge_prompt import NISSE_JUDGE_PROMPT
 
 REPEATS = 3
 
@@ -80,7 +82,7 @@ async def grade(judge, transcript, answer, rules):
 
 async def main():
     only = sys.argv[1:]
-    judge = GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")))
+    judge = GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT)
     ok = bad = 0
     print(f"{'case':56} exp   NEW (x{REPEATS})")
     for pref, (label, expect) in CATALOG.items():
