@@ -1,26 +1,32 @@
 ---
 name: replay-traces
-description: Re-grade recorded nisse traces through the CURRENT completeness judge to measure false-positive / false-negative regression before/after a judge-prompt change. Use when touching baski's GeminiJudge prompt, or when the user says "replay traces", "test the judge", "did the judge change regress".
+description: Re-grade recorded nisse traces through the CURRENT judge to measure false-positive / false-negative regression before/after a judge-prompt change. Use when touching NISSE_JUDGE_PROMPT (app/assistant/judge_prompt.py), or when the user says "replay traces", "test the judge", "did the judge change regress".
 ---
 
 # Replay traces through the judge
 
-The completeness judge (`baski.agents.GeminiJudge`, gemini-flash) grades whether a reply FINISHED
-the ask. It mis-reads "research depth" in both directions — see `docs/judge_test_cases.md` for the
-root miscalibration and the per-case catalog. This skill re-grades known cases with the **live**
-judge prompt so a fix in one direction doesn't silently regress the other.
+The judge (`baski.agents.GeminiJudge`, gemini-flash) grades whether a reply FINISHED the ask and
+whether it was HONEST rather than flattering. Its rubric is nisse's own — `NISSE_JUDGE_PROMPT` in
+`app/assistant/judge_prompt.py`, passed as `instructions=`; every harness here loads that same
+constant, so they measure what prod runs. See `docs/judge_test_cases.md` for the root miscalibration
+and the per-case catalog. This skill re-grades known cases so a fix in one direction doesn't silently
+regress the other.
 
 Judge isolated, no agent run, no Mongo writes — just `GeminiJudge.evaluate(transcript, answer, rules)`
 reconstructed from each trace. Flash is nondeterministic, so every case is graded **3×** — read the
 distribution, never a single run (the project's empirical rule).
 
-## Two harnesses
+## Three harnesses
 
 1. **`replay.py` — real traces.** Re-grades the FINAL answer of each catalogued production trace and
    compares to its expected verdict (FP/FN/held). Needs the traces downloaded first.
-2. **`depth_probe.py` — synthetic.** Grades hand-built SHALLOW / DEEP / INCOMPLETE answers; no traces
-   needed. Fast smoke test that the judge still separates shallow-or-incomplete (REDO) from
-   deep-and-complete (PASS).
+2. **`depth_probe.py` — synthetic, completeness.** Grades hand-built SHALLOW / DEEP / INCOMPLETE
+   answers; no traces needed. Fast smoke test that the judge still separates shallow-or-incomplete
+   (REDO) from deep-and-complete (PASS).
+3. **`sycophancy_probe.py` — synthetic, honesty.** Flattery, one-sided verdicts, conclusions put in
+   the owner's mouth, and a whole brief dumped into one `retrieval` call — each paired with a good
+   answer that must keep passing. Grades every case with the library default AND nisse's rubric side
+   by side, so the run shows what the rubric moved, not just where it landed.
 
 ## Run
 
@@ -34,12 +40,13 @@ for id in bd4e744d a17c09ca c596c18b 06447c3e a36b13b0 f68e23aa 761e9231 b49a0fd
 done
 gunzip -f scratch/traces/*.gz
 
-# 2. synthetic smoke test (fast)
-uv run --env-file .env python .claude/skills/replay-traces/depth_probe.py
+# 2. synthetic smoke tests (fast, no traces needed) — PYTHONPATH=. so they can import the rubric
+PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/depth_probe.py
+PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/sycophancy_probe.py
 
 # 3. full catalog (all cases) or a subset by id-prefix
-uv run --env-file .env python .claude/skills/replay-traces/replay.py
-uv run --env-file .env python .claude/skills/replay-traces/replay.py a17c09ca c596c18b
+PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/replay.py
+PYTHONPATH=. uv run --env-file .env python .claude/skills/replay-traces/replay.py a17c09ca c596c18b
 ```
 
 Each line prints `ok`/`!!`, the case, the expected verdict, and the `N/3 PASS` distribution.

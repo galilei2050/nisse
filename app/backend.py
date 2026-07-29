@@ -24,7 +24,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app import chat
 from app.access import AllowlistMiddleware
-from app.assistant import Assistant
+from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
@@ -90,7 +90,7 @@ class NisseBot(TelegramServer):
     @cached_property
     def _judge(self) -> GeminiJudge:
         """Cross-family completeness judge (Gemini/Vertex via ADC) — one shared client for the process."""
-        return GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")))
+        return GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT)
 
     @cached_property
     def _http(self) -> httpx.AsyncClient:

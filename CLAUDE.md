@@ -25,6 +25,7 @@ The bot is a **delegate** standing in for a personal assistant — design and ev
 ## Conventions
 
 - Foundation primitives (datetime, JSON, server bases) come from `baski`. Do NOT vendor a copy here.
+- **`baski` is a LIBRARY — only change it as one.** Never edit baski to suit nisse alone. Prompt text is product policy and belongs on the calling side: `GeminiJudge`, `Agent` and friends are constructed here and take their text as an argument (`instructions=`, `system_prompt=`), so tune by passing nisse's own string — never by editing the library's default. Before touching baski ask "does every consumer need this, or only nisse?"; only nisse → change nisse. (A baski edit also costs a separate PR that blocks committing nisse until it merges.)
 - `from baski.primitives import datetime` — always UTC-aware. Never `from datetime import datetime`.
 - **Logging is plain stdlib.** Each module declares `logger = logging.getLogger(__name__)` at top scope and logs through it — no logger injection, no `CoreDeps.logger`. Per-call structured fields ride native `extra={...}` (e.g. `logger.info("Turns deleted", extra={"turnIds": ids})`), not `labels=`. Ambient context (rare; no HTTP scope here) is `baski.server.logger.{log_context, add_labels}`.
 - `from baski.telegram.server import TelegramServer` — webhook + polling server base.

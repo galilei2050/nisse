@@ -66,6 +66,12 @@ app/
                     `MAIN_MODEL = claude-opus-5`; sub-agents pick their own in agents.yml)
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
     history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter. `add_photo`/`add_document` append a user image/PDF message the model reads natively; its base64 block is persisted like any other, so the image survives a reload and stays in context for follow-ups
+    judge_prompt.py NISSE_JUDGE_PROMPT — the rubric handed to the judge as `instructions=`. Grades two
+                    axes: COMPLETENESS (did the reply deliver the ask) and HONESTY (flattery in place of
+                    an assessment · a verdict on a one-sided account · a conclusion put in the owner's
+                    mouth · a whole brief dumped into one `retrieval` call). Warmth/emoji and argued
+                    agreement are explicitly NOT flattery — without those carve-outs the judge redoes
+                    ordinary replies for tone. Change it only behind the `replay-traces` harness
     prompt.py       base system prompt (effective = base + curator overlay from Mongo)
     toolset.py      assembles tools: always-on core + code skills + learned skills
 
@@ -133,7 +139,9 @@ app/
 `curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below describe them.
 Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `subagents`, `shared`. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`), wired here via `CoreDeps.judge`
-→ `AgentConfig.judge` — not a local `app/judge/`.
+→ `AgentConfig.judge` — not a local `app/judge/`. baski owns the MECHANISM (the Gemini call, the `Verdict`
+schema); nisse owns the POLICY — every construction site passes `instructions=NISSE_JUDGE_PROMPT`
+(`assistant/judge_prompt.py`), so grading rules are changed here, never by editing the library's default.
 
 `Tool.system_prompt()` (baski) is **async and re-read every turn** (symmetric with `user_message()`);
 the agent reassembles its system prompt each turn, so a tool can inject live content — `prompts/`
@@ -325,9 +333,11 @@ cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judg
 task isn't done until you have: added scenarios covering the new behavior, run them, AND re-run the
 related existing scenarios to confirm no regression. New feature → new cases doc on the same pattern.
 
-For the **completeness judge** (baski `GeminiJudge`), the regression harness is the `replay-traces`
-skill — it re-grades catalogued production traces (FP/FN cases in `docs/judge_test_cases.md`) through
-the live judge prompt, 3× each. Run it before/after any judge-prompt change.
+For the **judge**, the regression harness is the `replay-traces` skill — it re-grades catalogued
+production traces (FP/FN cases in `docs/judge_test_cases.md`) plus two synthetic probes (`depth_probe`
+for completeness, `sycophancy_probe` for honesty) through the live rubric, 3× each. Run all three
+before/after any `NISSE_JUDGE_PROMPT` change: a rule added on one axis is exactly how the other
+silently regresses, and a redo costs a full regeneration the owner sees as a near-duplicate.
 
 ## Scheduling (self-invocation) — fires in webhook mode
 
