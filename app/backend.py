@@ -26,6 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory
+from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.lists import ListStore
@@ -40,7 +41,12 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(assistant=self.assistant, transcriber=self._transcriber, speaker=self._speaker)
+        router = chat.build_router(
+            assistant=self.assistant,
+            transcriber=self._transcriber,
+            speaker=self._speaker,
+            saved=SavedViewer(self._database),
+        )
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
         return [router]

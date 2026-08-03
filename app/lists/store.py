@@ -49,7 +49,8 @@ class RemoveResult:
 class ListStore:
     """CRUD over the `lists` collection, scoped to one conversation and addressed by list name.
 
-    Lifecycle: per-conversation — built in `_build_list_tools` and held by that chat's tools.
+    Lifecycle: per-conversation — built in `_build_list_tools` and held by that chat's tools, and
+    built per request by `chat/saved.py` (the read-only `/lists` viewer).
     Items are matched/de-duplicated case-insensitively; the name is normalized so a list is never
     forked by capitalization.
     """

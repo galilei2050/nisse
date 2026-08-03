@@ -75,7 +75,8 @@ class Memory(NisseDbModel):
 class MemoryStore:
     """CRUD over the `memories` collection, scoped to one conversation and addressed by public id.
 
-    Lifecycle: per-conversation — built in `_build_memory_tools` and held by that chat's tools.
+    Lifecycle: per-conversation — built in `_build_memory_tools` and held by that chat's tools, and
+    built per request by `chat/saved.py` (the read-only `/memory` viewer).
     """
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:

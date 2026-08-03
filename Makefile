@@ -1,6 +1,15 @@
-# Load .env when present (local dev). Absent in CI — guard so make doesn't hard-fail.
-ifneq (,$(wildcard ./.env))
-    include .env
+# git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its hooks, and they OVERRIDE both `-C` and
+# repo discovery — so a `git` call from inside pre-commit reads whatever repo the hook fired for.
+GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+
+# The main checkout, identical from every git worktree (`.claude/worktrees/<x>/`): the git dir is
+# shared, so anchoring on it is what makes `make` work from a worktree at all. Empty outside a repo.
+NISSE_ROOT := $(shell $(GIT_CLEAN_ENV) git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..
+
+# Load .env when present (local dev). It's git-ignored, so it exists ONLY in the main checkout —
+# read it from there, or every target run from a worktree loses the secrets. Absent in CI: guarded.
+ifneq (,$(wildcard $(NISSE_ROOT)/.env))
+    include $(NISSE_ROOT)/.env
     export
 endif
 
@@ -151,12 +160,17 @@ test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
 # full ci + a real-bot smoke boot on push.
+# baski is nisse's sibling. Resolve it through NISSE_ROOT, not a CWD-relative `../baski`, which from
+# a worktree points at `.claude/worktrees/baski` — a directory that doesn't exist.
+BASKI_DIR ?= $(NISSE_ROOT)/../baski
+BASKI_GIT := $(GIT_CLEAN_ENV) git -C $(BASKI_DIR)
+
 .PHONY: check-baski
 check-baski:
-	@git -C ../baski fetch -q origin main
-	@test "$$(git -C ../baski rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
-	@git -C ../baski diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
-	@test "$$(git -C ../baski rev-parse HEAD)" = "$$(git -C ../baski rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
+	@$(BASKI_GIT) fetch -q origin main
+	@test "$$($(BASKI_GIT) rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
+	@$(BASKI_GIT) diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
+	@test "$$($(BASKI_GIT) rev-parse HEAD)" = "$$($(BASKI_GIT) rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
 
 .PHONY: pre-commit
 pre-commit: check-baski lint-fix

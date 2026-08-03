@@ -39,4 +39,5 @@ The routing the agent applies:
 - `clear=true` soft-deletes the whole list (NisseDbModel `deleted_at`); reads filter `{"deleted_at": None}`.
 
 Mirrors the `app/memory` store/tool pattern; wired in `Conversations._build_list_tools`; index
-ensured in `backend.py`.
+ensured in `backend.py`. `chat/saved.py` reads the same store directly for the owner's `/lists`
+command — no tool, no model call.
