@@ -26,10 +26,12 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory
+from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.lists import ListStore
+from app.reactions import ReactionStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
 from app.subagents import SubagentStore
@@ -46,6 +48,7 @@ class NisseBot(TelegramServer):
             transcriber=self._transcriber,
             speaker=self._speaker,
             saved=SavedViewer(self._database),
+            reactions=ReactionRecorder(self._database),
         )
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
@@ -166,6 +169,7 @@ class NisseBot(TelegramServer):
         await MongoMessageHistory.ensure_indexes(self._database)
         await ScheduleStore.ensure_indexes(self._database)
         await ListStore.ensure_indexes(self._database)
+        await ReactionStore.ensure_indexes(self._database)
         await SubagentStore.ensure_indexes(self._database)
 
     async def _on_shutdown(self) -> None:

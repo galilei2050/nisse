@@ -12,6 +12,7 @@ from baski.agents import AgentBillingError, AgentProviderUnavailableError, Agent
 
 from app.chat.ask import register_ask_handler
 from app.chat.progress import TelegramProgress
+from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
@@ -48,11 +49,19 @@ _BILLING_REPLY = (
 )
 
 
-def build_router(*, assistant: "Assistant", transcriber: Transcriber, speaker: Speaker, saved: SavedViewer) -> Router:
+def build_router(  # noqa: PLR0913 — one collaborator per surface the chat router owns
+    *,
+    assistant: "Assistant",
+    transcriber: Transcriber,
+    speaker: Speaker,
+    saved: SavedViewer,
+    reactions: ReactionRecorder,
+) -> Router:
     """Build the chat router whose handler delegates every text/voice message to the assistant."""
     router = Router(name="chat")
     register_ask_handler(router)  # resolves ask_user button taps (callback_query, not a message)
     saved.register(router)  # /lists /memory /core /schedules — registered before the catch-all below
+    reactions.register(router)  # message_reaction updates — a different observer, order irrelevant
 
     @router.message()
     async def handle(message: Message, bot: Bot) -> None:
