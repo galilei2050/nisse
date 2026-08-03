@@ -93,6 +93,24 @@ async def test_owner_reaction_is_written_whole_every_kind_kept() -> None:
     }
 
 
+async def test_changing_one_of_two_reactions_keeps_both_sides_whole() -> None:
+    """A Premium account can hold up to three reactions at once, and Telegram reports the WHOLE set
+    on each side — not the one that changed. Treating either side as a delta would lose the reaction
+    that stayed put."""
+    db = _FakeDatabase()
+    await ReactionRecorder(db).record(
+        _update(
+            username=OWNER,
+            old=[types.ReactionTypeEmoji(emoji="👍"), types.ReactionTypeEmoji(emoji="❤")],
+            new=[types.ReactionTypeEmoji(emoji="👍"), types.ReactionTypeEmoji(emoji="🔥")],
+        )
+    )
+
+    (doc,) = db["reactions"].inserted
+    assert doc["previous"] == ["👍", "❤"]
+    assert doc["current"] == ["👍", "🔥"]  # 👍 survives the change, 🔥 replaces ❤
+
+
 async def test_taking_a_reaction_back_is_recorded_as_an_empty_current() -> None:
     """Telegram sends the whole new set, so a removal arrives as new_reaction: [] — not as a delete."""
     db = _FakeDatabase()
