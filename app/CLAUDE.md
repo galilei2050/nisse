@@ -55,13 +55,9 @@ app/
                     editing it) — an over-long record is cut with a note saying so, never spilled into
                     extra messages that would orphan below the restored index. Plain text, no
                     MarkdownV2 — the content is the owner's own words, shown byte-for-byte.
-    reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record,
-                    nothing interpreted. Registering the handler IS the wiring: both modes derive
-                    `allowed_updates` from the registered handlers, so Telegram only sends this
-                    update because the observer exists. Gated on the allow-list by hand —
-                    `AllowlistMiddleware` sits on `message` only, and a stranger can DM the bot and
-                    react to its refusal. (The Bot API's "bot must be an administrator" wording is a
-                    groups/channels rule; a 1:1 chat does deliver it — verified against the live bot.)
+    reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record.
+                    Registering the handler IS the wiring, and it gates on the allow-list by hand
+                    (`AllowlistMiddleware` sits on `message` only); rationale in the module docstring.
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of

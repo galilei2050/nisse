@@ -248,7 +248,7 @@ Unlike the prior-art catalogue above, these are features the **owner has asked f
 backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
 + a design doc when it's picked up.
 
-- **Use the recorded reactions** — `reactions/` now stores every tap raw (see `CLAUDE.md`); the
+- **Use the recorded reactions** — `reactions/` now stores the owner's taps raw (see `CLAUDE.md`); the
   undecided half is what they should *mean*: quality feedback on an answer, a "remember this" trigger,
   or both split by emoji.
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.

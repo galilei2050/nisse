@@ -5,8 +5,7 @@ both modes derive that list from the registered handlers (aiogram's `resolve_use
 which baski also uses to set the webhook), so registering the handler below is the whole wiring.
 
 The Bot API says reactions need the bot to be a chat administrator, which a 1:1 chat has no concept
-of — but the update does arrive there (verified against the live test bot: a ❤️ in a private chat
-produced `old_reaction: [] -> new_reaction: [❤]`). The admin rule is a groups-and-channels rule.
+of — but private chats do deliver the update; the admin rule is a groups-and-channels rule.
 """
 
 import logging
@@ -44,7 +43,10 @@ def _labels(reactions: list[ReactionTypeUnion]) -> list[str]:
 
 
 class ReactionRecorder:
-    """Writes every reaction change in this chat to Mongo. Lifecycle: long-lived (one per bot)."""
+    """Records the owner's reaction changes and drops everyone else's.
+
+    Lifecycle: long-lived (one per bot); the chat comes from each update, not from construction.
+    """
 
     def __init__(self, database: AsyncDatabase) -> None:
         """Hold the database the per-chat store is opened on, per update."""
@@ -62,18 +64,17 @@ class ReactionRecorder:
         reactor is anonymous (a channel or an anonymous group admin), which is not the owner either.
         """
         user = reaction.user
-        if user is None or not is_allowed(user.username):
+        username = user.username if user else None
+        if user is None or username is None or not is_allowed(username):
             return
+        current = _labels(reaction.new_reaction)
         store = ReactionStore(self._database, conversation_id=reaction.chat.id)
         await store.record(
             message_id=reaction.message_id,
             user_id=user.id,
-            username=user.username,
+            username=username,
             previous=_labels(reaction.old_reaction),
-            current=_labels(reaction.new_reaction),
+            current=current,
             reacted_at=reaction.date,
         )
-        logger.info(
-            "Reaction recorded",
-            extra={"messageId": reaction.message_id, "current": _labels(reaction.new_reaction)},
-        )
+        logger.info("Reaction recorded", extra={"messageId": reaction.message_id, "current": current})

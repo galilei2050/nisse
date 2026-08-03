@@ -18,14 +18,14 @@ _COLLECTION = "reactions"
 class Reaction(NisseDbModel):
     """One reaction change on one message. Lifecycle: a data record — append-only, never edited.
 
-    Scoped to `conversation_id` like every other store here. `reacted_at` is Telegram's own timestamp
-    for the tap; `created_at` (NisseDbModel) is when we wrote it down.
+    `reacted_at` is Telegram's own timestamp for the tap; `created_at` (NisseDbModel) is when we
+    wrote it down.
     """
 
     conversation_id: int
     message_id: int
     user_id: int
-    username: str | None  # Telegram accounts don't have to have one
+    username: str
     previous: list[str]
     current: list[str]  # empty => the owner removed their reaction
     reacted_at: datetime.datetime
@@ -44,7 +44,7 @@ class ReactionStore:
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
-        """Index the message a reaction belongs to — how the history is read back. Idempotent."""
+        """(conversation_id, message_id) — the key a future reader will look reactions up by. Idempotent."""
         await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("message_id", 1)])
 
     async def record(  # noqa: PLR0913 — one document's fields, minus the conversation scope the store owns
@@ -52,11 +52,11 @@ class ReactionStore:
         *,
         message_id: int,
         user_id: int,
-        username: str | None,
+        username: str,
         previous: list[str],
         current: list[str],
         reacted_at: datetime.datetime,
-    ) -> Reaction:
+    ) -> None:
         """Append one reaction change; Mongo assigns `_id`."""
         reaction = Reaction(
             conversation_id=self._conversation_id,
@@ -67,6 +67,4 @@ class ReactionStore:
             current=current,
             reacted_at=reacted_at,
         )
-        result = await self._collection.insert_one(reaction.model_dump(exclude={"id"}))
-        reaction.id = str(result.inserted_id)
-        return reaction
+        await self._collection.insert_one(reaction.model_dump(exclude={"id"}))
