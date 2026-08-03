@@ -63,8 +63,14 @@ app/
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
                     these"). One process/event loop (max_instances=1) so the tap resolves the parked turn's
                     Future in memory — no queue. The callback handler resolves it DIRECTLY, never via
-                    Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot;
-                    its factory yields nothing where there's no bot (probe). Timeout is a module constant (300s).
+                    Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot
+                    (required). At most ONE open question per chat — a second one is refused, since a typed
+                    answer is routed by chat alone. Timeout is a module constant (300s).
+                    Whether the agent CHOOSES to ask is the only thing worth measuring here, so the probe
+                    supplies a fake bot and taps through `resolve_tap` — see Manual probe, cases in
+                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `answer_pending`
+                    before starting a turn, since the parked turn holds the chat lock the new message
+                    would queue behind.
     progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
                     ordered list of segments (`_Seg`: process | text | judge) so tools, model text,
                     and judge verdicts stay interleaved in the exact order they happened — nothing
@@ -240,8 +246,8 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 `CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
 anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`) **plus the tool
 `registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`. `bot` is
-the aiogram client for the rare tool that messages the owner directly (`ask_user`); it's `None`
-off-transport (the probe CLI), where that tool's factory then yields nothing.
+the aiogram client for the rare tool that messages the owner directly (`ask_user`) — required, since
+the probe fakes one rather than going without.
 
 **Each domain registers its own tools** (ownership by domain, like routers). A domain exposes a
 factory `(deps, conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)` that
@@ -327,6 +333,11 @@ make turns U=<id>                # dump one conversation's `conversation_turns` 
 ```
 
 - **Injected context** is the ground truth for what the model saw — read it first.
+- **`=== ASKED THE OWNER ===`** counts the `ask_user` questions the agent chose to raise. The probe
+  passes a fake bot that taps the first option through `resolve_tap`, so a clarifying question doesn't
+  hang the run and multi-select takes the real toggle-then-Done path. Tuning when the agent asks vs
+  guesses means running several probes on genuine forks AND on unambiguous controls — cases in
+  `docs/ask-test-cases.md`. One run is noise.
 - **`U=` is the conversation id** (an int). Testing recall/contradiction? Use a *fresh* `U=`: in the
   same conversation the fact is still in the transcript, so the long-term path never runs.
 - The probe shows what the agent *did*; `make memories`/`make turns` show the durable *result* in Mongo.
@@ -357,7 +368,8 @@ The Mongo `traces` summary (`_id`=trace_id, `created_at`, `user_request`[:128], 
 Needs read access to GCP project `nisse2050` (the bucket name is global, but auth isn't).
 
 **Testing is part of every task — the definition of done.** Each feature has an expectation-first
-cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judge_test_cases.md`). A
+cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judge_test_cases.md`,
+`docs/ask-test-cases.md`). A
 task isn't done until you have: added scenarios covering the new behavior, run them, AND re-run the
 related existing scenarios to confirm no regression. New feature → new cases doc on the same pattern.
 

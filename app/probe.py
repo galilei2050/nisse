@@ -18,7 +18,7 @@ import asyncio
 import json
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import httpx
 from anthropic import AsyncAnthropic
@@ -30,12 +30,53 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
+from app.chat.ask import resolve_tap
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
 from app.tools.wiring import build_tool_registry
 
 if TYPE_CHECKING:
+    from aiogram import Bot
+    from aiogram.types import InlineKeyboardMarkup
     from pymongo.asynchronous.database import AsyncDatabase
+
+
+class _AutoTapQuestion:
+    """Stands in for the sent question message, which `AskUserTool` deletes however the question ends."""
+
+    async def delete(self) -> None:
+        """Off Telegram there is nothing to take back."""
+
+
+class _AutoTapBot:
+    """Stands in for the Bot so `ask_user` runs in the probe, answering as the owner would.
+
+    `CoreDeps` requires a transport, and measuring whether the agent CHOOSES to ask is the whole
+    point of running it here. The real `AskUserTool` runs (its real schema and description reach the
+    model); only the transport is faked, and every button goes through `resolve_tap`, so a
+    multi-select question takes the same toggle-then-Done path Telegram would drive.
+    """
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    async def send_message(
+        self,
+        *,
+        chat_id: int,  # noqa: ARG002 — matches Bot.send_message, which the tool calls by keyword
+        text: str,
+        reply_markup: "InlineKeyboardMarkup",
+    ) -> _AutoTapQuestion:
+        """Walk the keyboard until a button settles the question — options first, then Done / None.
+
+        Layout-agnostic on purpose: whatever `_keyboard` builds, the last row always ends a question.
+        Which option a probe "chooses" doesn't matter — the count of questions asked is the measurement.
+        """
+        self.asked.append(text)
+        buttons = [button for row in reply_markup.inline_keyboard for button in row]
+        if not any(resolve_tap(str(button.callback_data)) for button in buttons):
+            raise RuntimeError("probe tapped every button and the question stayed open")  # a harness bug
+        return _AutoTapQuestion()
 
 
 def _render_content(content: object) -> str:
@@ -92,6 +133,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         http = await resources.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)))
         playwright = await resources.enter_async_context(PlaywrightClient(headless=True))
         database: AsyncDatabase = AsyncMongoClient(str(get_env("MONGODB_URI")), tz_aware=True).get_default_database()
+        auto_tap = _AutoTapBot()
         deps = CoreDeps(
             http=http,
             anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0),
@@ -104,6 +146,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             tools=build_tool_registry(),
             local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
             await_trace=True,
+            bot=cast("Bot", auto_tap),  # transport stand-in: only send_message is ever called on it
         )
         assistant = Assistant(deps=deps)
         await assistant.setup()
@@ -113,6 +156,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
     trace_path = traces_dir / f"{result.trace_id}.json"
     trace = TraceRecord.model_validate_json(trace_path.read_text())
     _print_trace(trace)
+    print(f"\n=== ASKED THE OWNER === {len(auto_tap.asked)}")  # the questions themselves are in TOOL CALLS
     print(f"\n=== TRACE FILE ===\n{trace_path}  (analyse: summarize.py / show_text.py)")
 
 

@@ -35,9 +35,7 @@ class CoreDeps:
     schedule_endpoint: str
     judge: Judge  # cross-family completeness judge; the agent runs it at the loop's exit and retries
     tools: "ToolRegistry"  # the process-wide name→factory tool catalog (app/tools)
-    # The Telegram client for tools that talk to the owner directly (ask_user). None off-transport
-    # (the probe CLI), where the ask_user factory then yields nothing.
-    bot: Bot | None = None
+    bot: Bot  # transport for tools that talk to the owner directly (ask_user); the probe fakes one
     # Trace sink for main agent + every sub-agent; probe sets both to read the whole chain locally.
     local_traces_dir: str | None = None  # None → GCS
     await_trace: bool = False

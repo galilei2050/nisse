@@ -20,5 +20,5 @@ def build_tool_registry() -> ToolRegistry:
     scheduling.register_tools(registry)
     prompts.register_tools(registry)
     subagents.register_tools(registry)  # the researcher-only hypothesis tree
-    ask.register_tools(registry)  # the clarifying-question tool (Telegram transport, off in probe)
+    ask.register_tools(registry)  # the clarifying-question tool (needs `deps.bot`)
     return registry
