@@ -1,6 +1,15 @@
-# Load .env when present (local dev). Absent in CI — guard so make doesn't hard-fail.
-ifneq (,$(wildcard ./.env))
-    include .env
+# git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its hooks, and they OVERRIDE both `-C` and
+# repo discovery — so a `git` call from inside pre-commit reads whatever repo the hook fired for.
+GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+
+# The main checkout, identical from every git worktree (`.claude/worktrees/<x>/`): the git dir is
+# shared, so anchoring on it is what makes `make` work from a worktree at all. Empty outside a repo.
+NISSE_ROOT := $(shell $(GIT_CLEAN_ENV) git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..
+
+# Load .env when present (local dev). It's git-ignored, so it exists ONLY in the main checkout —
+# read it from there, or every target run from a worktree loses the secrets. Absent in CI: guarded.
+ifneq (,$(wildcard $(NISSE_ROOT)/.env))
+    include $(NISSE_ROOT)/.env
     export
 endif
 
@@ -151,16 +160,9 @@ test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
 # full ci + a real-bot smoke boot on push.
-# Two things break a plain `git -C ../baski` inside the pre-commit hook, and both only bite from a
-# git worktree (`.claude/worktrees/<x>/`), where committing is otherwise impossible:
-#   - `../baski` is relative to the CWD, which there is the worktree — a directory that doesn't exist.
-#     Anchor on the shared git dir instead (identical for the main checkout and every worktree), so
-#     baski is found as the sibling of the repo it actually is one of.
-#   - git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its hooks and they OVERRIDE `-C`, so the
-#     query reads nisse's git dir and staged index — reporting nisse's branch and nisse's staged files
-#     as baski's. Clear them, including for the path lookup itself.
-GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
-BASKI_DIR ?= $(shell $(GIT_CLEAN_ENV) git rev-parse --path-format=absolute --git-common-dir)/../../baski
+# baski is nisse's sibling. Resolve it through NISSE_ROOT, not a CWD-relative `../baski`, which from
+# a worktree points at `.claude/worktrees/baski` — a directory that doesn't exist.
+BASKI_DIR ?= $(NISSE_ROOT)/../baski
 BASKI_GIT := $(GIT_CLEAN_ENV) git -C $(BASKI_DIR)
 
 .PHONY: check-baski
