@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from aiogram import Bot, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from baski.agents.tool import Tool
@@ -28,23 +29,33 @@ from app.tools.registry import ToolRegistrar
 
 logger = logging.getLogger(__name__)
 
-_ANSWER_TIMEOUT = 300.0  # seconds to wait for a tap — well under the 1800s worker deadline
+_ANSWER_TIMEOUT = 300.0  # seconds to wait for an answer — well under the 1800s worker deadline
 _CONFIRM_LABEL = "✅ Done"
 _NONE_LABEL = "None of these"
 _NONE_ANSWER = "The user indicated none of the options fit."
 _TIMEOUT_ANSWER = "The user did not answer. Do NOT invent a value for them — say what you still need."
+_ALREADY_ASKING = "A question of yours is still unanswered — wait for it before asking another."
+
+
+class _Action(StrEnum):
+    """What a button does when tapped, packed into its callback payload."""
+
+    PICK = "pick"  # single choice: this option IS the answer
+    TOGGLE = "toggle"  # multi: flip this option, keep waiting
+    CONFIRM = "confirm"  # multi: answer with everything picked so far
+    NONE = "none"  # none of the options fit
 
 
 class AskCallback(CallbackData, prefix="ask"):
     """Button payload for one ask_user keyboard: which question, which action, which option."""
 
     token: str  # keys the pending question (its Future lives under this token)
-    action: str  # "pick" | "toggle" | "confirm" | "none"
+    action: _Action
     idx: int  # option index for pick/toggle; -1 for confirm/none
 
 
 class _Tap(StrEnum):
-    """What one tap did to its question — the handler renders each outcome differently."""
+    """What one tap did to its question — Telegram renders it, the probe only checks for ANSWERED."""
 
     ANSWERED = "answered"  # the parked agent turn now has its answer
     TOGGLED = "toggled"  # multi: selection flipped, still waiting for Done
@@ -62,7 +73,8 @@ class _Pending:
     selected: set[int] = field(default_factory=set)
 
 
-# token -> in-flight question. One per chat at a time (the per-chat lock serializes agent turns).
+# token -> in-flight question. At most one per chat, enforced by `execute` — `answer_pending` routes a
+# typed answer by chat alone, so a second open question in the same chat would make it a coin flip.
 _pending: dict[str, _Pending] = {}
 
 
@@ -71,14 +83,13 @@ def _keyboard(token: str, options: list[str], selected: set[int], *, multi: bool
     rows: list[list[InlineKeyboardButton]] = []
     for idx, label in enumerate(options):
         mark = ("✅ " if idx in selected else "☐ ") if multi else ""
-        action = "toggle" if multi else "pick"
+        action = _Action.TOGGLE if multi else _Action.PICK
         data = AskCallback(token=token, action=action, idx=idx).pack()
         rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=data)])
-    tail = [
-        InlineKeyboardButton(text=_NONE_LABEL, callback_data=AskCallback(token=token, action="none", idx=-1).pack())
-    ]
+    none = AskCallback(token=token, action=_Action.NONE, idx=-1).pack()
+    tail = [InlineKeyboardButton(text=_NONE_LABEL, callback_data=none)]
     if multi:
-        confirm = AskCallback(token=token, action="confirm", idx=-1).pack()
+        confirm = AskCallback(token=token, action=_Action.CONFIRM, idx=-1).pack()
         tail.insert(0, InlineKeyboardButton(text=_CONFIRM_LABEL, callback_data=confirm))
     rows.append(tail)
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -118,13 +129,19 @@ class AskUserTool(Tool):
         self._chat_id = chat_id
 
     async def execute(self, *, question: str, options: list[str], multi: bool = False) -> str:
-        """Send the question, park on its Future until the owner taps, return their choice."""
+        """Send the question, park on its Future until the owner taps or types an answer, return it."""
+        if any(p.chat_id == self._chat_id for p in _pending.values()):
+            return _ALREADY_ASKING  # the model may emit two ask_user calls in one turn; baski runs them together
         token = secrets.token_hex(4)
         pending = _Pending(future=asyncio.get_running_loop().create_future(), options=options, chat_id=self._chat_id)
-        _pending[token] = pending
-        message = await self._bot.send_message(
-            chat_id=self._chat_id, text=question, reply_markup=_keyboard(token, options, set(), multi=multi)
-        )
+        _pending[token] = pending  # before the send, so nothing may await between the check above and here
+        try:
+            message = await self._bot.send_message(
+                chat_id=self._chat_id, text=question, reply_markup=_keyboard(token, options, set(), multi=multi)
+            )
+        except Exception:
+            del _pending[token]  # the question never reached the owner; an orphan would eat their next message
+            raise
         logger.info("Asked user to clarify", extra={"options": len(options), "multi": multi})
         try:
             return await asyncio.wait_for(pending.future, timeout=_ANSWER_TIMEOUT)
@@ -133,7 +150,19 @@ class AskUserTool(Tool):
             return _TIMEOUT_ANSWER
         finally:
             _pending.pop(token)
-            await message.delete()  # the keyboard is spent either way — answered, typed over, or expired
+            await _discard(message)
+
+
+async def _discard(message: Message) -> None:
+    """Take the spent keyboard off the screen — however the question ended.
+
+    Runs on the answered path too, inside the agent turn's own `finally`: a refused deleteMessage
+    must not be allowed to escape and turn an answered question into a failed turn.
+    """
+    try:
+        await message.delete()
+    except TelegramAPIError as exc:
+        logger.warning("ask_user could not delete its question", extra={"error": str(exc)})
 
 
 def _apply_tap(data: AskCallback) -> _Tap:
@@ -145,10 +174,10 @@ def _apply_tap(data: AskCallback) -> _Tap:
     pending = _pending.get(data.token)
     if pending is None or pending.future.done():
         return _Tap.STALE
-    if data.action == "toggle":
+    if data.action is _Action.TOGGLE:
         pending.selected ^= {data.idx}
         return _Tap.TOGGLED
-    if data.action == "confirm" and not pending.selected:
+    if data.action is _Action.CONFIRM and not pending.selected:
         return _Tap.EMPTY
     pending.future.set_result(_resolve_answer(data, pending))
     return _Tap.ANSWERED
@@ -167,7 +196,8 @@ def answer_pending(*, chat_id: int, text: str) -> bool:
     """Deliver a TYPED reply to that chat's live question; True if one was waiting for it.
 
     The owner answers "в 9 утра" as often as they tap. Without this the message queues behind the
-    parked turn's per-chat lock, the question expires, and the agent is left with no answer at all.
+    parked turn's per-chat lock and the question expires, handing the agent the timeout string
+    instead of the answer the owner had already given it.
     """
     for pending in _pending.values():
         if pending.chat_id == chat_id and not pending.future.done():
@@ -184,8 +214,9 @@ async def _handle_callback(query: CallbackQuery, callback_data: AskCallback) -> 
         await query.answer("Pick at least one option, or tap “None of these”.")
         return
     await query.answer()
-    if outcome is _Tap.TOGGLED and isinstance(query.message, Message):
-        pending = _pending[callback_data.token]
+    # Re-read AFTER that round trip: the question may have expired while it was in flight.
+    pending = _pending.get(callback_data.token)
+    if outcome is _Tap.TOGGLED and pending is not None and isinstance(query.message, Message):
         markup = _keyboard(callback_data.token, pending.options, pending.selected, multi=True)
         await query.message.edit_reply_markup(reply_markup=markup)
 
@@ -210,7 +241,6 @@ def register_ask_handler(router: Router) -> None:
 
 
 def _ask_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
-    """The ask_user tool, bound to this chat."""
     return [AskUserTool(bot=deps.bot, chat_id=conversation_id)]
 
 

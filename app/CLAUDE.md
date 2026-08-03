@@ -63,8 +63,9 @@ app/
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
                     these"). One process/event loop (max_instances=1) so the tap resolves the parked turn's
                     Future in memory — no queue. The callback handler resolves it DIRECTLY, never via
-                    Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot;
-                    its factory yields nothing without one. Timeout is a module constant (300s).
+                    Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot
+                    (required). At most ONE open question per chat — a second one is refused, since a typed
+                    answer is routed by chat alone. Timeout is a module constant (300s).
                     Whether the agent CHOOSES to ask is the only thing worth measuring here, so the probe
                     supplies a fake bot and taps through `resolve_tap` — see Manual probe, cases in
                     `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `answer_pending`
@@ -367,7 +368,8 @@ The Mongo `traces` summary (`_id`=trace_id, `created_at`, `user_request`[:128], 
 Needs read access to GCP project `nisse2050` (the bucket name is global, but auth isn't).
 
 **Testing is part of every task — the definition of done.** Each feature has an expectation-first
-cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judge_test_cases.md`). A
+cases doc (`docs/memory-test-cases.md`, `docs/history-test-cases.md`, `docs/judge_test_cases.md`,
+`docs/ask-test-cases.md`). A
 task isn't done until you have: added scenarios covering the new behavior, run them, AND re-run the
 related existing scenarios to confirm no regression. New feature → new cases doc on the same pattern.
 

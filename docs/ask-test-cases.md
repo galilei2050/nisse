@@ -59,5 +59,5 @@ and a question parked in the reply text where it reaches him only after the work
 
 How an answer gets back once asked — a tap, a typed reply, "None of these", a timeout — is pinned by
 `tests/backend/test_ask.py`, which drives the real keyboard payloads through the real state machine.
-The probe's fake transport always taps the first option, so it measures the DECISION to ask, never
-the answer path.
+The probe's fake transport walks the keyboard until a button settles the question, so it measures the
+DECISION to ask, never the answer path.

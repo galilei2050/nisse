@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 
 class _AutoTapQuestion:
-    """Stands in for the sent question message, which `AskUserTool` deletes once it is answered."""
+    """Stands in for the sent question message, which `AskUserTool` deletes however the question ends."""
 
     async def delete(self) -> None:
         """Off Telegram there is nothing to take back."""
@@ -51,15 +51,13 @@ class _AutoTapQuestion:
 class _AutoTapBot:
     """Stands in for the Bot so `ask_user` runs in the probe, answering as the owner would.
 
-    Without a bot the tool's factory yields nothing, so a probe could not see whether the agent
-    CHOOSES to ask — the one thing worth measuring about a clarifying-question tool. The real
-    `AskUserTool` runs here (its real schema and description reach the model); only the transport is
-    faked, and the buttons go through `resolve_tap`, so a multi-select question takes the same
-    toggle-then-Done path Telegram would drive and yields the same answer string.
+    `CoreDeps` requires a transport, and measuring whether the agent CHOOSES to ask is the whole
+    point of running it here. The real `AskUserTool` runs (its real schema and description reach the
+    model); only the transport is faked, and every button goes through `resolve_tap`, so a
+    multi-select question takes the same toggle-then-Done path Telegram would drive.
     """
 
     def __init__(self) -> None:
-        """Start with no questions recorded."""
         self.asked: list[str] = []
 
     async def send_message(
@@ -69,13 +67,15 @@ class _AutoTapBot:
         text: str,
         reply_markup: "InlineKeyboardMarkup",
     ) -> _AutoTapQuestion:
-        """Tap the first option, then the tail row — "None of these" always ends the question."""
+        """Walk the keyboard until a button settles the question — options first, then Done / None.
+
+        Layout-agnostic on purpose: whatever `_keyboard` builds, the last row always ends a question.
+        Which option a probe "chooses" doesn't matter — the count of questions asked is the measurement.
+        """
         self.asked.append(text)
-        rows = reply_markup.inline_keyboard
-        for button in (rows[0][0], *rows[-1]):
-            assert button.callback_data is not None  # noqa: S101 — every button here is one we built
-            if resolve_tap(button.callback_data):
-                break
+        buttons = [button for row in reply_markup.inline_keyboard for button in row]
+        if not any(resolve_tap(str(button.callback_data)) for button in buttons):
+            raise RuntimeError("probe tapped every button and the question stayed open")  # a harness bug
         return _AutoTapQuestion()
 
 

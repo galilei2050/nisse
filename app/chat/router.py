@@ -69,8 +69,11 @@ def build_router(  # noqa: PLR0913 — one collaborator per surface the chat rou
         resolved = await _resolve_message(message, bot, transcriber)
         if resolved is None:  # unsupported or empty — already answered by _resolve_message
             return
-        if answer_pending(chat_id=message.chat.id, text=resolved.text):
-            return  # answers an ask_user question the owner typed over instead of tapping
+        # Only plain text can BE an answer — a photo's caption is a prompt for the image beside it,
+        # and consuming it here would drop the image and hand the question an empty answer.
+        answerable = resolved.media is None and bool(resolved.text.strip())
+        if answerable and answer_pending(chat_id=message.chat.id, text=resolved.text):
+            return  # the text WAS the answer; a new turn would queue behind the parked turn's chat lock
         await _run_turn(message, bot, assistant, speaker, resolved)
 
     return router
