@@ -79,17 +79,18 @@ def _selected_answer(options: list[str], selected: set[int]) -> str:
 class AskUserTool(Tool):
     """Ask the owner a clarifying question with tappable options; block until they answer.
 
-    Lifecycle: per-conversation (built with the chat's bot + chat_id). Only built where a Telegram
-    transport exists — the probe CLI has no bot, so the factory yields nothing there.
+    Lifecycle: per-conversation (built with the chat's bot + chat_id). Only built where a transport
+    exists; the probe supplies a fake one that taps the first option, so probes exercise this tool.
     """
 
     name = "ask_user"
     one_line = "Ask the owner a short multiple-choice question and wait for their tap"
     description = (
-        "Ask the owner ONE clarifying question when a single missing fact would change your answer "
-        "(e.g. their tax status before a tax answer). Shows tappable options and returns their choice. "
-        "Use only for a genuine fork you cannot resolve from context — not to offload a decision you "
-        "should make. Prefer answering with a stated assumption when the question is minor."
+        "Ask the owner ONE question only they can answer — a budget, a taste, a date or time they "
+        "never gave, which of several targets they mean — when guessing it would change the answer. "
+        "Shows tappable options and returns their choice. Call it BEFORE doing the work, never after; "
+        "a question left in your reply text instead of here is a failure. Not for permission to act, "
+        "and not for anything you could look up yourself."
     )
 
     class Input(BaseModel):
@@ -121,6 +122,17 @@ class AskUserTool(Tool):
             return _TIMEOUT_ANSWER
         finally:
             _pending.pop(token, None)
+
+
+def resolve_pending(token: str, answer: str) -> None:
+    """Deliver *answer* to the turn parked on *token*, without going through a Telegram tap.
+
+    The seam the probe's fake transport uses so `ask_user` can be exercised off Telegram; a token
+    whose question already timed out is simply gone.
+    """
+    pending = _pending.get(token)
+    if pending is not None and not pending.future.done():
+        pending.future.set_result(answer)
 
 
 async def _handle_callback(query: CallbackQuery, callback_data: AskCallback) -> None:
@@ -173,7 +185,7 @@ def register_ask_handler(router: Router) -> None:
 
 
 def _ask_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
-    """The ask_user tool, bound to this chat — only where a Telegram bot exists (not the probe CLI)."""
+    """The ask_user tool, bound to this chat — only where `deps.bot` carries a transport to ask over."""
     if deps.bot is None:
         return []
     return [AskUserTool(bot=deps.bot, chat_id=conversation_id)]
