@@ -22,8 +22,7 @@ Concepts, rationale, and source pointers live in `IDEAS.md` — this file is pro
 
 ```
 app/
-  backend.py        NisseBot(TelegramServer): wiring only — routers() + middlewares(); publishes the
-                    command menu on startup (`set_my_commands(BOT_COMMANDS)` from chat/saved.py)
+  backend.py        NisseBot(TelegramServer): wiring only — routers() + middlewares()
   access.py         AllowlistMiddleware — owner-only gate (outer middleware)
 
   shared/           cross-domain code — no domain logic of its own
@@ -40,16 +39,21 @@ app/
                     and the saved.py viewer commands — both BEFORE the catch-all, which would
                     otherwise swallow a command into an agent turn (aiogram tries handlers in order).
     saved.py        READ-ONLY VIEWER over what the agent saved: `/lists` · `/memory` · `/core` ·
-                    `/schedules`, published via `set_my_commands` (BOT_COMMANDS) so `/` autocomplete
-                    and the menu button list them. Reads the four stores directly — no model call, no
-                    tokens, verbatim content (the agent's own summary is what the owner couldn't
-                    audit). Per Telegram's guidance: one specific command per store rather than
-                    `/show <what>`, and drill-down EDITS the message in place instead of sending a new
-                    one. The two unbounded stores (lists, memories) render as a tapable index —
-                    8 entries/page, tap opens the entry + ⬅️ Назад, ‹ › page — while core memory and
-                    the schedule list just print. Buttons carry the entry's POSITION (a name/title
-                    would blow the 64-byte callback payload); the store is re-read on every tap, so an
-                    index that no longer exists falls back to the fresh list. Plain text, no
+                    `/schedules` · `/help`. Owns the command names (`SavedCommand`), the menu it
+                    publishes itself on router startup (`set_my_commands`, retried then degraded to a
+                    warning — a cosmetic menu must never abort boot), and the handlers — so the
+                    published menu and the handled commands can't drift. Reads the four stores
+                    directly: no model call, no tokens, verbatim content (the agent's own summary is
+                    what the owner couldn't audit). Per Telegram's guidance: one specific command per
+                    store rather than `/show <what>`, and drill-down EDITS the message in place
+                    instead of sending a new one. The two unbounded stores (lists, memories) render as
+                    a tapable index — 8 entries/page, tap opens the entry + ⬅️ Назад, ‹ › page — while
+                    core memory, the schedule list and `/help` just print. Buttons carry the entry's
+                    POSITION (a name/title would blow the 64-byte callback payload); the store is
+                    re-read on every tap, so a position that no longer exists falls back to the fresh
+                    index. An opened entry stays in ONE message (so ⬅️ Назад can restore the index by
+                    editing it) — an over-long record is cut with a note saying so, never spilled into
+                    extra messages that would orphan below the restored index. Plain text, no
                     MarkdownV2 — the content is the owner's own words, shown byte-for-byte.
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future

@@ -71,7 +71,8 @@ class ScheduledTask(NisseDbModel):
 class ScheduleStore:
     """Conversation-scoped CRUD over `scheduled_tasks`, for the agent's tools.
 
-    Lifecycle: per-conversation — built in `_build_scheduling_tools` and held by that chat's tools.
+    Lifecycle: per-conversation — built in `_build_scheduling_tools` and held by that chat's tools,
+    and built per request by `chat/saved.py` (the read-only `/schedules` viewer).
     (The fire path uses the module-level `claim`/`reschedule`/`mark_done`, which have only a task id.)
     """
 
@@ -106,9 +107,15 @@ class ScheduleStore:
         return task
 
     async def list(self) -> list[ScheduledTask]:
-        """Live, still-armed tasks in this conversation — the index injected each turn."""
+        """Live, still-armed tasks in this conversation, soonest occurrence first — the index injected each turn.
+
+        The order is the query's, not each caller's: the agent (its injected schedule list) and the
+        owner (`/schedules`) must not read the same tasks in two different orders, and Mongo's
+        natural order is arbitrary.
+        """
         query = {"conversation_id": self._conversation_id, "status": ScheduleStatus.PENDING, "deleted_at": None}
-        return [ScheduledTask.model_validate(doc) async for doc in self._collection.find(query)]
+        cursor = self._collection.find(query).sort("fire_at", 1)
+        return [ScheduledTask.model_validate(doc) async for doc in cursor]
 
     async def cancel(self, public_id: str) -> bool:
         """Soft-delete a task in this conversation; True if a live one was found.

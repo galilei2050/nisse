@@ -151,10 +151,17 @@ test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
 # full ci + a real-bot smoke boot on push.
-# Git exports GIT_DIR and GIT_INDEX_FILE to its hooks, and they override `-C` — so a plain
-# `git -C ../baski` inside the pre-commit hook inspects nisse's git dir and index instead of baski's,
-# reporting nisse's branch and nisse's staged files against a clean baski. Clear them per query.
-BASKI_GIT := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C ../baski
+# Two things break a plain `git -C ../baski` inside the pre-commit hook, and both only bite from a
+# git worktree (`.claude/worktrees/<x>/`), where committing is otherwise impossible:
+#   - `../baski` is relative to the CWD, which there is the worktree — a directory that doesn't exist.
+#     Anchor on the shared git dir instead (identical for the main checkout and every worktree), so
+#     baski is found as the sibling of the repo it actually is one of.
+#   - git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its hooks and they OVERRIDE `-C`, so the
+#     query reads nisse's git dir and staged index — reporting nisse's branch and nisse's staged files
+#     as baski's. Clear them, including for the path lookup itself.
+GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+BASKI_DIR ?= $(shell $(GIT_CLEAN_ENV) git rev-parse --path-format=absolute --git-common-dir)/../../baski
+BASKI_GIT := $(GIT_CLEAN_ENV) git -C $(BASKI_DIR)
 
 .PHONY: check-baski
 check-baski:

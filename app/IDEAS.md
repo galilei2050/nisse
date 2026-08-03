@@ -251,9 +251,9 @@ backlog. Not yet designed or decided; captured here so the ask isn't lost. Promo
 - **Remember reactions** — capture Telegram emoji reactions on messages as a signal (feedback / fact
   to store).
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
-- **Commands to view lists & notes** — Telegram bot commands to show current `lists/` (shopping / todo
-  / watchlist) and `memory/` notes on demand. _cf._ central command registry → auto-derived BotCommand
-  menu (Adding-tools section).
+- **Central command registry → auto-derived BotCommand menu** — `chat/saved.py` ships the viewer
+  commands and publishes its own menu from one `SavedCommand`/`BOT_COMMANDS` pair; the open half is a
+  registry every future command module registers into, instead of one list per module.
 - **Knowledge-consolidation bot** — an agent that consolidates and updates stored knowledge. This is
   the nightly **curator** (see "Self-improvement (curator)" above + `curator/` in `CLAUDE.md`) — track
   the ask against that design.
