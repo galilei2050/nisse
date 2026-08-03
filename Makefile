@@ -151,12 +151,17 @@ test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
 # full ci + a real-bot smoke boot on push.
+# Git exports GIT_DIR and GIT_INDEX_FILE to its hooks, and they override `-C` — so a plain
+# `git -C ../baski` inside the pre-commit hook inspects nisse's git dir and index instead of baski's,
+# reporting nisse's branch and nisse's staged files against a clean baski. Clear them per query.
+BASKI_GIT := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C ../baski
+
 .PHONY: check-baski
 check-baski:
-	@git -C ../baski fetch -q origin main
-	@test "$$(git -C ../baski rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
-	@git -C ../baski diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
-	@test "$$(git -C ../baski rev-parse HEAD)" = "$$(git -C ../baski rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
+	@$(BASKI_GIT) fetch -q origin main
+	@test "$$($(BASKI_GIT) rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
+	@$(BASKI_GIT) diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
+	@test "$$($(BASKI_GIT) rev-parse HEAD)" = "$$($(BASKI_GIT) rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
 
 .PHONY: pre-commit
 pre-commit: check-baski lint-fix

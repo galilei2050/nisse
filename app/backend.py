@@ -26,6 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory
+from app.chat.saved import BOT_COMMANDS, SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.lists import ListStore
@@ -40,7 +41,12 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(assistant=self.assistant, transcriber=self._transcriber, speaker=self._speaker)
+        router = chat.build_router(
+            assistant=self.assistant,
+            transcriber=self._transcriber,
+            speaker=self._speaker,
+            saved=SavedViewer(self._database),
+        )
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
         return [router]
@@ -152,7 +158,8 @@ class NisseBot(TelegramServer):
         return AsyncExitStack()
 
     async def _on_startup(self) -> None:
-        """Open the HTTP client and headless browser, and ensure memory + schedule indexes."""
+        """Open the HTTP client and headless browser, publish the command menu, ensure indexes."""
+        await self.bot.set_my_commands(BOT_COMMANDS)  # fills `/` autocomplete + the chat's menu button
         await self._resources.enter_async_context(self._database.client)
         await self._resources.enter_async_context(self._http)
         await self._resources.enter_async_context(self._playwright)
