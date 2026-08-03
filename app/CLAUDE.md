@@ -66,7 +66,10 @@ app/
                     Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot;
                     its factory yields nothing without one. Timeout is a module constant (300s).
                     Whether the agent CHOOSES to ask is the only thing worth measuring here, so the probe
-                    supplies a fake bot and `resolve_pending` lets it answer off Telegram — see Manual probe.
+                    supplies a fake bot and taps through `resolve_tap` — see Manual probe, cases in
+                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `answer_pending`
+                    before starting a turn, since the parked turn holds the chat lock the new message
+                    would queue behind.
     progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
                     ordered list of segments (`_Seg`: process | text | judge) so tools, model text,
                     and judge verdicts stay interleaved in the exact order they happened — nothing
@@ -242,8 +245,8 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 `CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
 anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`) **plus the tool
 `registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`. `bot` is
-the aiogram client for the rare tool that messages the owner directly (`ask_user`); where it is
-`None` that tool's factory yields nothing.
+the aiogram client for the rare tool that messages the owner directly (`ask_user`) — required, since
+the probe fakes one rather than going without.
 
 **Each domain registers its own tools** (ownership by domain, like routers). A domain exposes a
 factory `(deps, conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)` that
@@ -330,9 +333,10 @@ make turns U=<id>                # dump one conversation's `conversation_turns` 
 
 - **Injected context** is the ground truth for what the model saw — read it first.
 - **`=== ASKED THE OWNER ===`** counts the `ask_user` questions the agent chose to raise. The probe
-  passes a fake bot that records each one and answers it with its first option (`resolve_pending`),
-  so a clarifying question doesn't hang the run. Tuning when the agent asks vs guesses means running
-  several probes on genuine forks and comparing this count — one run is noise.
+  passes a fake bot that taps the first option through `resolve_tap`, so a clarifying question doesn't
+  hang the run and multi-select takes the real toggle-then-Done path. Tuning when the agent asks vs
+  guesses means running several probes on genuine forks AND on unambiguous controls — cases in
+  `docs/ask-test-cases.md`. One run is noise.
 - **`U=` is the conversation id** (an int). Testing recall/contradiction? Use a *fresh* `U=`: in the
   same conversation the fact is still in the transcript, so the long-term path never runs.
 - The probe shows what the agent *did*; `make memories`/`make turns` show the durable *result* in Mongo.

@@ -30,36 +30,53 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
-from app.chat.ask import AskCallback, resolve_pending
+from app.chat.ask import resolve_tap
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
 from app.tools.wiring import build_tool_registry
 
 if TYPE_CHECKING:
     from aiogram import Bot
+    from aiogram.types import InlineKeyboardMarkup
     from pymongo.asynchronous.database import AsyncDatabase
 
 
-class _AutoTapBot:
-    """Stands in for the Bot so `ask_user` exists in the probe, and taps its first option.
+class _AutoTapQuestion:
+    """Stands in for the sent question message, which `AskUserTool` deletes once it is answered."""
 
-    Without a bot the tool's factory yields nothing, so the probe could not see whether the agent
+    async def delete(self) -> None:
+        """Off Telegram there is nothing to take back."""
+
+
+class _AutoTapBot:
+    """Stands in for the Bot so `ask_user` runs in the probe, answering as the owner would.
+
+    Without a bot the tool's factory yields nothing, so a probe could not see whether the agent
     CHOOSES to ask — the one thing worth measuring about a clarifying-question tool. The real
     `AskUserTool` runs here (its real schema and description reach the model); only the transport is
-    faked: sending the question immediately resolves it with the first option, as a tap would.
+    faked, and the buttons go through `resolve_tap`, so a multi-select question takes the same
+    toggle-then-Done path Telegram would drive and yields the same answer string.
     """
 
     def __init__(self) -> None:
-        """Start with no questions recorded; the probe prints them after the run."""
+        """Start with no questions recorded."""
         self.asked: list[str] = []
 
-    async def send_message(self, *, chat_id: int, text: str, reply_markup: object) -> object:  # noqa: ARG002 — Bot's signature
-        """Record the question and answer it with the first option, without a round trip."""
+    async def send_message(
+        self,
+        *,
+        chat_id: int,  # noqa: ARG002 — matches Bot.send_message, which the tool calls by keyword
+        text: str,
+        reply_markup: "InlineKeyboardMarkup",
+    ) -> _AutoTapQuestion:
+        """Tap the first option, then the tail row — "None of these" always ends the question."""
         self.asked.append(text)
-        first = reply_markup.inline_keyboard[0][0]  # type: ignore[attr-defined]  # our own keyboard
-        callback = AskCallback.unpack(first.callback_data)
-        resolve_pending(callback.token, f"The user selected: {first.text}")
-        return object()
+        rows = reply_markup.inline_keyboard
+        for button in (rows[0][0], *rows[-1]):
+            assert button.callback_data is not None  # noqa: S101 — every button here is one we built
+            if resolve_tap(button.callback_data):
+                break
+        return _AutoTapQuestion()
 
 
 def _render_content(content: object) -> str:
@@ -139,10 +156,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
     trace_path = traces_dir / f"{result.trace_id}.json"
     trace = TraceRecord.model_validate_json(trace_path.read_text())
     _print_trace(trace)
-    asked = auto_tap.asked
-    print(f"\n=== ASKED THE OWNER === {len(asked)}")
-    for question in asked:
-        print(f"  {question}")
+    print(f"\n=== ASKED THE OWNER === {len(auto_tap.asked)}")  # the questions themselves are in TOOL CALLS
     print(f"\n=== TRACE FILE ===\n{trace_path}  (analyse: summarize.py / show_text.py)")
 
 

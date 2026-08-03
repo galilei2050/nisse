@@ -10,7 +10,7 @@ from aiogram.enums import ChatAction
 from aiogram.types import Audio, BufferedInputFile, Document, Message, PhotoSize, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
-from app.chat.ask import register_ask_handler
+from app.chat.ask import answer_pending, register_ask_handler
 from app.chat.progress import TelegramProgress
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
@@ -69,30 +69,39 @@ def build_router(  # noqa: PLR0913 — one collaborator per surface the chat rou
         resolved = await _resolve_message(message, bot, transcriber)
         if resolved is None:  # unsupported or empty — already answered by _resolve_message
             return
-        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
-        progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
-        try:
-            result = await assistant.reply(
-                conversation_id=message.chat.id, text=resolved.text, media=resolved.media, on_event=progress
-            )
-            await progress.finish(result)
-            if message.voice and result.response:  # voice in → voice out, alongside the text reply above
-                await _voice_reply(message, bot, speaker, result.response)
-        except AgentRefusalError:
-            await progress.finish_text(_REFUSAL_REPLY)
-        except AgentProviderUnavailableError:
-            await progress.finish_text(_API_DOWN_REPLY)
-        except AgentBillingError:
-            await progress.finish_text(_BILLING_REPLY)
-        except Exception:
-            await progress.finish_text(_ERROR_REPLY)
-            raise
-        finally:
-            # History writes were fired during the reply; await them now the answer is delivered (on
-            # every path), so Mongo latency never blocked the user but no completed turn is lost.
-            await assistant.flush(conversation_id=message.chat.id)
+        if answer_pending(chat_id=message.chat.id, text=resolved.text):
+            return  # answers an ask_user question the owner typed over instead of tapping
+        await _run_turn(message, bot, assistant, speaker, resolved)
 
     return router
+
+
+async def _run_turn(  # noqa: PLR0913 — the handler's collaborators, passed straight through
+    message: Message, bot: Bot, assistant: "Assistant", speaker: Speaker, resolved: _Resolved
+) -> None:
+    """Drive one agent turn behind a live progress message, rendering every failure the agent can raise."""
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+    progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
+    try:
+        result = await assistant.reply(
+            conversation_id=message.chat.id, text=resolved.text, media=resolved.media, on_event=progress
+        )
+        await progress.finish(result)
+        if message.voice and result.response:  # voice in → voice out, alongside the text reply above
+            await _voice_reply(message, bot, speaker, result.response)
+    except AgentRefusalError:
+        await progress.finish_text(_REFUSAL_REPLY)
+    except AgentProviderUnavailableError:
+        await progress.finish_text(_API_DOWN_REPLY)
+    except AgentBillingError:
+        await progress.finish_text(_BILLING_REPLY)
+    except Exception:
+        await progress.finish_text(_ERROR_REPLY)
+        raise
+    finally:
+        # History writes were fired during the reply; await them now the answer is delivered (on
+        # every path), so Mongo latency never blocked the user but no completed turn is lost.
+        await assistant.flush(conversation_id=message.chat.id)
 
 
 async def _resolve_message(message: Message, bot: Bot, transcriber: Transcriber) -> _Resolved | None:

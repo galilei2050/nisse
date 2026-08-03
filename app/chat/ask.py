@@ -4,15 +4,18 @@ When one missing fact would change the answer, the agent calls `ask_user` instea
 spraying variants. To the agent it is an ordinary tool that returns the owner's choice; to the owner it
 is a Telegram message with tappable options. The tool blocks the agent turn on an in-memory
 `asyncio.Future` until the owner taps; the `callback_query` handler here (wired onto the chat router)
-resolves it. There is exactly one process, one event loop (Cloud Run `max_instances=1`), so the tap and
-the parked turn share the Future in memory — no queue, no cross-process sync. The handler resolves the
-Future DIRECTLY, never through `assistant.reply()`, whose per-chat lock the parked turn still holds.
+resolves it — as does a typed reply, which the chat router hands to `answer_pending` before it would
+start a new turn. There is exactly one process, one event loop (Cloud Run `max_instances=1`), so the
+answer and the parked turn share the Future in memory — no queue, no cross-process sync. Both paths
+resolve the Future DIRECTLY, never through `assistant.reply()`, whose per-chat lock the parked turn
+still holds — routing an answer through it would deadlock until the question expired.
 """
 
 import asyncio
 import logging
 import secrets
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from aiogram import Bot, Router
 from aiogram.filters.callback_data import CallbackData
@@ -29,7 +32,7 @@ _ANSWER_TIMEOUT = 300.0  # seconds to wait for a tap — well under the 1800s wo
 _CONFIRM_LABEL = "✅ Done"
 _NONE_LABEL = "None of these"
 _NONE_ANSWER = "The user indicated none of the options fit."
-_TIMEOUT_ANSWER = "The user did not answer in time; proceed with a sensible default and note that you did."
+_TIMEOUT_ANSWER = "The user did not answer. Do NOT invent a value for them — say what you still need."
 
 
 class AskCallback(CallbackData, prefix="ask"):
@@ -40,12 +43,22 @@ class AskCallback(CallbackData, prefix="ask"):
     idx: int  # option index for pick/toggle; -1 for confirm/none
 
 
+class _Tap(StrEnum):
+    """What one tap did to its question — the handler renders each outcome differently."""
+
+    ANSWERED = "answered"  # the parked agent turn now has its answer
+    TOGGLED = "toggled"  # multi: selection flipped, still waiting for Done
+    EMPTY = "empty"  # multi: Done pressed with nothing picked
+    STALE = "stale"  # the question already resolved or timed out
+
+
 @dataclass(slots=True)
 class _Pending:
     """One in-flight question: the Future the agent awaits, its options, and the live selection."""
 
     future: asyncio.Future[str]
     options: list[str]
+    chat_id: int  # so a TYPED answer from that chat can reach this question (see `answer_pending`)
     selected: set[int] = field(default_factory=set)
 
 
@@ -79,8 +92,7 @@ def _selected_answer(options: list[str], selected: set[int]) -> str:
 class AskUserTool(Tool):
     """Ask the owner a clarifying question with tappable options; block until they answer.
 
-    Lifecycle: per-conversation (built with the chat's bot + chat_id). Only built where a transport
-    exists; the probe supplies a fake one that taps the first option, so probes exercise this tool.
+    Lifecycle: per-conversation (built with the chat's bot + chat_id).
     """
 
     name = "ask_user"
@@ -108,7 +120,7 @@ class AskUserTool(Tool):
     async def execute(self, *, question: str, options: list[str], multi: bool = False) -> str:
         """Send the question, park on its Future until the owner taps, return their choice."""
         token = secrets.token_hex(4)
-        pending = _Pending(future=asyncio.get_running_loop().create_future(), options=options)
+        pending = _Pending(future=asyncio.get_running_loop().create_future(), options=options, chat_id=self._chat_id)
         _pending[token] = pending
         message = await self._bot.send_message(
             chat_id=self._chat_id, text=question, reply_markup=_keyboard(token, options, set(), multi=multi)
@@ -117,42 +129,65 @@ class AskUserTool(Tool):
         try:
             return await asyncio.wait_for(pending.future, timeout=_ANSWER_TIMEOUT)
         except TimeoutError:
-            logger.warning("ask_user timed out — no tap arrived", extra={"timeout_s": _ANSWER_TIMEOUT})
-            await message.delete()
+            logger.warning("ask_user timed out", extra={"timeout_s": _ANSWER_TIMEOUT})
             return _TIMEOUT_ANSWER
         finally:
-            _pending.pop(token, None)
+            _pending.pop(token)
+            await message.delete()  # the keyboard is spent either way — answered, typed over, or expired
 
 
-def resolve_pending(token: str, answer: str) -> None:
-    """Deliver *answer* to the turn parked on *token*, without going through a Telegram tap.
+def _apply_tap(data: AskCallback) -> _Tap:
+    """Apply one button tap to its question; the whole tap state machine lives here.
 
-    The seam the probe's fake transport uses so `ask_user` can be exercised off Telegram; a token
-    whose question already timed out is simply gone.
+    Telegram is not the only thing that taps — the probe drives the same transitions through
+    `resolve_tap`, so both see identical answer strings and identical multi-select behaviour.
     """
-    pending = _pending.get(token)
-    if pending is not None and not pending.future.done():
-        pending.future.set_result(answer)
+    pending = _pending.get(data.token)
+    if pending is None or pending.future.done():
+        return _Tap.STALE
+    if data.action == "toggle":
+        pending.selected ^= {data.idx}
+        return _Tap.TOGGLED
+    if data.action == "confirm" and not pending.selected:
+        return _Tap.EMPTY
+    pending.future.set_result(_resolve_answer(data, pending))
+    return _Tap.ANSWERED
+
+
+def resolve_tap(callback_data: str) -> bool:
+    """Tap a button that did not arrive over Telegram; True once the question is answered.
+
+    Takes the raw payload the button carries, so the caller needs to know nothing about options,
+    indices, or how an answer is worded — a toggle selects and keeps waiting, Done resolves.
+    """
+    return _apply_tap(AskCallback.unpack(callback_data)) is _Tap.ANSWERED
+
+
+def answer_pending(*, chat_id: int, text: str) -> bool:
+    """Deliver a TYPED reply to that chat's live question; True if one was waiting for it.
+
+    The owner answers "в 9 утра" as often as they tap. Without this the message queues behind the
+    parked turn's per-chat lock, the question expires, and the agent is left with no answer at all.
+    """
+    for pending in _pending.values():
+        if pending.chat_id == chat_id and not pending.future.done():
+            pending.future.set_result(f"The user answered: {text}")
+            return True
+    return False
 
 
 async def _handle_callback(query: CallbackQuery, callback_data: AskCallback) -> None:
     """Resolve or update one ask_user question from a button tap (wired on the chat router)."""
-    pending = _pending.get(callback_data.token)
-    logger.info("ask_user tap", extra={"action": callback_data.action, "known": pending is not None})
-    if pending is None:  # stale tap — the question already resolved or timed out
-        await query.answer()
-        return
-    if callback_data.action == "toggle":
-        pending.selected ^= {callback_data.idx}
-        await query.answer()
-        if isinstance(query.message, Message):
-            markup = _keyboard(callback_data.token, pending.options, pending.selected, multi=True)
-            await query.message.edit_reply_markup(reply_markup=markup)
-        return
-    if callback_data.action == "confirm" and not pending.selected:
+    outcome = _apply_tap(callback_data)
+    logger.info("ask_user tap", extra={"action": callback_data.action, "outcome": str(outcome)})
+    if outcome is _Tap.EMPTY:
         await query.answer("Pick at least one option, or tap “None of these”.")
         return
-    await _finish(query, pending, _resolve_answer(callback_data, pending))
+    await query.answer()
+    if outcome is _Tap.TOGGLED and isinstance(query.message, Message):
+        pending = _pending[callback_data.token]
+        markup = _keyboard(callback_data.token, pending.options, pending.selected, multi=True)
+        await query.message.edit_reply_markup(reply_markup=markup)
 
 
 def _resolve_answer(callback_data: AskCallback, pending: _Pending) -> str:
@@ -162,16 +197,6 @@ def _resolve_answer(callback_data: AskCallback, pending: _Pending) -> str:
     if callback_data.action == "pick":
         return _selected_answer(pending.options, {callback_data.idx})
     return _selected_answer(pending.options, pending.selected)  # confirm
-
-
-async def _finish(query: CallbackQuery, pending: _Pending, answer: str) -> None:
-    """Deliver the answer to the parked agent turn and delete the question message."""
-    if not pending.future.done():
-        pending.future.set_result(answer)
-    logger.info("ask_user resolved", extra={"chars": len(answer)})
-    await query.answer()
-    if isinstance(query.message, Message):
-        await query.message.delete()
 
 
 def register_ask_handler(router: Router) -> None:
@@ -185,9 +210,7 @@ def register_ask_handler(router: Router) -> None:
 
 
 def _ask_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
-    """The ask_user tool, bound to this chat — only where `deps.bot` carries a transport to ask over."""
-    if deps.bot is None:
-        return []
+    """The ask_user tool, bound to this chat."""
     return [AskUserTool(bot=deps.bot, chat_id=conversation_id)]
 
 
