@@ -248,8 +248,9 @@ Unlike the prior-art catalogue above, these are features the **owner has asked f
 backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
 + a design doc when it's picked up.
 
-- **Remember reactions** — capture Telegram emoji reactions on messages as a signal (feedback / fact
-  to store).
+- **Use the recorded reactions** — `reactions/` now stores the owner's taps raw (see `CLAUDE.md`); the
+  undecided half is what they should *mean*: quality feedback on an answer, a "remember this" trigger,
+  or both split by emoji.
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
 - **Central command registry → auto-derived BotCommand menu** — `chat/saved.py` ships the viewer
   commands and publishes its own menu from one `SavedCommand`/`BOT_COMMANDS` pair; the open half is a

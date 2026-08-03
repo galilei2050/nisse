@@ -55,6 +55,9 @@ app/
                     editing it) — an over-long record is cut with a note saying so, never spilled into
                     extra messages that would orphan below the restored index. Plain text, no
                     MarkdownV2 — the content is the owner's own words, shown byte-for-byte.
+    reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record.
+                    Registering the handler IS the wiring, and it gates on the allow-list by hand
+                    (`AllowlistMiddleware` sits on `message` only); rationale in the module docstring.
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
@@ -102,6 +105,12 @@ app/
   lists/            ARTIFACT TIER: named mutable lists (shopping/todo/watchlist) — NOT memory
     store.py        ItemList + ListStore (Mongo `lists`, one doc per (conversation_id, name); case-folded name, deduped items, in-place edit, soft-delete)
     tools.py        list_edit (add/remove/clear in one call) · list_show; list-name index injected via list_show's user_message()
+
+  reactions/        RAW SIGNAL: the owner's emoji reactions, stored as they happened
+    store.py        Reaction + ReactionStore (Mongo `reactions`, append-only, scoped per conversation).
+                    Telegram sends the whole new reaction set on every change, not a delta, so a record
+                    keeps both sides (`previous` → `current`); an empty `current` is a reaction taken
+                    back. Nothing reads it yet — it accumulates until there's a decided use.
 
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
