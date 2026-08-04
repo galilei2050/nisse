@@ -2,20 +2,19 @@
 
 Two access shapes (the runner has only a task id, no conversation_id):
 - `ScheduleStore` — conversation-scoped CRUD for the agent's tools (mirrors MemoryStore).
-- module-level `claim` / `reschedule` / `mark_done` — global by public_id, for the fire path.
+- `FireStore` — global by public_id: claim / reschedule / mark_done, for the fire path.
 """
 
-import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
 from baski.primitives import datetime
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.shared.models import NisseDbModel
+from app.shared.models import PublicIdModel
 from app.shared.mongo import ensure_index
 
 _COLLECTION = "scheduled_tasks"
@@ -40,12 +39,7 @@ class ScheduleStatus(StrEnum):
     CANCELLED = "cancelled"  # owner cancelled it
 
 
-def _new_public_id() -> str:
-    """A short, LLM-friendly id the agent echoes back to list/cancel."""
-    return secrets.token_hex(5)
-
-
-class ScheduledTask(NisseDbModel):
+class ScheduledTask(PublicIdModel):
     """One scheduled self-invocation, bound to the conversation it fires into.
 
     Lifecycle: a data record — one Mongo document, transient in memory. `fire_at` is the next (UTC)
@@ -54,7 +48,6 @@ class ScheduledTask(NisseDbModel):
     """
 
     conversation_id: int
-    public_id: str = Field(default_factory=_new_public_id)
     kind: ScheduleKind
     instruction: str
     fire_at: datetime.datetime
@@ -76,7 +69,7 @@ class ScheduleStore:
 
     Lifecycle: per-conversation — built in `_build_scheduling_tools` and held by that chat's tools,
     and built per request by `chat/saved.py` (the read-only `/schedules` viewer).
-    (The fire path uses the module-level `claim`/`reschedule`/`mark_done`, which have only a task id.)
+    (The fire path uses `FireStore`, which addresses a task by id alone.)
     """
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
@@ -134,49 +127,60 @@ class ScheduleStore:
         return result.modified_count > 0
 
 
-# ── Fire path (global, trusted): the runner has only a public_id + the occurrence's fire_at. ──
+class FireStore:
+    """The fire path's view of `scheduled_tasks`: global, by public_id — no conversation scope.
 
+    Separate from `ScheduleStore` because the runner is handed only a task id and an occurrence: it
+    fires whatever Cloud Tasks delivers, and scoping it to a conversation it doesn't know would be a
+    filter it could only satisfy by looking the task up first.
 
-@asynccontextmanager
-async def claim(
-    database: AsyncDatabase, *, public_id: str, fire_at: datetime.datetime
-) -> AsyncIterator[ScheduledTask | None]:
-    """Claim one occurrence for execution as a context manager: PENDING→RUNNING for this public_id+fire_at.
-
-    The single source of idempotency under Cloud Tasks' at-least-once delivery: only the first delivery
-    of an occurrence flips PENDING→RUNNING and yields the task; every duplicate (already RUNNING/DONE,
-    or advanced to a later fire_at) matches nothing and yields None. If the body raises, the claim is
-    released back to PENDING (when still RUNNING for this occurrence) so the retry can re-run it — a
-    crash mid-fire never leaks a task stuck in RUNNING.
+    Lifecycle: long-lived — one per `ScheduleRunner`, serving every fire.
     """
-    doc = await database[_COLLECTION].find_one_and_update(
-        {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.PENDING, "deleted_at": None},
-        {"$set": {"status": ScheduleStatus.RUNNING, "updated_at": datetime.now()}},
-        return_document=ReturnDocument.AFTER,
-    )
-    task = ScheduledTask.model_validate(doc) if doc else None
-    try:
-        yield task
-    except BaseException:
-        if task is not None:
-            await database[_COLLECTION].update_one(
-                {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.RUNNING},
-                {"$set": {"status": ScheduleStatus.PENDING, "updated_at": datetime.now()}},
-            )
-        raise
 
+    def __init__(self, database: AsyncDatabase) -> None:
+        """Bind the tasks collection; every method addresses one task by its public_id."""
+        self._collection = database[_COLLECTION]
 
-async def reschedule(database: AsyncDatabase, *, public_id: str, fire_at: datetime.datetime) -> None:
-    """Re-arm a recurring task for its next occurrence: RUNNING→PENDING with the new fire_at."""
-    await database[_COLLECTION].update_one(
-        {"public_id": public_id},
-        {"$set": {"fire_at": fire_at, "status": ScheduleStatus.PENDING, "updated_at": datetime.now()}},
-    )
+    @asynccontextmanager
+    async def claim(self, *, public_id: str, fire_at: datetime.datetime) -> AsyncIterator[ScheduledTask | None]:
+        """Claim one occurrence for execution: PENDING→RUNNING for this public_id+fire_at.
 
+        The single source of idempotency under Cloud Tasks' at-least-once delivery: only the first
+        delivery of an occurrence flips PENDING→RUNNING and yields the task; every duplicate (already
+        RUNNING/DONE, or advanced to a later fire_at) matches nothing and yields None. If the body
+        raises, the claim is released back to PENDING (when still RUNNING for this occurrence), so a
+        failed fire leaves a task that can be re-armed rather than one wedged in RUNNING. Nothing
+        re-runs it on its own: the queue is at-most-once (`max_attempts=1`).
+        """
+        doc = await self._collection.find_one_and_update(
+            {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.PENDING, "deleted_at": None},
+            {"$set": {"status": ScheduleStatus.RUNNING, "updated_at": datetime.now()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        task = ScheduledTask.model_validate(doc) if doc else None
+        try:
+            yield task
+        # Releases on cancellation as well as on error. A KILLED process (SIGKILL, OOM) runs nothing
+        # here: a one-shot's occurrence stays RUNNING and never fires again — a recurring task has
+        # already re-armed itself by this point. There is no reaper yet.
+        except BaseException:
+            if task is not None:
+                await self._collection.update_one(
+                    {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.RUNNING},
+                    {"$set": {"status": ScheduleStatus.PENDING, "updated_at": datetime.now()}},
+                )
+            raise
 
-async def mark_done(database: AsyncDatabase, *, public_id: str) -> None:
-    """Finish a one-shot task: RUNNING→DONE."""
-    await database[_COLLECTION].update_one(
-        {"public_id": public_id},
-        {"$set": {"status": ScheduleStatus.DONE, "updated_at": datetime.now()}},
-    )
+    async def reschedule(self, *, public_id: str, fire_at: datetime.datetime) -> None:
+        """Re-arm a recurring task for its next occurrence: RUNNING→PENDING with the new fire_at."""
+        await self._collection.update_one(
+            {"public_id": public_id},
+            {"$set": {"fire_at": fire_at, "status": ScheduleStatus.PENDING, "updated_at": datetime.now()}},
+        )
+
+    async def mark_done(self, *, public_id: str) -> None:
+        """Finish a one-shot task: RUNNING→DONE."""
+        await self._collection.update_one(
+            {"public_id": public_id},
+            {"$set": {"status": ScheduleStatus.DONE, "updated_at": datetime.now()}},
+        )

@@ -22,13 +22,12 @@ from typing import NamedTuple, TypedDict, cast
 from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.assistant.history import JUDGE_RETRY_PREFIX
+from app.assistant.history import JUDGE_RETRY_PREFIX, TURNS_COLLECTION
+from app.reactions.store import REACTIONS_COLLECTION
 from app.scheduling.store import SCHEDULED_PREFIX
 
 logger = logging.getLogger(__name__)
 
-_TURNS = "conversation_turns"
-_REACTIONS = "reactions"
 _ANSWER_PREVIEW = 900  # chars of the answer kept per exchange — enough to judge, not the whole essay
 
 
@@ -48,6 +47,16 @@ class Exchange:
         """Whether a human actually said something here — the only messages worth classifying."""
         return bool(self.owner_text) and not self.scheduled
 
+    def render(self) -> str:
+        """One exchange, labelled so a scheduled self-prompt is never mistaken for the owner talking."""
+        header = f"[Turn {self.turn_id} · {datetime.as_utc(self.at).strftime('%Y-%m-%d %H:%M')} UTC]"
+        if self.reactions:
+            header += f"  reaction: {' '.join(self.reactions)}"
+        if self.scheduled:
+            header += "  (scheduled self-prompt — NOT the owner)"
+        owner_label = "schedule" if self.scheduled else "owner"
+        return f"{header}\n{owner_label}: {self.owner_text or '(no text)'}\nnisse: {self.answer_text or '(no answer)'}"
+
 
 @dataclass
 class Evidence:
@@ -66,6 +75,12 @@ class Evidence:
     def owner_message_count(self) -> int:
         """How many exchanges the owner actually opened, as opposed to a schedule firing."""
         return sum(1 for exchange in self.exchanges if exchange.has_owner_input)
+
+    def render(self) -> str:
+        """The digest the classifier and the curator both read — one block per exchange, oldest first."""
+        if not self.exchanges:
+            return "(no conversation in this window)"
+        return "\n\n".join(exchange.render() for exchange in self.exchanges)
 
 
 class StoredBlock(TypedDict, total=False):
@@ -105,133 +120,128 @@ class TurnTexts(NamedTuple):
     answer: str
 
 
-def _text_of(message: StoredMessage, role: str) -> str:
-    """Concatenate the text blocks of one message of `role`; tool traffic contributes nothing."""
-    if message["role"] != role:
-        return ""
-    content = message["content"]
-    if isinstance(content, str):
-        return content
-    return "\n".join(block["text"] for block in content if block.get("type") == "text" and "text" in block)
+class EvidenceCollector:
+    """Reads the two collections a review window is assembled from.
 
+    Answers both questions the nightly sweep asks of them: which chats were active, and what was said
+    in one of them.
 
-def _turn_texts(messages: list[StoredMessage]) -> TurnTexts:
-    """The owner's words and the bot's words in one turn."""
-    owner = "\n".join(t for t in (_text_of(m, "user") for m in messages) if t).strip()
-    answer = "\n".join(t for t in (_text_of(m, "assistant") for m in messages) if t).strip()
-    return TurnTexts(owner=owner, answer=answer)
-
-
-def _group(docs: list[StoredTurn], reactions: dict[int, list[str]]) -> list[Exchange]:
-    """Fold consecutive turns into exchanges: a turn carrying owner text opens one, the rest extend it.
-
-    The LAST answer wins rather than all of them concatenated — the middle turns are the live
-    progress narration ("смотрю списки"), and what the owner read and reacted to is the final reply.
-
-    A judge retry is the loop talking to itself in the user role, so it EXTENDS the exchange it
-    belongs to: the owner asked once, the judge sent the draft back, and the redone answer is the one
-    that should hang off the owner's question. Opening a new exchange there would hand the curator a
-    machine-written "correction" quoting the bot's own judge — the self-confirming loop its prompt
-    forbids — and leave the owner's real question paired with the draft the judge rejected.
+    Lifecycle: long-lived — one per `Curator`, reused across conversations (the window and the chat
+    are arguments to `collect`, the collections it reads are bound here).
     """
-    exchanges: list[Exchange] = []
-    for doc in docs:
-        texts = _turn_texts(list(doc["messages"]))
-        owner_text = "" if texts.owner.startswith(JUDGE_RETRY_PREFIX) else texts.owner
-        turn_id = doc["turn_id"]
-        emoji = reactions.get(turn_id, [])
-        if owner_text or not exchanges:
-            if not owner_text and not texts.answer:
-                continue  # a pure tool turn (or a judge retry) with nothing open to extend
-            exchanges.append(
-                Exchange(
-                    turn_id=turn_id,
-                    at=doc["created_at"],
-                    owner_text=owner_text,
-                    answer_text=texts.answer,
-                    reactions=list(emoji),
-                    scheduled=owner_text.startswith(SCHEDULED_PREFIX),
+
+    def __init__(self, database: AsyncDatabase) -> None:
+        """Bind the two collections a window is assembled from."""
+        self._turns = database[TURNS_COLLECTION]
+        self._reactions = database[REACTIONS_COLLECTION]
+
+    async def active_conversations(self, *, since: datetime.datetime) -> list[int]:
+        """Conversation ids with at least one turn since `since`, sorted."""
+        ids = await self._turns.distinct("conversation_id", {"created_at": {"$gte": since}})
+        logger.info("Curator sweep", extra={"conversations": len(ids)})
+        return sorted(ids)
+
+    async def collect(self, *, conversation_id: int, since: datetime.datetime) -> Evidence:
+        """Every exchange since `since`, with the reactions that landed anywhere inside it.
+
+        Soft-deleted turns are included: a turn the agent pruned from its context is still something
+        the owner said, and a reaction can point at one.
+        """
+        docs = await self._turns.find(
+            {"conversation_id": conversation_id, "created_at": {"$gte": since}}, sort=[("turn_id", 1)]
+        ).to_list(length=None)
+        reactions = await self._reactions_by_turn(
+            conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
+        )
+        exchanges = self._group(cast("list[StoredTurn]", docs), reactions)
+        for exchange in exchanges:
+            exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
+
+        evidence = Evidence(conversation_id=conversation_id, since=since, exchanges=exchanges)
+        logger.info(
+            "Curator evidence collected",
+            extra={
+                "conversationId": conversation_id,
+                "turns": len(docs),
+                "exchanges": len(exchanges),
+                "ownerMessages": evidence.owner_message_count,
+                "reactedExchanges": evidence.reaction_count,
+            },
+        )
+        return evidence
+
+    async def _reactions_by_turn(self, *, conversation_id: int, turn_ids: list[int]) -> dict[int, list[str]]:
+        """The CURRENT emoji on each of `turn_ids`, from the reaction log.
+
+        Keyed on the turns being reviewed, NOT on a time window: the owner reads an answer over coffee
+        and taps it the next morning, so the tap and the turn fall in different nights. Windowing both
+        would drop that reaction forever — the run holding the turn predates the tap, and the run
+        holding the tap no longer collects the turn.
+
+        The log is append-only and each record holds the whole new set, so the last record for a turn
+        is its present state — an earlier 👍 that was taken back must not be read as still standing.
+        """
+        docs = await self._reactions.find(
+            {"conversation_id": conversation_id, "turn_id": {"$in": turn_ids}}, sort=[("reacted_at", 1)]
+        ).to_list(length=None)
+        latest: dict[int, list[str]] = {}
+        for doc in docs:
+            latest[doc["turn_id"]] = list(doc["current"])
+        return {turn_id: emoji for turn_id, emoji in latest.items() if emoji}
+
+    @classmethod
+    def _group(cls, docs: list[StoredTurn], reactions: dict[int, list[str]]) -> list[Exchange]:
+        """Fold consecutive turns into exchanges: a turn carrying owner text opens one, the rest extend it.
+
+        The LAST answer wins rather than all of them concatenated — the middle turns are the live
+        progress narration ("смотрю списки"), and what the owner read and reacted to is the final reply.
+
+        A judge retry is the loop talking to itself in the user role, so it EXTENDS the exchange it
+        belongs to: the owner asked once, the judge sent the draft back, and the redone answer is the
+        one that should hang off the owner's question. Opening a new exchange there would hand the
+        curator a machine-written "correction" quoting the bot's own judge — the self-confirming loop
+        its prompt forbids — and leave the owner's real question paired with the draft the judge
+        rejected.
+        """
+        exchanges: list[Exchange] = []
+        for doc in docs:
+            texts = cls._turn_texts(list(doc["messages"]))
+            owner_text = "" if texts.owner.startswith(JUDGE_RETRY_PREFIX) else texts.owner
+            turn_id = doc["turn_id"]
+            emoji = reactions.get(turn_id, [])
+            if owner_text or not exchanges:
+                if not owner_text and not texts.answer:
+                    continue  # a pure tool turn (or a judge retry) with nothing open to extend
+                exchanges.append(
+                    Exchange(
+                        turn_id=turn_id,
+                        at=doc["created_at"],
+                        owner_text=owner_text,
+                        answer_text=texts.answer,
+                        reactions=list(emoji),
+                        scheduled=owner_text.startswith(SCHEDULED_PREFIX),
+                    )
                 )
-            )
-            continue
-        current = exchanges[-1]
-        if texts.answer:
-            current.answer_text = texts.answer
-        current.reactions.extend(e for e in emoji if e not in current.reactions)
-    return exchanges
+                continue
+            current = exchanges[-1]
+            if texts.answer:
+                current.answer_text = texts.answer
+            current.reactions.extend(e for e in emoji if e not in current.reactions)
+        return exchanges
 
+    @classmethod
+    def _turn_texts(cls, messages: list[StoredMessage]) -> TurnTexts:
+        """The owner's words and the bot's words in one turn."""
+        owner = "\n".join(t for t in (cls._text_of(m, "user") for m in messages) if t).strip()
+        answer = "\n".join(t for t in (cls._text_of(m, "assistant") for m in messages) if t).strip()
+        return TurnTexts(owner=owner, answer=answer)
 
-async def collect(database: AsyncDatabase, *, conversation_id: int, since: datetime.datetime) -> Evidence:
-    """Every exchange since `since`, with the reactions that landed anywhere inside it.
-
-    Soft-deleted turns are included: a turn the agent pruned from its context is still something the
-    owner said, and a reaction can point at one.
-    """
-    docs = (
-        await database[_TURNS]
-        .find({"conversation_id": conversation_id, "created_at": {"$gte": since}}, sort=[("turn_id", 1)])
-        .to_list(length=None)
-    )
-    reactions = await _reactions_by_turn(
-        database, conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
-    )
-    exchanges = _group(cast("list[StoredTurn]", docs), reactions)
-    for exchange in exchanges:
-        exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
-
-    evidence = Evidence(conversation_id=conversation_id, since=since, exchanges=exchanges)
-    logger.info(
-        "Curator evidence collected",
-        extra={
-            "conversationId": conversation_id,
-            "turns": len(docs),
-            "exchanges": len(exchanges),
-            "ownerMessages": evidence.owner_message_count,
-            "reactedExchanges": evidence.reaction_count,
-        },
-    )
-    return evidence
-
-
-async def _reactions_by_turn(
-    database: AsyncDatabase, *, conversation_id: int, turn_ids: list[int]
-) -> dict[int, list[str]]:
-    """The CURRENT emoji on each of `turn_ids`, from the reaction log.
-
-    Keyed on the turns being reviewed, NOT on a time window: the owner reads an answer over coffee
-    and taps it the next morning, so the tap and the turn fall in different nights. Windowing both
-    would drop that reaction forever — the run holding the turn predates the tap, and the run holding
-    the tap no longer collects the turn.
-
-    The log is append-only and each record holds the whole new set, so the last record for a turn is
-    its present state — an earlier 👍 that was taken back must not be read as still standing.
-    """
-    docs = (
-        await database[_REACTIONS]
-        .find({"conversation_id": conversation_id, "turn_id": {"$in": turn_ids}}, sort=[("reacted_at", 1)])
-        .to_list(length=None)
-    )
-    latest: dict[int, list[str]] = {}
-    for doc in docs:
-        latest[doc["turn_id"]] = list(doc["current"])
-    return {turn_id: emoji for turn_id, emoji in latest.items() if emoji}
-
-
-def render(evidence: Evidence) -> str:
-    """The digest the classifier and the curator both read — one block per exchange, oldest first."""
-    if not evidence.exchanges:
-        return "(no conversation in this window)"
-    return "\n\n".join(_render_exchange(exchange) for exchange in evidence.exchanges)
-
-
-def _render_exchange(exchange: Exchange) -> str:
-    """One exchange, labelled so a scheduled self-prompt is never mistaken for the owner talking."""
-    header = f"[Turn {exchange.turn_id} · {datetime.as_utc(exchange.at).strftime('%Y-%m-%d %H:%M')} UTC]"
-    if exchange.reactions:
-        header += f"  reaction: {' '.join(exchange.reactions)}"
-    if exchange.scheduled:
-        header += "  (scheduled self-prompt — NOT the owner)"
-    owner_label = "schedule" if exchange.scheduled else "owner"
-    return (
-        f"{header}\n{owner_label}: {exchange.owner_text or '(no text)'}\nnisse: {exchange.answer_text or '(no answer)'}"
-    )
+    @staticmethod
+    def _text_of(message: StoredMessage, role: str) -> str:
+        """Concatenate the text blocks of one message of `role`; tool traffic contributes nothing."""
+        if message["role"] != role:
+            return ""
+        content = message["content"]
+        if isinstance(content, str):
+            return content
+        return "\n".join(block["text"] for block in content if block.get("type") == "text" and "text" in block)

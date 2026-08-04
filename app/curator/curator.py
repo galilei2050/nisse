@@ -31,8 +31,8 @@ from baski.primitives import datetime
 from baski.server.logger import log_context
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.curator.classify import Classification, classify
-from app.curator.evidence import Evidence, collect, render
+from app.curator.classify import Classification, MessageClassifier
+from app.curator.evidence import Evidence, EvidenceCollector
 from app.curator.prompt import CURATOR_JUDGE_PROMPT, NISSE_CURATOR_PROMPT, REVIEW_BRIEF
 from app.curator.store import CuratorRun, CuratorRunStore
 from app.shared import CoreDeps
@@ -47,7 +47,6 @@ CURATOR_TOOLS = ["memory", "lists", "core_memory", "subagents"]  # its whole sur
 _CONTEXT_TOKENS = 120_000  # a day of transcript plus the stores it reads back
 _MAX_TURNS = 40
 _WINDOW = datetime.timedelta(days=1)
-_TURNS = "conversation_turns"
 
 
 # How the report is cut to Telegram's message limit. Taken as a dependency, not imported: the
@@ -63,9 +62,12 @@ class ReviewOutcome(NamedTuple):
     cost: float
 
 
-def _run_id() -> str:
-    """A short id for one pass — what every revision it writes is stamped with."""
-    return secrets.token_hex(6)
+# Reported when the review dies mid-pass. The tools commit their edits as they run, so a failure can
+# leave the owner's stores already changed — and Cloud Scheduler does not retry, so an unreported
+# half-pass would be a silent overnight rewrite with only orphaned revisions to show for it. How many
+# edits actually landed is in the report header, which counts this run's revisions; the run id joins
+# this message to the stack trace in the logs.
+_CRASH_REPORT = "⚠️ Проход упал на середине. Сколько правок успело записаться — в шапке; трейс в логах (run {run_id})."
 
 
 class Curator:
@@ -77,13 +79,12 @@ class Curator:
         self._bot = bot
         self._split_message = split_message
         self._runs = CuratorRunStore(deps.database)
+        self._evidence = EvidenceCollector(deps.database)
+        self._classifier = MessageClassifier(deps.anthropic)
 
     async def active_conversations(self) -> list[int]:
         """Conversations with a turn in the review window — the ones with anything to learn from."""
-        since = datetime.now() - _WINDOW
-        ids = await self._deps.database[_TURNS].distinct("conversation_id", {"created_at": {"$gte": since}})
-        logger.info("Curator sweep", extra={"conversations": len(ids)})
-        return sorted(ids)
+        return await self._evidence.active_conversations(since=datetime.now() - _WINDOW)
 
     async def curate(self, *, conversation_id: int, window: datetime.timedelta = _WINDOW) -> CuratorRun:
         """Review the window and maintain the stores; returns the recorded run.
@@ -91,60 +92,38 @@ class Curator:
         A window with nothing in it still records a run — "the curator ran and found nothing" and
         "the curator never ran" must not look the same to whoever reads the history later.
         """
-        run_id = _run_id()
+        run_id = secrets.token_hex(6)  # stamps every revision this pass writes
         since = datetime.now() - window
         with log_context(conversationId=conversation_id, agent="curator", runId=run_id):
-            evidence = await collect(self._deps.database, conversation_id=conversation_id, since=since)
+            evidence = await self._evidence.collect(conversation_id=conversation_id, since=since)
             if not evidence.exchanges:
                 return await self._record_idle(run_id, conversation_id=conversation_id, since=since)
 
-            classification = await classify(self._deps.anthropic, evidence)
+            classification = await self._classifier.classify(evidence)
+            # Stands until the review returns; settling in `finally` reports whichever survived.
+            outcome = ReviewOutcome(report=_CRASH_REPORT.format(run_id=run_id), cost=0.0)
             try:
                 outcome = await self._review(
                     conversation_id=conversation_id, run_id=run_id, evidence=evidence, classification=classification
                 )
-            except Exception as exc:
-                # The tools committed their edits as they ran, so a failure here leaves the owner's
-                # stores already changed. Recording and reporting that BEFORE re-raising is the whole
-                # point — Cloud Scheduler does not retry, so an unreported half-pass would otherwise
-                # be a silent overnight rewrite with only orphaned revisions to show for it.
-                await self._settle(
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                    since=since,
-                    evidence=evidence,
-                    classification=classification,
-                    outcome=ReviewOutcome(report=f"⚠️ Проход упал, но правки уже сделаны: {exc}", cost=0.0),
+            finally:
+                run = await self._settle(
+                    run_id=run_id, evidence=evidence, classification=classification, outcome=outcome
                 )
-                raise
-            run = await self._settle(
-                run_id=run_id,
-                conversation_id=conversation_id,
-                since=since,
-                evidence=evidence,
-                classification=classification,
-                outcome=outcome,
-            )
             logger.info("Curator pass finished", extra={"changes": run.changes, "cost": outcome.cost})
             return run
 
-    async def _settle(  # noqa: PLR0913 — everything one finished pass has to write down
-        self,
-        *,
-        run_id: str,
-        conversation_id: int,
-        since: datetime.datetime,
-        evidence: Evidence,
-        classification: Classification,
-        outcome: ReviewOutcome,
+    async def _settle(
+        self, *, run_id: str, evidence: Evidence, classification: Classification, outcome: ReviewOutcome
     ) -> CuratorRun:
         """Count what the pass changed, record the run, and tell the owner. Runs on both exits."""
+        conversation_id = evidence.conversation_id
         changes = await RevisionLog(self._deps.database, conversation_id=conversation_id).for_run(run_id)
         run = await self._runs.record(
             CuratorRun(
                 conversation_id=conversation_id,
                 run_id=run_id,
-                since=since,
+                since=evidence.since,
                 exchanges_reviewed=len(evidence.exchanges),
                 owner_messages=evidence.owner_message_count,
                 reactions_reviewed=evidence.reaction_count,
@@ -168,8 +147,8 @@ class Curator:
         agent = Agent(self._agent_config(conversation_id))
         agent.add_pinned_text(
             REVIEW_BRIEF.format(
-                digest=render(evidence),
-                classification=_render_signals(classification),
+                digest=evidence.render(),
+                classification=classification.render(),
             )
         )
         with acting_as(Actor.CURATOR, run_id=run_id):
@@ -235,17 +214,11 @@ class Curator:
         except TelegramAPIError:
             logger.warning("Curator report not delivered; changes stand and are in the run record", exc_info=True)
 
+    @staticmethod
+    async def ensure_indexes(database: AsyncDatabase) -> None:
+        """Index for the curator's own collection. Idempotent; called at startup.
 
-def _render_signals(classification: Classification) -> str:
-    """The classification as one line per signal, quoting the owner so the curator can verify it."""
-    if not classification.signals:
-        return "(no owner messages classified in this window)"
-    return "\n".join(
-        f"Turn {s.turn_id} · {s.kind} · about: {s.about} · owner said: “{s.quote}”" for s in classification.signals
-    )
-
-
-async def ensure_indexes(database: AsyncDatabase) -> None:
-    """Indexes for the curator's own collections. Idempotent; called at startup."""
-    await CuratorRunStore.ensure_indexes(database)
-    await RevisionLog.ensure_indexes(database)
+        `revisions` is NOT here: every actor writes it, the assistant's tools included, so its index
+        would vanish with the curator wiring while the writes went on.
+        """
+        await CuratorRunStore.ensure_indexes(database)

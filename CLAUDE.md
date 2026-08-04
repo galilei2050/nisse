@@ -31,6 +31,14 @@ The bot is a **delegate** standing in for a personal assistant — design and ev
 - `from baski.telegram.server import TelegramServer` — webhook + polling server base.
 - Env vars are read at module-import time (fail-fast on missing secrets). Wrap reads in a `get_X()` helper for testability.
 - Use Pydantic models for any data flowing between functions. Raw dicts only for pipeline intermediates and log `extra` fields.
+- **A dependency is bound in a constructor, never passed per call.** A function that takes a client,
+  a database, a bot or a store as an argument is a method on a class that holds it
+  (`MessageClassifier(anthropic).classify(evidence)`, not `classify(anthropic, evidence)`). A
+  function whose first argument is an entity and which derives a view of it is a method on that
+  entity (`evidence.render()`) — but only when the view is built from the entity's own fields and
+  bakes in no consumer's format. A rendering that exists for one consumer (Telegram markup, a tool's
+  result contract) stays in that consumer's module; otherwise only dependency-free helpers over
+  primitives stay free functions.
 - Keep `__call__`/`run` methods as 3-5 line orchestrators. Push concerns into private methods.
 - **Updating `CLAUDE.md` is part of every task.** When a change alters structure, conventions, or a documented fact, update the relevant `CLAUDE.md` in the same task — a task isn't done if the docs now lie. Keep it meaning + instructions, never a copy of discoverable code.
 - **Throwaway scripts and scratch data go in `scratch/`** (git-ignored) — never `/tmp`, never the repo root. One-off analysis/verification scripts, downloaded traces, ad-hoc dumps live there; run them with `uv run --env-file .env python scratch/<x>.py`.

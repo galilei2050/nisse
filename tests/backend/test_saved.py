@@ -16,9 +16,8 @@ from app.chat.saved import (
     SavedViewer,
     _clip,
     _Entry,
-    _entry_view,
     _fit_one_message,
-    _index_view,
+    _Index,
     _render_list,
     _render_memory,
     _render_schedule,
@@ -251,7 +250,7 @@ def test_long_button_caption_is_clipped() -> None:
 
 def test_index_pages_and_buttons_carry_absolute_positions() -> None:
     entries = _entries(_PAGE_SIZE + 3)
-    text, markup = _index_view(SavedKind.MEMORY, entries, page=1)
+    text, markup = _Index(SavedKind.MEMORY, entries).page(1)
 
     assert "стр. 2/2" in text and f"— {len(entries)}" in text
     assert _buttons(markup)[:3] == ["метка 8", "метка 9", "метка 10"]
@@ -261,13 +260,13 @@ def test_index_pages_and_buttons_carry_absolute_positions() -> None:
 
 
 def test_single_page_index_has_no_paging_row() -> None:
-    text, markup = _index_view(SavedKind.LISTS, _entries(2), page=0)
+    text, markup = _Index(SavedKind.LISTS, _entries(2)).page(0)
     assert "стр." not in text
     assert _buttons(markup) == ["метка 0", "метка 1"]
 
 
 def test_entry_opens_full_body_with_a_back_button() -> None:
-    text, markup = _entry_view(SavedKind.MEMORY, _entries(3), idx=1, page=0)
+    text, markup = _Index(SavedKind.MEMORY, _entries(3)).entry(idx=1, page=0)
     assert text == "тело 1"
     back = SavedCallback.unpack(markup.inline_keyboard[0][0].callback_data)
     assert (back.idx, back.page) == (-1, 0)
@@ -275,6 +274,6 @@ def test_entry_opens_full_body_with_a_back_button() -> None:
 
 def test_tapping_an_entry_that_no_longer_exists_falls_back_to_the_index() -> None:
     """A memory forgotten between render and tap shifts positions — show the fresh index, not a wrong entry."""
-    text, markup = _entry_view(SavedKind.MEMORY, _entries(2), idx=7, page=0)
+    text, markup = _Index(SavedKind.MEMORY, _entries(2)).entry(idx=7, page=0)
     assert text == "🧠 Заметки — 2"
     assert _buttons(markup) == ["метка 0", "метка 1"]

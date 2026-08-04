@@ -34,7 +34,7 @@ from enum import StrEnum
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field, ValidationError
 
-from app.curator.evidence import Evidence, render
+from app.curator.evidence import Evidence
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,14 @@ class Classification(BaseModel):
 
     signals: list[MessageSignal]
 
+    def render(self) -> str:
+        """One line per signal, quoting the owner so the curator can verify the label against the digest."""
+        if not self.signals:
+            return "(no owner messages classified in this window)"
+        return "\n".join(
+            f"Turn {s.turn_id} · {s.kind} · about: {s.about} · owner said: “{s.quote}”" for s in self.signals
+        )
+
 
 _INSTRUCTIONS = (
     "You label what the OWNER's messages in a chat transcript were doing. You are building evidence "
@@ -106,35 +114,45 @@ _INSTRUCTIONS = (
 )
 
 
-async def classify(anthropic: AsyncAnthropic, evidence: Evidence) -> Classification:
-    """Label every owner message in the window. Raises if the model returns unusable JSON.
+class MessageClassifier:
+    """Labels what each owner message in a window was doing, in one offline call.
 
-    Failing loud is right here: a curator running on a silently-empty classification would look like
-    a quiet night rather than a broken pass.
+    Lifecycle: long-lived — one per `Curator`, reused for every conversation it reviews.
     """
-    message = await anthropic.messages.create(
-        model=CLASSIFIER_MODEL,
-        max_tokens=_MAX_TOKENS,
-        system=_INSTRUCTIONS,
-        messages=[{"role": "user", "content": render(evidence)}],
-    )
-    raw = "".join(block.text for block in message.content if block.type == "text").strip()
-    classification = _parse(raw)
-    logger.info(
-        "Owner messages classified",
-        extra={
-            "conversationId": evidence.conversation_id,
-            "signals": len(classification.signals),
-            "kinds": sorted({s.kind for s in classification.signals}),
-        },
-    )
-    return classification
 
+    def __init__(self, anthropic: AsyncAnthropic) -> None:
+        """Bind the shared Anthropic client the labelling pass runs on."""
+        self._anthropic = anthropic
 
-def _parse(raw: str) -> Classification:
-    """Parse the model's JSON, tolerating a ```json fence but nothing looser."""
-    text = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    try:
-        return Classification.model_validate(json.loads(text))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise ValueError(f"classifier returned unusable output: {text[:400]}") from exc
+    async def classify(self, evidence: Evidence) -> Classification:
+        """Label every owner message in the window. Raises if the model returns unusable JSON.
+
+        Failing loud is right here: a curator running on a silently-empty classification would look
+        like a quiet night rather than a broken pass.
+        """
+        message = await self._anthropic.messages.create(
+            model=CLASSIFIER_MODEL,
+            max_tokens=_MAX_TOKENS,
+            system=_INSTRUCTIONS,
+            messages=[{"role": "user", "content": evidence.render()}],
+        )
+        raw = "".join(block.text for block in message.content if block.type == "text").strip()
+        classification = self._parse(raw)
+        logger.info(
+            "Owner messages classified",
+            extra={
+                "conversationId": evidence.conversation_id,
+                "signals": len(classification.signals),
+                "kinds": sorted({s.kind for s in classification.signals}),
+            },
+        )
+        return classification
+
+    @staticmethod
+    def _parse(raw: str) -> Classification:
+        """Parse the model's JSON, tolerating a ```json fence but nothing looser."""
+        text = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            return Classification.model_validate(json.loads(text))
+        except (json.JSONDecodeError, ValidationError) as exc:
+            raise ValueError(f"classifier returned unusable output: {text[:400]}") from exc

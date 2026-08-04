@@ -30,10 +30,11 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT
+from app.chat.ask import PendingQuestions
 from app.chat.format import split_message
-from app.curator.classify import classify
+from app.curator.classify import MessageClassifier
 from app.curator.curator import Curator
-from app.curator.evidence import collect, render
+from app.curator.evidence import EvidenceCollector
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps
 from app.shared.revisions import RevisionLog
@@ -58,14 +59,16 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
         anthropic = AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0)
         window = datetime.timedelta(days=days)
 
-        evidence = await collect(database, conversation_id=conversation_id, since=datetime.now() - window)
+        evidence = await EvidenceCollector(database).collect(
+            conversation_id=conversation_id, since=datetime.now() - window
+        )
         print(f"\n=== EVIDENCE — {len(evidence.exchanges)} exchanges, {evidence.reaction_count} reacted ===")
-        print(render(evidence))
+        print(evidence.render())
         if not evidence.exchanges:
             print("\nNothing in this window — the pass would record an idle run and stop.")
             return
 
-        classification = await classify(anthropic, evidence)
+        classification = await MessageClassifier(anthropic).classify(evidence)
         print("\n=== CLASSIFICATION ===")
         for signal in classification.signals:
             print(f"turn {signal.turn_id} · {signal.kind} · {signal.about} · “{signal.quote}”")
@@ -86,6 +89,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT),
             tools=build_tool_registry(),
             bot=cast("Bot", bot),
+            questions=PendingQuestions(),  # the curator has no ask_user; CoreDeps is one shape for every caller
         )
         curator = Curator(deps, bot=cast("Bot", bot), split_message=split_message)
         run = await curator.curate(conversation_id=conversation_id, window=window)

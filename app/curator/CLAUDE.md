@@ -5,13 +5,14 @@ memories, lists, sub-agents. Design, research grounding, and verified behaviour:
 
 ## Shape
 
-- `evidence.py` — `collect()` folds raw turns into **exchanges** (one owner message + the final
-  answer + the reactions on it) and `render()` makes the digest. A turn is one API call, so a
+- `evidence.py` — `EvidenceCollector.collect()` folds raw turns into **exchanges** (one owner message
+  + the final answer + the reactions on it); `Evidence.render()` makes the digest. A turn is one API call, so a
   question that took three tool rounds spans three turns; ungrouped, the day reads as the assistant
   talking to itself. Reactions resolve via `turn_id` (written by the chat layer at send time), and
   the LAST reaction record for a turn is its current state. A `[Запланировано]` prompt is flagged
   `scheduled` — the bot prompting itself is not owner input.
-- `classify.py` — one call labelling each owner message (`MessageKind`). Taxonomy from
+- `classify.py` — `MessageClassifier.classify()`: one call labelling each owner message
+  (`MessageKind`); `Classification.render()` is what the curator's brief quotes. Taxonomy from
   Don-Yehiya et al. / arXiv:2507.23158, not invented. **Offline only** — an inline classifier is a
   rejected direction here. Fails loud on unusable JSON: a silently-empty classification is
   indistinguishable from a quiet night.
@@ -20,6 +21,8 @@ memories, lists, sub-agents. Design, research grounding, and verified behaviour:
   plumbing that delivers evidence and records what changed.
 - `curator.py` — `Curator.curate()`: collect → classify → run the agent inside
   `acting_as(CURATOR, run_id=…)` → count the revisions → record the run → message the owner.
+  `Curator.ensure_indexes` covers `curator_runs` only: `revisions` is written by every actor, so its
+  index is created at startup in `backend.py`.
 - `store.py` — `CuratorRun` + `CuratorRunStore` (`curator_runs`): why the night's work happened and
   what it told the owner. An idle pass is recorded too — "ran and found nothing" must not look like
   "never ran".

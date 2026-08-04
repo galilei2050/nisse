@@ -30,7 +30,7 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
-from app.chat.ask import resolve_tap
+from app.chat.ask import PendingQuestions
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
 from app.tools.wiring import build_tool_registry
@@ -53,12 +53,14 @@ class _AutoTapBot:
 
     `CoreDeps` requires a transport, and measuring whether the agent CHOOSES to ask is the whole
     point of running it here. The real `AskUserTool` runs (its real schema and description reach the
-    model); only the transport is faked, and every button goes through `resolve_tap`, so a
-    multi-select question takes the same toggle-then-Done path Telegram would drive.
+    model); only the transport is faked, and every button goes through the run's own question
+    registry, so a multi-select question takes the same toggle-then-Done path Telegram would drive.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, questions: PendingQuestions) -> None:
+        """Tap through the same registry the run's `ask_user` parks its questions on."""
         self.asked: list[str] = []
+        self._questions = questions
 
     async def send_message(
         self,
@@ -69,12 +71,13 @@ class _AutoTapBot:
     ) -> _AutoTapQuestion:
         """Walk the keyboard until a button settles the question — options first, then Done / None.
 
-        Layout-agnostic on purpose: whatever `_keyboard` builds, the last row always ends a question.
-        Which option a probe "chooses" doesn't matter — the count of questions asked is the measurement.
+        Layout-agnostic on purpose: whatever `_Pending.keyboard` builds, the last row always ends a
+        question. Which option a probe "chooses" doesn't matter — the count of questions asked is the
+        measurement.
         """
         self.asked.append(text)
         buttons = [button for row in reply_markup.inline_keyboard for button in row]
-        if not any(resolve_tap(str(button.callback_data)) for button in buttons):
+        if not any(self._questions.resolve_tap(str(button.callback_data)) for button in buttons):
             raise RuntimeError("probe tapped every button and the question stayed open")  # a harness bug
         return _AutoTapQuestion()
 
@@ -133,7 +136,8 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         http = await resources.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)))
         playwright = await resources.enter_async_context(PlaywrightClient(headless=True))
         database: AsyncDatabase = AsyncMongoClient(str(get_env("MONGODB_URI")), tz_aware=True).get_default_database()
-        auto_tap = _AutoTapBot()
+        questions = PendingQuestions()
+        auto_tap = _AutoTapBot(questions)
         deps = CoreDeps(
             http=http,
             anthropic=AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0),
@@ -147,6 +151,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
             await_trace=True,
             bot=cast("Bot", auto_tap),  # transport stand-in: only send_message is ever called on it
+            questions=questions,
         )
         assistant = Assistant(deps=deps)
         await assistant.setup()

@@ -16,7 +16,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
 
-_COLLECTION = "reactions"
+REACTIONS_COLLECTION = "reactions"  # public: the curator reads this collection too
 
 
 class Reaction(NisseDbModel):
@@ -44,13 +44,13 @@ class ReactionStore:
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
         """Bind to the reactions collection for one conversation; every query is scoped to it."""
-        self._collection = database[_COLLECTION]
+        self._collection = database[REACTIONS_COLLECTION]
         self._conversation_id = conversation_id
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """(conversation_id, message_id) — the key a future reader will look reactions up by. Idempotent."""
-        await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("message_id", 1)])
+        await ensure_index(database[REACTIONS_COLLECTION], [("conversation_id", 1), ("message_id", 1)])
 
     async def record(  # noqa: PLR0913 — one document's fields, minus the conversation scope the store owns
         self,

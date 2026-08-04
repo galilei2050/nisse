@@ -4,15 +4,14 @@ Each doc keeps Mongo's `ObjectId` as `_id` (via NisseDbModel) plus a short `publ
 the agent reads from the index and echoes back into recall_read/recall_forget.
 """
 
-import secrets
 from enum import StrEnum
 
 from baski.primitives import datetime
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.shared.models import NisseDbModel
+from app.shared.models import PublicIdModel
 from app.shared.mongo import ensure_index
 from app.shared.revisions import ChangeKind, RevisionLog
 
@@ -38,11 +37,6 @@ class SourceKind(StrEnum):
     AGENT = "agent"
 
 
-def _new_public_id() -> str:
-    """A short, LLM-friendly id (10 hex chars) the agent can copy back without error."""
-    return secrets.token_hex(5)
-
-
 class MemorySource(BaseModel):
     """Provenance of a memory: the owner, an external source, or the agent itself. Lifecycle: a value object."""
 
@@ -57,7 +51,7 @@ class MemorySource(BaseModel):
         return self
 
 
-class Memory(NisseDbModel):
+class Memory(PublicIdModel):
     """One durable memory: a titled fact/preference/event with provenance and body.
 
     Lifecycle: a data record — one Mongo document. Scoped to one `conversation_id` (the chat it was
@@ -66,7 +60,6 @@ class Memory(NisseDbModel):
     """
 
     conversation_id: int
-    public_id: str = Field(default_factory=_new_public_id)
     title: str
     category: MemoryCategory
     source: MemorySource

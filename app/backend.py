@@ -26,17 +26,18 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
+from app.chat.ask import PendingQuestions
 from app.chat.format import compose_answer, split_message
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.curator import Curator, build_curate_route
-from app.curator import ensure_indexes as ensure_curator_indexes
 from app.lists import ListStore
 from app.reactions import ReactionStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
+from app.shared.revisions import RevisionLog
 from app.subagents import SubagentStore
 from app.tools.wiring import build_tool_registry
 
@@ -46,10 +47,12 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(
+        router = chat.ChatRouter(
             assistant=self.assistant,
             transcriber=self._transcriber,
             speaker=self._speaker,
+            questions=self.deps.questions,  # the same registry `ask_user` parks its questions on
+        ).build(
             saved=SavedViewer(self._database),
             reactions=ReactionRecorder(self._database, turns=TurnLookup(self._database)),
         )
@@ -109,6 +112,7 @@ class NisseBot(TelegramServer):
             judge=self._judge,
             tools=build_tool_registry(),
             bot=self.bot,  # lets transport tools (ask_user) message the owner directly
+            questions=PendingQuestions(),
         )
 
     @cached_property
@@ -186,7 +190,8 @@ class NisseBot(TelegramServer):
         await ListStore.ensure_indexes(self._database)
         await ReactionStore.ensure_indexes(self._database)
         await SubagentStore.ensure_indexes(self._database)
-        await ensure_curator_indexes(self._database)
+        await RevisionLog.ensure_indexes(self._database)  # written by every actor, not just the curator
+        await Curator.ensure_indexes(self._database)
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""

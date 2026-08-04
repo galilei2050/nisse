@@ -177,40 +177,56 @@ def _render_schedule(task: ScheduledTask) -> str:
     return f"⏰ {task.fire_at:%d.%m.%Y %H:%M} UTC{every}\n{task.instruction}"
 
 
-def _index_view(kind: SavedKind, entries: list[_Entry], page: int) -> _View:
-    """The index of one store: a header line plus one button per entry on this page."""
-    if not entries:
-        return _View(_INDEX_EMPTY[kind], None)
-    pages = (len(entries) + _PAGE_SIZE - 1) // _PAGE_SIZE
-    page = min(max(page, 0), pages - 1)
-    start = page * _PAGE_SIZE
-    rows = [
-        [InlineKeyboardButton(text=entry.label, callback_data=SavedCallback(kind=kind, idx=i, page=page).pack())]
-        for i, entry in enumerate(entries[start : start + _PAGE_SIZE], start)
-    ]
-    nav = [
-        InlineKeyboardButton(text=text, callback_data=SavedCallback(kind=kind, idx=-1, page=target).pack())
-        for text, target, shown in (("‹ Назад", page - 1, page > 0), ("Вперёд ›", page + 1, page < pages - 1))
-        if shown
-    ]
-    if nav:
-        rows.append(nav)
-    header = f"{_INDEX_TITLE[kind]} — {len(entries)}"
-    if pages > 1:
-        header = f"{header} · стр. {page + 1}/{pages}"
-    return _View(header, InlineKeyboardMarkup(inline_keyboard=rows))
+@dataclass(frozen=True, slots=True)
+class _Index:
+    """One store's browsable records, and the two views a tap moves between.
 
-
-def _entry_view(kind: SavedKind, entries: list[_Entry], idx: int, page: int) -> _View:
-    """One opened entry plus a Back button; a position no longer in the store falls back to the index.
-
-    Buttons carry the entry's position, not its id — a name or title would blow the 64-byte callback
-    payload — so a record added or removed since the index was drawn shifts what a position means.
+    Lifecycle: short-lived — rebuilt from the store on every command and every tap, so the index a
+    button was drawn on and the one it opens are never the same object. That is exactly why `entry`
+    re-checks the position it was handed.
     """
-    if not 0 <= idx < len(entries):
-        return _index_view(kind, entries, page)
-    back = InlineKeyboardButton(text="⬅️ Назад", callback_data=SavedCallback(kind=kind, idx=-1, page=page).pack())
-    return _View(_fit_one_message(entries[idx].body), InlineKeyboardMarkup(inline_keyboard=[[back]]))
+
+    kind: SavedKind
+    entries: list[_Entry]
+
+    def page(self, page: int) -> _View:
+        """The index itself: a header line plus one button per entry on this page."""
+        if not self.entries:
+            return _View(_INDEX_EMPTY[self.kind], None)
+        pages = (len(self.entries) + _PAGE_SIZE - 1) // _PAGE_SIZE
+        page = min(max(page, 0), pages - 1)
+        start = page * _PAGE_SIZE
+        rows = [
+            [InlineKeyboardButton(text=entry.label, callback_data=self._payload(idx=i, page=page))]
+            for i, entry in enumerate(self.entries[start : start + _PAGE_SIZE], start)
+        ]
+        nav = [
+            InlineKeyboardButton(text=text, callback_data=self._payload(idx=-1, page=target))
+            for text, target, shown in (("‹ Назад", page - 1, page > 0), ("Вперёд ›", page + 1, page < pages - 1))
+            if shown
+        ]
+        if nav:
+            rows.append(nav)
+        header = f"{_INDEX_TITLE[self.kind]} — {len(self.entries)}"
+        if pages > 1:
+            header = f"{header} · стр. {page + 1}/{pages}"
+        return _View(header, InlineKeyboardMarkup(inline_keyboard=rows))
+
+    def entry(self, idx: int, page: int) -> _View:
+        """One opened entry plus a Back button; a position no longer in the store falls back to the index.
+
+        Buttons carry the entry's position, not its id — a name or title would blow the 64-byte
+        callback payload — so a record added or removed since the index was drawn shifts what a
+        position means.
+        """
+        if not 0 <= idx < len(self.entries):
+            return self.page(page)
+        back = InlineKeyboardButton(text="⬅️ Назад", callback_data=self._payload(idx=-1, page=page))
+        return _View(_fit_one_message(self.entries[idx].body), InlineKeyboardMarkup(inline_keyboard=[[back]]))
+
+    def _payload(self, *, idx: int, page: int) -> str:
+        """The 64-byte callback payload a button of this index carries back."""
+        return SavedCallback(kind=self.kind, idx=idx, page=page).pack()
 
 
 class SavedViewer:
@@ -277,11 +293,11 @@ class SavedViewer:
             await query.answer("Это сообщение уже старое — вызови команду заново.", show_alert=True)
             return
         await query.answer()
-        entries = await self._entries(callback_data.kind, query.message.chat.id)
+        index = await self._index(callback_data.kind, query.message.chat.id)
         view = (
-            _index_view(callback_data.kind, entries, callback_data.page)
+            index.page(callback_data.page)
             if callback_data.idx < 0
-            else _entry_view(callback_data.kind, entries, callback_data.idx, callback_data.page)
+            else index.entry(callback_data.idx, callback_data.page)
         )
         try:
             await query.message.edit_text(view.text, reply_markup=view.markup)
@@ -295,23 +311,24 @@ class SavedViewer:
 
     async def _show_index(self, message: Message, kind: SavedKind) -> None:
         """Send the first page of a store's index."""
-        entries = await self._entries(kind, message.chat.id)
-        view = _index_view(kind, entries, page=0)
+        view = (await self._index(kind, message.chat.id)).page(0)
         await message.answer(view.text, reply_markup=view.markup)
 
-    async def _entries(self, kind: SavedKind, conversation_id: int) -> list[_Entry]:
+    async def _index(self, kind: SavedKind, conversation_id: int) -> _Index:
         """This chat's entries for one store, in the order the index and the buttons both use."""
         if kind is SavedKind.LISTS:
             lists = await ListStore(self._database, conversation_id=conversation_id).all()
-            return [
+            entries = [
                 _Entry(label=_clip(f"📋 {item.name} ({len(item.items)})"), body=_render_list(item))
                 for item in sorted(lists, key=lambda item: item.name)
             ]
-        memories = await MemoryStore(self._database, conversation_id=conversation_id).list()
-        return [
-            _Entry(label=_clip(f"🧠 {memory.title}"), body=_render_memory(memory))
-            for memory in sorted(memories, key=lambda memory: memory.updated_at, reverse=True)
-        ]
+        else:
+            memories = await MemoryStore(self._database, conversation_id=conversation_id).list()
+            entries = [
+                _Entry(label=_clip(f"🧠 {memory.title}"), body=_render_memory(memory))
+                for memory in sorted(memories, key=lambda memory: memory.updated_at, reverse=True)
+            ]
+        return _Index(kind=kind, entries=entries)
 
     @staticmethod
     async def _answer(message: Message, text: str) -> None:
