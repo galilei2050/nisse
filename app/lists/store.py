@@ -95,14 +95,16 @@ class ListStore:
                 merged.append(item)
                 seen.add(item.lower())
         # Recorded even though nothing is lost: a dedupe pass runs as clear-then-add, and a history
-        # showing only the clear reads as "the list was destroyed".
-        await self._revisions.record(
-            collection=_COLLECTION,
-            target=_norm_name(name),
-            kind=ChangeKind.REPLACE if existing else ChangeKind.CREATE,
-            before="\n".join(existing.items) if existing else None,
-            after="\n".join(merged),
-        )
+        # showing only the clear reads as "the list was destroyed". An add that changed nothing (every
+        # item already present) is not recorded — it would inflate the owner's change count.
+        if existing is None or merged != existing.items:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=_norm_name(name),
+                kind=ChangeKind.REPLACE if existing else ChangeKind.CREATE,
+                before="\n".join(existing.items) if existing else None,
+                after="\n".join(merged),
+            )
         now = datetime.now()
         doc = await self._collection.find_one_and_update(
             {"conversation_id": self._conversation_id, "name": _norm_name(name)},

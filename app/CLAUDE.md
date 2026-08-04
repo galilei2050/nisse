@@ -62,6 +62,9 @@ app/
                     editing it) — an over-long record is cut with a note saying so, never spilled into
                     extra messages that would orphan below the restored index. Plain text, no
                     MarkdownV2 — the content is the owner's own words, shown byte-for-byte.
+                    `/help` closes with what the owner can't discover by reading commands: that
+                    reactions are the cheap feedback channel, and that the nightly curator edits
+                    these same stores and reports in the morning.
     reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record.
                     Registering the handler IS the wiring, and it gates on the allow-list by hand
                     (`AllowlistMiddleware` sits on `message` only); rationale in the module docstring.

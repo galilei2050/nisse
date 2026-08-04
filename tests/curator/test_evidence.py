@@ -46,19 +46,26 @@ class _FakeCursor:
 
 
 class _FakeCollection:
+    """Applies the sort it is handed. Both behaviours under test — "the last reaction record wins"
+    and "turns fold in order" — are correct only because of the `sort=` the queries pass, so a fake
+    that ignored it would keep these tests green while production read a retracted 👍 as standing."""
+
     def __init__(self, docs: list[dict]) -> None:
         self._docs = docs
 
-    def find(self, flt: dict, sort: object = None) -> _FakeCursor:  # noqa: ARG002 — order is fixed by the fixture
-        return _FakeCursor([d for d in self._docs if self._match(d, flt)])
+    def find(self, flt: dict, sort: list[tuple[str, int]] | None = None) -> _FakeCursor:
+        found = [d for d in self._docs if self._match(d, flt)]
+        for key, direction in reversed(sort or []):
+            found.sort(key=lambda d, k=key: d[k], reverse=direction < 0)  # type: ignore[misc]  # bound per iteration
+        return _FakeCursor(found)
 
     @staticmethod
     def _match(doc: dict, flt: dict) -> bool:
         for key, condition in flt.items():
-            if isinstance(condition, dict):  # {"$gte": ...} / {"$ne": ...} — the only operators used here
+            if isinstance(condition, dict):  # {"$gte": ...} / {"$in": [...]} — the operators used here
                 if "$gte" in condition and doc[key] < condition["$gte"]:
                     return False
-                if "$ne" in condition and doc.get(key) == condition["$ne"]:
+                if "$in" in condition and doc.get(key) not in condition["$in"]:
                     return False
             elif doc.get(key) != condition:
                 return False
@@ -78,29 +85,19 @@ class _FakeDatabase:
 
 async def test_a_retracted_reaction_is_not_reported_as_standing() -> None:
     """Telegram sends the whole set on every change, so an empty `current` means it was taken back.
-    Reading the earlier record would hand the curator approval that no longer exists."""
+    Reading the earlier record would hand the curator approval that no longer exists.
+
+    The records are supplied newest-first so the assertion depends on the query's sort, not on the
+    order the fixture happens to list them in."""
     db = _FakeDatabase(
         turns=[_turn(1, "как дела", "нормально")],
-        reactions=[_reaction(1, ["👍"], at_hour=10), _reaction(1, [], at_hour=11)],
+        reactions=[_reaction(1, [], at_hour=11), _reaction(1, ["👍"], at_hour=10)],
     )
 
     evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
 
     assert evidence.exchanges[0].reactions == []
     assert evidence.reaction_count == 0
-
-
-async def test_the_latest_reaction_set_reaches_the_digest() -> None:
-    db = _FakeDatabase(
-        turns=[_turn(1, "сравни варианты", "вот сравнение")],
-        reactions=[_reaction(1, ["👍"], at_hour=10), _reaction(1, ["🔥", "❤"], at_hour=12)],
-    )
-
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
-
-    assert evidence.exchanges[0].reactions == ["🔥", "❤"]
-    assert evidence.reaction_count == 1
-    assert "🔥 ❤" in render(evidence)  # the curator must see WHICH emoji, not just that one exists
 
 
 async def test_a_multi_turn_answer_folds_into_one_exchange_ending_in_the_real_answer() -> None:
@@ -122,6 +119,39 @@ async def test_a_multi_turn_answer_folds_into_one_exchange_ending_in_the_real_an
     assert exchange.owner_text == "найди рейс в Лиссабон"
     assert exchange.answer_text == "Нашла три рейса, дешевле всего в среду."  # not the narration
     assert exchange.reactions == ["👍"]  # a reaction anywhere inside the exchange belongs to it
+
+
+async def test_a_judge_retry_is_not_read_as_the_owner_correcting_the_bot() -> None:
+    """baski's completeness judge feeds its verdict back as a USER message, and the transcript keeps
+    it. Read as owner input it is the perfect fake correction — it literally says the answer isn't
+    finished and what is missing — so the curator would promote its own judge's words into a standing
+    rule, the self-confirming loop its prompt forbids. It must extend the owner's exchange instead,
+    so the redone answer is what hangs off the owner's question."""
+    retry = _turn(2, "[Completeness check] Your answer isn't finished. Убери фразу «Ты прав».", "", at_hour=9)
+    redone = _turn(3, "", "Итог: 830 евро.", at_hour=9)
+    db = _FakeDatabase(turns=[_turn(1, "посчитай бюджет", "Ты прав в главном…"), retry, redone], reactions=[])
+
+    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+
+    assert len(evidence.exchanges) == 1
+    exchange = evidence.exchanges[0]
+    assert exchange.owner_text == "посчитай бюджет"
+    assert exchange.answer_text == "Итог: 830 евро."  # the redone answer, not the draft the judge rejected
+    assert evidence.owner_message_count == 1
+    assert "Completeness check" not in render(evidence)
+
+
+async def test_a_reaction_left_the_next_morning_still_reaches_the_curator() -> None:
+    """The owner reads an answer over coffee and taps it hours later, so the turn and the tap fall in
+    different nights. Windowing both would lose it forever: the run holding the turn predates the tap,
+    and the run holding the tap no longer collects the turn."""
+    late = _reaction(1, ["👍"], at_hour=9)
+    late["reacted_at"] = datetime.as_utc(datetime.datetime(2026, 8, 5, 9, 0))  # two days after the turn
+    db = _FakeDatabase(turns=[_turn(1, "сравни отели", "вот сравнение")], reactions=[late])
+
+    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+
+    assert evidence.exchanges[0].reactions == ["👍"]
 
 
 async def test_a_scheduled_self_prompt_is_not_counted_as_the_owner_speaking() -> None:

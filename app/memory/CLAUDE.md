@@ -48,9 +48,9 @@ Worked examples (these drove the design):
   writing to core because a similar memory exists, and don't search memory first. This kills the
   "already saved elsewhere → skip" failure.
 
-**Every content-losing write is recorded.** `overwrite`, `set_body` and `soft_delete` append the text
-they destroyed to `revisions` (`app/shared/revisions.py`) before touching the record — the nightly
-curator edits these same stores unattended, and a replaced body has no second copy anywhere else.
+**Every content-losing write is recorded.** `overwrite`, `set_body` and `soft_delete` read the prior
+text and append it to `revisions` (`app/shared/revisions.py`) — the nightly curator edits these same
+stores unattended, and a replaced body has no second copy anywhere else.
 
 Eviction (auto-demoting an evicted core line down into recall) is deliberately NOT built yet — the
 cap just rejects oversize writes and the agent trims; revisit if the manual trim proves annoying.

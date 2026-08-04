@@ -61,13 +61,15 @@ async def test_an_unknown_tool_name_is_refused_before_it_can_break_the_next_buil
     assert store.saved == []  # refused, not saved-then-broken
 
 
-async def test_a_sibling_subagent_counts_as_a_valid_delegation_target() -> None:
-    """`tool_names` may name another sub-agent — that is how the researcher reaches retrieval."""
-    store = _FakeStore(existing=["retrieval"])
-    result = await _tool(store).execute(**_fields(name="researcher", tool_names=["retrieval"]))
+async def test_the_management_pair_may_not_be_handed_to_a_subagent() -> None:
+    """It is registered in the shared registry, so a sub-agent config could name it — and the main
+    agent delegates to sub-agents from ordinary chat. Absence from `MAIN_TOOLS` alone would leave
+    that route open, and this is the surface that decides which tools and prompts every agent runs."""
+    store = _FakeStore()
+    result = await _tool(store).execute(**_fields(name="helper", tool_names=["subagents"]))
 
-    assert len(store.saved) == 1
-    assert "researcher" in result
+    assert "subagents" in result
+    assert store.saved == []
 
 
 async def test_an_unlisted_model_is_refused() -> None:
@@ -82,10 +84,16 @@ async def test_an_unlisted_model_is_refused() -> None:
 
 
 async def test_a_sound_config_is_saved_whole() -> None:
-    store = _FakeStore()
-    result = await _tool(store).execute(**_fields())
+    """The tool's own contract is that a save replaces the record WHOLESALE, so every field has to
+    arrive intact — a dropped or defaulted prompt would silently rewrite how that agent behaves.
+    Delegating to a sibling is part of the same path: that is how the researcher reaches retrieval."""
+    store = _FakeStore(existing=["retrieval"])
+    fields = _fields(name="researcher", tool_names=["retrieval"])
+
+    result = await _tool(store).execute(**fields)
 
     (saved,) = store.saved
-    assert saved.name == "retrieval"  # type: ignore[attr-defined]
-    assert saved.conversation_id == CONVERSATION  # type: ignore[attr-defined]
+    assert saved.model_dump(exclude={"id", "created_at", "updated_at", "deleted_at"}) == (  # type: ignore[attr-defined]
+        fields | {"conversation_id": CONVERSATION}
+    )
     assert "Created" in result

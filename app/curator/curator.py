@@ -20,9 +20,11 @@ one write path per store, not a parallel curator-only one that could drift from 
 
 import logging
 import secrets
+from collections.abc import Callable
 from typing import NamedTuple
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, ToolSet
 from baski.env import get_env
 from baski.primitives import datetime
@@ -48,6 +50,12 @@ _WINDOW = datetime.timedelta(days=1)
 _TURNS = "conversation_turns"
 
 
+# How the report is cut to Telegram's message limit. Taken as a dependency, not imported: the
+# splitter lives in the chat layer, and a domain module reaching into the transport is the coupling
+# `ScheduleRunner` was just freed from.
+MessageSplitter = Callable[[str], list[str]]
+
+
 class ReviewOutcome(NamedTuple):
     """What one review produced: the owner-facing report and what the pass cost."""
 
@@ -63,15 +71,16 @@ def _run_id() -> str:
 class Curator:
     """Runs one maintenance pass over one conversation. Lifecycle: long-lived, one per bot."""
 
-    def __init__(self, deps: CoreDeps, *, bot: Bot) -> None:
-        """Hold the shared clients; the bot is how the report reaches the owner."""
+    def __init__(self, deps: CoreDeps, *, bot: Bot, split_message: MessageSplitter) -> None:
+        """Hold the shared clients, the bot the report goes out on, and the chat layer's splitter."""
         self._deps = deps
         self._bot = bot
+        self._split_message = split_message
         self._runs = CuratorRunStore(deps.database)
 
-    async def active_conversations(self, *, window: datetime.timedelta = _WINDOW) -> list[int]:
-        """Conversations with a turn in the window — the ones with anything to learn from."""
-        since = datetime.now() - window
+    async def active_conversations(self) -> list[int]:
+        """Conversations with a turn in the review window — the ones with anything to learn from."""
+        since = datetime.now() - _WINDOW
         ids = await self._deps.database[_TURNS].distinct("conversation_id", {"created_at": {"$gte": since}})
         logger.info("Curator sweep", extra={"conversations": len(ids)})
         return sorted(ids)
@@ -90,27 +99,63 @@ class Curator:
                 return await self._record_idle(run_id, conversation_id=conversation_id, since=since)
 
             classification = await classify(self._deps.anthropic, evidence)
-            outcome = await self._review(
-                conversation_id=conversation_id, run_id=run_id, evidence=evidence, classification=classification
-            )
-            changes = await RevisionLog(self._deps.database, conversation_id=conversation_id).for_run(run_id)
-            run = await self._runs.record(
-                CuratorRun(
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    since=since,
-                    exchanges_reviewed=len(evidence.exchanges),
-                    owner_messages=evidence.owner_message_count,
-                    reactions_reviewed=evidence.reaction_count,
-                    signals=[f"{s.kind}: {s.about}" for s in classification.signals],
-                    changes=len(changes),
-                    report=outcome.report,
-                    cost=outcome.cost,
+            try:
+                outcome = await self._review(
+                    conversation_id=conversation_id, run_id=run_id, evidence=evidence, classification=classification
                 )
+            except Exception as exc:
+                # The tools committed their edits as they ran, so a failure here leaves the owner's
+                # stores already changed. Recording and reporting that BEFORE re-raising is the whole
+                # point — Cloud Scheduler does not retry, so an unreported half-pass would otherwise
+                # be a silent overnight rewrite with only orphaned revisions to show for it.
+                await self._settle(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    since=since,
+                    evidence=evidence,
+                    classification=classification,
+                    outcome=ReviewOutcome(report=f"⚠️ Проход упал, но правки уже сделаны: {exc}", cost=0.0),
+                )
+                raise
+            run = await self._settle(
+                run_id=run_id,
+                conversation_id=conversation_id,
+                since=since,
+                evidence=evidence,
+                classification=classification,
+                outcome=outcome,
             )
-            await self._send_report(conversation_id=conversation_id, run=run)
-            logger.info("Curator pass finished", extra={"changes": len(changes), "cost": outcome.cost})
+            logger.info("Curator pass finished", extra={"changes": run.changes, "cost": outcome.cost})
             return run
+
+    async def _settle(  # noqa: PLR0913 — everything one finished pass has to write down
+        self,
+        *,
+        run_id: str,
+        conversation_id: int,
+        since: datetime.datetime,
+        evidence: Evidence,
+        classification: Classification,
+        outcome: ReviewOutcome,
+    ) -> CuratorRun:
+        """Count what the pass changed, record the run, and tell the owner. Runs on both exits."""
+        changes = await RevisionLog(self._deps.database, conversation_id=conversation_id).for_run(run_id)
+        run = await self._runs.record(
+            CuratorRun(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                since=since,
+                exchanges_reviewed=len(evidence.exchanges),
+                owner_messages=evidence.owner_message_count,
+                reactions_reviewed=evidence.reaction_count,
+                signals=[f"{s.kind}: {s.about}" for s in classification.signals],
+                changes=len(changes),
+                report=outcome.report,
+                cost=outcome.cost,
+            )
+        )
+        await self._send_report(conversation_id=conversation_id, run=run)
+        return run
 
     async def _review(
         self, *, conversation_id: int, run_id: str, evidence: Evidence, classification: Classification
@@ -177,16 +222,17 @@ class Curator:
         )
 
     async def _send_report(self, *, conversation_id: int, run: CuratorRun) -> None:
-        """Message the owner what the pass did.
+        """Message the owner what the pass did, split to Telegram's size limit like every other send.
 
-        Best-effort: the edits are already durable and recorded, so a Telegram failure must not undo
-        a good pass — but it IS logged loudly, because an unreported change is the thing this whole
-        design is trying to avoid.
+        A night with many changes runs past 4096 characters, and an over-long message is rejected
+        whole — the report would vanish while the edits stood. Degrades on a transport failure only:
+        the edits are durable and in the run record, so a Telegram outage must not undo a good pass.
         """
         header = f"🌙 Ночная уборка · изменений: {run.changes} · разобрано сообщений: {run.owner_messages}"
         try:
-            await self._bot.send_message(chat_id=conversation_id, text=f"{header}\n\n{run.report}")
-        except Exception:  # noqa: BLE001 — the pass succeeded; only its delivery failed
+            for chunk in self._split_message(f"{header}\n\n{run.report}"):
+                await self._bot.send_message(chat_id=conversation_id, text=chunk)
+        except TelegramAPIError:
             logger.warning("Curator report not delivered; changes stand and are in the run record", exc_info=True)
 
 

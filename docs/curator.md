@@ -50,8 +50,8 @@ The taxonomy is not invented. It follows the implicit-feedback ontology of Don-Y
 as densely re-annotated by Liu, Zhang & Choi, *User Feedback in Human-LLM Dialogues: A Lens to
 Understand Users But Noisy as a Learning Signal* (arXiv:2507.23158) — positive feedback plus four
 negative kinds (rephrase, make-aware-without-correction, make-aware-with-correction, ask-for-
-clarification). Two labels are added for what this bot routes on and that ontology has no slot for:
-`directive` (a standing rule) and `social`.
+clarification). Three labels are added for what this bot routes on and a *feedback* ontology has no
+slot for: `request` (no verdict at all), `directive` (a standing rule), and `social`.
 
 | Kind | What it is | What it is worth |
 |---|---|---|
@@ -134,6 +134,13 @@ case-duplicated list, praise, and a 👍) produced, on two consecutive runs:
 Every one of those changes is in `revisions` with its `before`. The first run exposed a real gap —
 the list dedupe ran as clear-then-add and only the clear was recorded, so the history read "list
 destroyed"; `ListStore.add` now records too.
+
+## What the owner is told
+
+`/help` closes with the two things they cannot discover from the command list: that a reaction is the
+cheapest way to signal (and that words beat an emoji when something is wrong), and that a nightly
+pass edits these stores and reports in the morning. The report itself arrives as a Telegram message,
+split to the size limit like every other send.
 
 ## Known limits
 

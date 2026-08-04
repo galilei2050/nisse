@@ -62,6 +62,8 @@ class PromptStore:
         survives, and the only way the owner can see what a curator pass rewrote.
         """
         previous = await self.get(prompt_type)
+        if previous == content:
+            return  # an edit that matched nothing; recording it would inflate the owner's change count
         await self._revisions.record(
             collection=_COLLECTION,
             target=prompt_type,

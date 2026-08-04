@@ -49,6 +49,10 @@ logger = logging.getLogger(__name__)
 _ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 _COLLECTION = "conversation_turns"
+# The judge's retry feedback re-enters the loop as a USER message (baski `judge.retry_prompt`) and is
+# persisted like any other turn, so anything reading the transcript back as "what the owner said"
+# must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
+JUDGE_RETRY_PREFIX = "[Completeness check]"
 _MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3

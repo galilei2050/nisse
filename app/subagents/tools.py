@@ -1,8 +1,8 @@
 """Sub-agent management as tools — read the roster, write one config.
 
-Editing a sub-agent used to mean editing `agents.yml` and re-running the seed script, so tuning a
-worker's prompt was a deploy-shaped task. These two tools make the roster editable at runtime, which
-is what lets the curator act on what it learned overnight instead of only reporting it.
+The roster is editable at runtime through these two tools, which is what lets the curator act on what
+it learned overnight instead of only reporting it. `agents.yml` plus `make seed` remains the other
+writer — the file is still the source of truth for the roster's shape.
 
 **This is a trusted admin surface** (`app/subagents/CLAUDE.md`): a config decides which tools, which
 model, and which prompt a child agent runs with. Only the curator gets these tools — they are
@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # A child agent's model is a cost and quality decision, not a free-text field: a typo'd id fails at
 # call time, and an expensive id silently multiplies the bill of every delegation.
 ALLOWED_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001")
+
+# The registry name this pair is registered under. Absence from `MAIN_TOOLS` keeps it away from the
+# main agent; refusing it in `tool_names` keeps it away from sub-agents, which the main agent CAN
+# reach. Both are needed — the registry resolves any registered name for a sub-agent config.
+MANAGEMENT_TOOL_NAME = "subagents"
 
 
 class SubagentListTool(Tool):
@@ -118,6 +123,10 @@ class SubagentSaveTool(Tool):
         """
         if config.model not in ALLOWED_MODELS:
             return f"Rejected: model '{config.model}' is not one of {', '.join(ALLOWED_MODELS)}."
+        if MANAGEMENT_TOOL_NAME in config.tool_names:
+            # Otherwise the curator could hand this write surface to a sub-agent, which the main
+            # agent delegates to from ordinary chat — routing around "curator-only" entirely.
+            return f"Rejected: '{MANAGEMENT_TOOL_NAME}' may not be given to a sub-agent."
         siblings = {existing.name for existing in await self._store.list()} | {config.name}
         unknown = [n for n in config.tool_names if self._deps.tools.get(n) is None and n not in siblings]
         if unknown:
@@ -147,5 +156,5 @@ def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
 
 
 def register_management_tools(registrar: ToolRegistrar) -> None:
-    """Register `subagents` — the management pair. Deliberately NOT in `MAIN_TOOLS`."""
-    registrar.register("subagents", build_subagent_tools)
+    """Register the management pair. Deliberately NOT in `MAIN_TOOLS`, and refused in `tool_names`."""
+    registrar.register(MANAGEMENT_TOOL_NAME, build_subagent_tools)

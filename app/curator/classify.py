@@ -11,8 +11,9 @@ every message to serve a nightly consumer. Here the whole window costs one call.
 The taxonomy is not invented. It follows the implicit-feedback ontology of Don-Yehiya et al. (2024),
 as used and densely re-annotated by Liu, Zhang & Choi, *User Feedback in Human-LLM Dialogues*
 (arXiv:2507.23158): positive feedback plus four negative kinds — rephrasing, make-aware-without-
-correction, make-aware-with-correction, and ask-for-clarification. Two labels are added for what
-this bot must route on and that ontology has no slot for: a standing instruction, and pure talk.
+correction, make-aware-with-correction, and ask-for-clarification. Three labels are added for what
+this bot must route on and a *feedback* ontology has no slot for: a plain request (a message
+carrying no verdict at all), a standing instruction, and pure talk.
 
 Three findings from that paper shape how the output may be used, and they are why nothing here
 triggers a change on its own:
@@ -75,11 +76,6 @@ class Classification(BaseModel):
 
     signals: list[MessageSignal]
 
-    def of_kind(self, *kinds: MessageKind) -> list[MessageSignal]:
-        """Every signal of the given kinds — how the curator counts recurrence before acting."""
-        wanted = set(kinds)
-        return [signal for signal in self.signals if signal.kind in wanted]
-
 
 _INSTRUCTIONS = (
     "You label what the OWNER's messages in a chat transcript were doing. You are building evidence "
@@ -116,8 +112,6 @@ async def classify(anthropic: AsyncAnthropic, evidence: Evidence) -> Classificat
     Failing loud is right here: a curator running on a silently-empty classification would look like
     a quiet night rather than a broken pass.
     """
-    if not evidence.exchanges:
-        return Classification(signals=[])
     message = await anthropic.messages.create(
         model=CLASSIFIER_MODEL,
         max_tokens=_MAX_TOKENS,

@@ -8,7 +8,8 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 
 - `store.py` — `SubagentConfig(NisseDbModel)` (eight required config axes incl. `max_turns` — the hard
   cap on the child's loop, passed to `AgentConfig.max_turns` — + `conversation_id`) +
-  `SubagentStore` (scoped `list()` for the build; `save()` is seed-only; `ensure_indexes` unique on
+  `SubagentStore` (scoped `list()` for the build; `save()` records the config it replaced and is
+  shared by the seed script and the curator; `ensure_indexes` unique on
   `(conversation_id, name)`).
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and

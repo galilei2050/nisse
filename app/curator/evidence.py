@@ -22,12 +22,14 @@ from typing import NamedTuple, TypedDict, cast
 from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.assistant.history import JUDGE_RETRY_PREFIX
+from app.scheduling.store import SCHEDULED_PREFIX
+
 logger = logging.getLogger(__name__)
 
 _TURNS = "conversation_turns"
 _REACTIONS = "reactions"
 _ANSWER_PREVIEW = 900  # chars of the answer kept per exchange — enough to judge, not the whole essay
-_SCHEDULED_MARKER = "[Запланировано]"  # the scheduling runner's self-prompt; not the owner speaking
 
 
 @dataclass
@@ -125,23 +127,30 @@ def _group(docs: list[StoredTurn], reactions: dict[int, list[str]]) -> list[Exch
 
     The LAST answer wins rather than all of them concatenated — the middle turns are the live
     progress narration ("смотрю списки"), and what the owner read and reacted to is the final reply.
+
+    A judge retry is the loop talking to itself in the user role, so it EXTENDS the exchange it
+    belongs to: the owner asked once, the judge sent the draft back, and the redone answer is the one
+    that should hang off the owner's question. Opening a new exchange there would hand the curator a
+    machine-written "correction" quoting the bot's own judge — the self-confirming loop its prompt
+    forbids — and leave the owner's real question paired with the draft the judge rejected.
     """
     exchanges: list[Exchange] = []
     for doc in docs:
         texts = _turn_texts(list(doc["messages"]))
+        owner_text = "" if texts.owner.startswith(JUDGE_RETRY_PREFIX) else texts.owner
         turn_id = doc["turn_id"]
         emoji = reactions.get(turn_id, [])
-        if texts.owner or not exchanges:
-            if not texts.owner and not texts.answer:
-                continue  # a pure tool turn with nothing open to extend
+        if owner_text or not exchanges:
+            if not owner_text and not texts.answer:
+                continue  # a pure tool turn (or a judge retry) with nothing open to extend
             exchanges.append(
                 Exchange(
                     turn_id=turn_id,
                     at=doc["created_at"],
-                    owner_text=texts.owner,
+                    owner_text=owner_text,
                     answer_text=texts.answer,
                     reactions=list(emoji),
-                    scheduled=texts.owner.startswith(_SCHEDULED_MARKER),
+                    scheduled=owner_text.startswith(SCHEDULED_PREFIX),
                 )
             )
             continue
@@ -163,38 +172,43 @@ async def collect(database: AsyncDatabase, *, conversation_id: int, since: datet
         .find({"conversation_id": conversation_id, "created_at": {"$gte": since}}, sort=[("turn_id", 1)])
         .to_list(length=None)
     )
-    reactions = await _reactions_by_turn(database, conversation_id=conversation_id, since=since)
+    reactions = await _reactions_by_turn(
+        database, conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
+    )
     exchanges = _group(cast("list[StoredTurn]", docs), reactions)
     for exchange in exchanges:
         exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
 
+    evidence = Evidence(conversation_id=conversation_id, since=since, exchanges=exchanges)
     logger.info(
         "Curator evidence collected",
         extra={
             "conversationId": conversation_id,
             "turns": len(docs),
             "exchanges": len(exchanges),
-            "ownerMessages": sum(1 for e in exchanges if e.has_owner_input),
-            "reactedExchanges": sum(1 for e in exchanges if e.reactions),
+            "ownerMessages": evidence.owner_message_count,
+            "reactedExchanges": evidence.reaction_count,
         },
     )
-    return Evidence(conversation_id=conversation_id, since=since, exchanges=exchanges)
+    return evidence
 
 
 async def _reactions_by_turn(
-    database: AsyncDatabase, *, conversation_id: int, since: datetime.datetime
+    database: AsyncDatabase, *, conversation_id: int, turn_ids: list[int]
 ) -> dict[int, list[str]]:
-    """The CURRENT emoji per turn, from the reaction log.
+    """The CURRENT emoji on each of `turn_ids`, from the reaction log.
+
+    Keyed on the turns being reviewed, NOT on a time window: the owner reads an answer over coffee
+    and taps it the next morning, so the tap and the turn fall in different nights. Windowing both
+    would drop that reaction forever — the run holding the turn predates the tap, and the run holding
+    the tap no longer collects the turn.
 
     The log is append-only and each record holds the whole new set, so the last record for a turn is
     its present state — an earlier 👍 that was taken back must not be read as still standing.
     """
     docs = (
         await database[_REACTIONS]
-        .find(
-            {"conversation_id": conversation_id, "reacted_at": {"$gte": since}, "turn_id": {"$ne": None}},
-            sort=[("reacted_at", 1)],
-        )
+        .find({"conversation_id": conversation_id, "turn_id": {"$in": turn_ids}}, sort=[("reacted_at", 1)])
         .to_list(length=None)
     )
     latest: dict[int, list[str]] = {}

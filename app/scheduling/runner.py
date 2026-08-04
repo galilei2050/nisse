@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from baski.primitives import datetime
 
-from app.scheduling.store import ScheduleKind, claim, mark_done, reschedule
+from app.scheduling.store import SCHEDULED_PREFIX, ScheduleKind, claim, mark_done, reschedule
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
     from aiogram import Bot
@@ -17,9 +17,8 @@ if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant impor
     from app.assistant import Assistant
     from app.scheduling.service import SchedulingService
 
-# How a result becomes the text sent to the owner. Taken as a dependency rather than imported:
-# `app.chat` imports this package (the /schedules viewer), so importing the chat layer back closed a
-# real cycle that only stayed quiet because backend.py happened to load `app.chat` first.
+# How a result becomes the text sent to the owner. Taken as a dependency, not imported: `app.chat`
+# imports this package (the /schedules viewer), so importing the chat layer back would cycle.
 AnswerFormatter = Callable[["AgentExecuteResult"], str]
 
 
@@ -66,7 +65,7 @@ class ScheduleRunner:
 
             try:
                 result = await self._assistant.reply(
-                    conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"
+                    conversation_id=task.conversation_id, text=f"{SCHEDULED_PREFIX} {task.instruction}"
                 )
                 await self._bot.send_message(chat_id=task.conversation_id, text=self._format_answer(result))
                 if task.kind is ScheduleKind.ONCE:

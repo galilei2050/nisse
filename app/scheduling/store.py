@@ -19,6 +19,9 @@ from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
 
 _COLLECTION = "scheduled_tasks"
+# How a fired task's instruction enters the transcript. The runner writes it and the curator skips
+# it: a reminder firing is the bot prompting itself, never the owner speaking.
+SCHEDULED_PREFIX = "[Запланировано]"
 
 
 class ScheduleKind(StrEnum):

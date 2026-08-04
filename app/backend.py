@@ -26,7 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
-from app.chat.format import compose_answer
+from app.chat.format import compose_answer, split_message
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
@@ -88,7 +88,7 @@ class NisseBot(TelegramServer):
     @cached_property
     def curator(self) -> Curator:
         """The nightly maintenance pass; Cloud Scheduler drives it through POST /curate."""
-        return Curator(self.deps, bot=self.bot)
+        return Curator(self.deps, bot=self.bot, split_message=split_message)
 
     @cached_property
     def assistant(self) -> Assistant:

@@ -26,9 +26,9 @@ curator_schedule = gcp.cloudscheduler.Job(
     description="Nightly memory consolidation pass over every active conversation",
     schedule=CURATE_SCHEDULE,
     time_zone=CURATE_TIMEZONE,
-    # One pass reviews a day and edits the stores; a retry would re-run edits the first attempt
-    # already made, against a window it has already learned from. A missed night is cheaper.
-    attempt_deadline="1800s",
+    attempt_deadline="1800s",  # matches the Cloud Run request timeout: a sweep runs an agent per chat
+    # A retry would re-run edits the first attempt already made, against a window it has already
+    # learned from. A missed night is cheaper than a double-applied one.
     retry_config=gcp.cloudscheduler.JobRetryConfigArgs(retry_count=0),
     http_target=gcp.cloudscheduler.JobHttpTargetArgs(
         uri=backend_cloud_run_service.uri.apply(lambda uri: f"{uri}/curate"),

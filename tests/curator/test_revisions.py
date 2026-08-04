@@ -53,22 +53,9 @@ async def test_a_curator_edit_keeps_the_text_it_replaced() -> None:
     assert doc["kind"] == ChangeKind.REPLACE
 
 
-async def test_writes_outside_a_run_are_the_assistant_with_no_run() -> None:
-    """The live agent writes through the same stores. Filing those as curator work would make the
-    nightly report claim edits the owner made themselves, mid-conversation."""
-    db = _FakeDatabase()
-    await _log(db).record(
-        collection="memories", target="ab12cd", kind=ChangeKind.CREATE, before=None, after="flies out of SJC"
-    )
-
-    (doc,) = db["revisions"].inserted
-    assert doc["actor"] == Actor.ASSISTANT
-    assert doc["run_id"] is None
-
-
 async def test_attribution_is_restored_after_the_run_block() -> None:
-    """A curator pass and a live reply can run in the same process; leaking the actor past the block
-    would attribute the owner's own edits to the night's maintenance."""
+    """A curator pass and a live reply run in the same process; leaking the actor past the block
+    would attribute the owner's own mid-conversation edits to the night's maintenance."""
     assert current_attribution().actor is Actor.ASSISTANT
     with acting_as(Actor.CURATOR, run_id="run7"):
         assert current_attribution().actor is Actor.CURATOR

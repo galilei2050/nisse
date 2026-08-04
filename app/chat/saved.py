@@ -71,6 +71,14 @@ BOT_COMMANDS = [
 ]
 
 _HELP_INTRO = "Пиши текстом или голосом, шли фото и PDF — отвечу. Посмотреть, что я сохранил:"
+# The nightly pass edits the same stores these commands show, so the owner needs to know it exists —
+# and that a reaction is what feeds it. Without this, changes appear overnight with no explanation.
+_HELP_FOOTER = (
+    "\n\nСтавь реакции на мои ответы — это самый быстрый способ мне подсказать. Что не так, лучше "
+    "написать словами: по одному эмодзи я не пойму, в чём именно промах.\n"
+    "Ночью я разбираю прошедший день, чищу и поправляю всё перечисленное выше — и утром присылаю "
+    "отчёт: что изменила и почему. Не согласен с правкой — скажи, верну."
+)
 
 _CATEGORY_RU = {MemoryCategory.FACT: "факт", MemoryCategory.EVENT: "событие"}
 _SOURCE_RU = {
@@ -241,7 +249,7 @@ class SavedViewer:
     async def show_help(self, message: Message) -> None:
         """`/help` — the command list, built from BOT_COMMANDS so it can never drift from the menu."""
         commands = "\n".join(f"/{command.command} — {command.description}" for command in BOT_COMMANDS)
-        await self._answer(message, f"{_HELP_INTRO}\n\n{commands}")
+        await self._answer(message, f"{_HELP_INTRO}\n\n{commands}{_HELP_FOOTER}")
 
     async def show_lists(self, message: Message) -> None:
         """`/lists` — the named lists in this chat, one button each."""

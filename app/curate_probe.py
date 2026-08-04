@@ -30,6 +30,7 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT
+from app.chat.format import split_message
 from app.curator.classify import classify
 from app.curator.curator import Curator
 from app.curator.evidence import collect, render
@@ -43,15 +44,11 @@ if TYPE_CHECKING:
     from pymongo.asynchronous.database import AsyncDatabase
 
 
-class _PrintingBot:
-    """Stands in for the Bot: the report goes to stdout instead of Telegram."""
+class _SilentBot:
+    """Stands in for the Bot. The report is printed from the run record below, not from the send."""
 
-    def __init__(self) -> None:
-        self.sent: list[str] = []
-
-    async def send_message(self, *, chat_id: int, text: str) -> None:  # noqa: ARG002 — matches Bot.send_message
-        """Capture the report the owner would have received."""
-        self.sent.append(text)
+    async def send_message(self, *, chat_id: int, text: str) -> None:
+        """Swallow the outbound message — off Telegram there is nobody to deliver it to."""
 
 
 async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
@@ -76,7 +73,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             print("\n(dry run — stopping before the curator edits anything)")
             return
 
-        bot = _PrintingBot()
+        bot = _SilentBot()
         playwright = await resources.enter_async_context(PlaywrightClient(headless=True))
         deps = CoreDeps(
             http=http,
@@ -90,7 +87,8 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             tools=build_tool_registry(),
             bot=cast("Bot", bot),
         )
-        run = await Curator(deps, bot=cast("Bot", bot)).curate(conversation_id=conversation_id, window=window)
+        curator = Curator(deps, bot=cast("Bot", bot), split_message=split_message)
+        run = await curator.curate(conversation_id=conversation_id, window=window)
 
         changes = await RevisionLog(database, conversation_id=conversation_id).for_run(run.run_id)
         print(f"\n=== CHANGES ({len(changes)}) ===")

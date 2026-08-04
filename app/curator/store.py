@@ -17,7 +17,7 @@ _COLLECTION = "curator_runs"
 class CuratorRun(NisseDbModel):
     """One maintenance pass. Lifecycle: a data record — written once when the pass ends.
 
-    A pass with nothing to review is still recorded, with `turns_reviewed` 0 and an empty report:
+    A pass with nothing to review is still recorded, with `exchanges_reviewed` 0 and an empty report:
     "ran and found nothing" must be distinguishable from "never ran".
     """
 
@@ -50,8 +50,3 @@ class CuratorRunStore:
         result = await self._collection.insert_one(run.model_dump(exclude={"id"}))
         run.id = str(result.inserted_id)
         return run
-
-    async def latest(self, conversation_id: int, *, limit: int) -> list[CuratorRun]:
-        """The most recent passes for a conversation, newest first."""
-        cursor = self._collection.find({"conversation_id": conversation_id}).sort("created_at", -1).limit(limit)
-        return [CuratorRun.model_validate(doc) async for doc in cursor]
