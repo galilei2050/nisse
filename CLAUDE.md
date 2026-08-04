@@ -38,7 +38,9 @@ The bot is a **delegate** standing in for a personal assistant — design and ev
   entity (`evidence.render()`) — but only when the view is built from the entity's own fields and
   bakes in no consumer's format. A rendering that exists for one consumer (Telegram markup, a tool's
   result contract) stays in that consumer's module; otherwise only dependency-free helpers over
-  primitives stay free functions.
+  primitives stay free functions. Enforced, not just documented: `anon_lint.py`'s **ANON003** fails
+  `make lint` on a module-level function that takes a client/database/bot/store. A genuine exception
+  needs `# noqa: ANON003` naming why.
 - Keep `__call__`/`run` methods as 3-5 line orchestrators. Push concerns into private methods.
 - **Updating `CLAUDE.md` is part of every task.** When a change alters structure, conventions, or a documented fact, update the relevant `CLAUDE.md` in the same task — a task isn't done if the docs now lie. Keep it meaning + instructions, never a copy of discoverable code.
 - **Throwaway scripts and scratch data go in `scratch/`** (git-ignored) — never `/tmp`, never the repo root. One-off analysis/verification scripts, downloaded traces, ad-hoc dumps live there; run them with `uv run --env-file .env python scratch/<x>.py`.

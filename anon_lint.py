@@ -1,4 +1,7 @@
-"""anon-lint: ban anonymous tuple/dict in function/class type annotations.
+"""anon-lint: the repo's own AST rules, for smells ruff has no check for.
+
+- ANON001/ANON002 — ban anonymous tuple/dict in function/class type annotations.
+- ANON003 — ban a dependency (client, database, bot, store) in a free function's parameters.
 
 Run as:
     python -m anon_lint <files_or_dirs...> [--recursive]
@@ -30,6 +33,26 @@ _TUPLE_MIN_FLAG_ELEMENTS = 2
 _DICT_SLICE_ELEMENTS = 2
 
 NOQA_RE = re.compile(r"#\s*noqa\s*:\s*([A-Za-z0-9, ]+)")
+
+# ANON003 — a long-lived collaborator is bound in a constructor, never threaded through calls. A
+# module-level function that takes one is a method missing its class, and the behaviour around it has
+# no home object to be found in, so the next reader writes a second copy of it somewhere else.
+# `CoreDeps` is deliberately absent: a tool factory `(deps, conversation_id) -> list[Tool]` is the
+# registry's contract, and the point of CoreDeps is to be passed.
+DEPENDENCY_TYPES = {
+    "AsyncAnthropic",
+    "AsyncDatabase",
+    "AsyncCollection",
+    "AsyncElevenLabs",
+    "AsyncClient",  # httpx
+    "Bot",
+    "PlaywrightClient",
+    "SerpApiClient",
+    "Scheduler",
+    "Judge",
+}
+# Anything named this way is one too, without having to enumerate every store in the repo.
+DEPENDENCY_SUFFIXES = ("Store", "Log", "Registry")
 
 
 @dataclass(frozen=True)
@@ -90,6 +113,23 @@ def _subscript_base(node: ast.expr) -> str | None:
     return _name_of(node.value) if isinstance(node, ast.Subscript) else None
 
 
+def _dependency_name(annotation: ast.expr | None) -> str | None:
+    """The dependency type this annotation names, or None. Unwraps `X[...]` and a quoted `"X"`."""
+    if annotation is None:
+        return None
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return None
+    name = _subscript_base(annotation) or _name_of(annotation)
+    if name is None:
+        return None
+    if name in DEPENDENCY_TYPES or name.endswith(DEPENDENCY_SUFFIXES):
+        return name
+    return None
+
+
 class _Checker:
     def __init__(self, source_lines: list[str], path: Path) -> None:
         self.source_lines = source_lines
@@ -111,6 +151,27 @@ class _Checker:
         if self._suppressed(line, code):
             return
         self.findings.append(Finding(self.path, line, col, code, f"{_src(offender)} — {message}"))
+
+    def check_free_function_deps(self, fn: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """Flag a module-level function that takes a long-lived collaborator as a parameter."""
+        args = fn.args
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+            dependency = _dependency_name(arg.annotation)
+            if dependency is None:
+                continue
+            line = fn.lineno
+            if self._suppressed(line, "ANON003"):
+                continue
+            self.findings.append(
+                Finding(
+                    self.path,
+                    line,
+                    fn.col_offset,
+                    "ANON003",
+                    f"{fn.name}({arg.arg}: {dependency}) — bind it in a class, don't pass it per call",
+                )
+            )
+            return  # one finding per function; the fix is the same whichever parameter tripped it
 
     def check_annotation(self, node: ast.expr | None) -> None:
         """Walk a single function/class annotation looking for anonymous tuple/dict."""
@@ -186,6 +247,9 @@ def lint_source(source: str, path: Path) -> list[Finding]:
     except SyntaxError:
         return []
     checker = _Checker(source.splitlines(), path)
+    for node in tree.body:  # ANON003 is about MODULE-level functions; a method is already bound
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            checker.check_free_function_deps(node)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             _check_function(node, checker)
