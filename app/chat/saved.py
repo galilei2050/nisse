@@ -181,8 +181,9 @@ def _render_schedule(task: ScheduledTask) -> str:
 class _Index:
     """One store's browsable records, and the two views a tap moves between.
 
-    Read fresh from the store on every tap, so the index a button was drawn on and the one it opens
-    are never the same object — which is exactly why `entry` re-checks the position it was handed.
+    Lifecycle: short-lived — rebuilt from the store on every command and every tap, so the index a
+    button was drawn on and the one it opens are never the same object. That is exactly why `entry`
+    re-checks the position it was handed.
     """
 
     kind: SavedKind

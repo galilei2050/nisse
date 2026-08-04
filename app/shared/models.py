@@ -34,9 +34,10 @@ class NisseDbModel(BaseModel):
 class PublicIdModel(NisseDbModel):
     """A record the agent addresses by a short id of its own, not by the Mongo `_id`.
 
-    Ten hex characters: short enough that the model copies it back without a typo, wide enough that
-    the unique index never has to reject a collision. `public_id` is never reused — a forgotten
-    record keeps its id, so a stale reference resolves to nothing rather than to someone else's row.
+    Lifecycle: a data record — one Mongo document. Ten hex characters: short enough that the model
+    copies it back without a typo, wide enough that the unique index never has to reject a collision.
+    `public_id` is never reused — a forgotten record keeps its id, so a stale reference resolves to
+    nothing rather than to someone else's row.
     """
 
     public_id: str = Field(default_factory=lambda: secrets.token_hex(5))

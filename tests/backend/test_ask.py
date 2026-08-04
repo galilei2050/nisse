@@ -17,7 +17,7 @@ from baski.agents import AgentRefusalError
 from baski.primitives import datetime
 
 from app.chat import ask
-from app.chat.ask import AskUserTool, questions
+from app.chat.ask import AskUserTool, PendingQuestions
 from app.chat.reactions import ReactionRecorder
 from app.chat.router import ChatRouter
 from app.chat.saved import SavedViewer
@@ -26,10 +26,13 @@ from tests.backend.test_reactions import _FakeDatabase
 CHAT_ID = 42
 SENT_AT = datetime.as_utc(datetime.datetime(2026, 8, 2, 19, 0))
 
+# One registry for the tool and the router, as `CoreDeps` gives the process exactly one.
+questions = PendingQuestions()
+
 
 @pytest.fixture(autouse=True)
 def _no_leftover_questions() -> Iterator[None]:
-    """`questions` is process-wide; a question leaked by one test would answer another's message."""
+    """A question leaked by one test would answer the next test's message."""
     yield
     questions._pending.clear()
 

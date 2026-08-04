@@ -148,8 +148,9 @@ class FireStore:
         The single source of idempotency under Cloud Tasks' at-least-once delivery: only the first
         delivery of an occurrence flips PENDING→RUNNING and yields the task; every duplicate (already
         RUNNING/DONE, or advanced to a later fire_at) matches nothing and yields None. If the body
-        raises, the claim is released back to PENDING (when still RUNNING for this occurrence) so the
-        retry can re-run it — a crash mid-fire never leaks a task stuck in RUNNING.
+        raises, the claim is released back to PENDING (when still RUNNING for this occurrence), so a
+        failed fire leaves a task that can be re-armed rather than one wedged in RUNNING. Nothing
+        re-runs it on its own: the queue is at-most-once (`max_attempts=1`).
         """
         doc = await self._collection.find_one_and_update(
             {"public_id": public_id, "fire_at": fire_at, "status": ScheduleStatus.PENDING, "deleted_at": None},
@@ -160,7 +161,8 @@ class FireStore:
         try:
             yield task
         # Releases on cancellation as well as on error. A KILLED process (SIGKILL, OOM) runs nothing
-        # here, so its occurrence stays RUNNING and never fires again — there is no reaper yet.
+        # here: a one-shot's occurrence stays RUNNING and never fires again — a recurring task has
+        # already re-armed itself by this point. There is no reaper yet.
         except BaseException:
             if task is not None:
                 await self._collection.update_one(

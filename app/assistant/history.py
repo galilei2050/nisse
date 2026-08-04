@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 _ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
-_COLLECTION = "conversation_turns"
+TURNS_COLLECTION = "conversation_turns"  # public: the curator reads this collection too
 # The judge's retry feedback re-enters the loop as a USER message (baski `judge.retry_prompt`) and is
 # persisted like any other turn, so anything reading the transcript back as "what the owner said"
 # must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
@@ -160,7 +160,7 @@ class MongoMessageHistory(MessageHistory):
 
     def __init__(self, *, database: AsyncDatabase, conversation_id: int) -> None:
         """Bind the history to one conversation and start with an empty in-memory transcript."""
-        self._collection = database[_COLLECTION]
+        self._collection = database[TURNS_COLLECTION]
         self._conversation_id = conversation_id
 
         # In-memory transcript + turn assembly (Protocol surface).
@@ -177,7 +177,7 @@ class MongoMessageHistory(MessageHistory):
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
-        col = database[_COLLECTION]
+        col = database[TURNS_COLLECTION]
         await ensure_index(col, [("conversation_id", 1), ("turn_id", 1)], unique=True)
         await ensure_index(col, [("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
         await ensure_index(col, [("conversation_id", 1), ("message_ids", 1)])  # TurnLookup's reverse lookup
@@ -380,7 +380,7 @@ class TurnLookup:
 
     def __init__(self, database: AsyncDatabase) -> None:
         """Bind to the turns collection; the conversation is a query argument, not a scope."""
-        self._collection = database[_COLLECTION]
+        self._collection = database[TURNS_COLLECTION]
 
     async def turn_for_message(self, *, conversation_id: int, message_id: int) -> int | None:
         """The turn a message belongs to, or None.

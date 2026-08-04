@@ -30,6 +30,7 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT
+from app.chat.ask import PendingQuestions
 from app.chat.format import split_message
 from app.curator.classify import MessageClassifier
 from app.curator.curator import Curator
@@ -88,6 +89,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT),
             tools=build_tool_registry(),
             bot=cast("Bot", bot),
+            questions=PendingQuestions(),  # the curator has no ask_user; CoreDeps is one shape for every caller
         )
         curator = Curator(deps, bot=cast("Bot", bot), split_message=split_message)
         run = await curator.curate(conversation_id=conversation_id, window=window)

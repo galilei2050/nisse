@@ -12,6 +12,7 @@ from baski.clients.scheduler import Scheduler
 from pymongo.asynchronous.database import AsyncDatabase
 
 if TYPE_CHECKING:
+    from app.chat.ask import PendingQuestions
     from app.tools import ToolRegistry
 
 
@@ -36,6 +37,9 @@ class CoreDeps:
     judge: Judge  # cross-family completeness judge; the agent runs it at the loop's exit and retries
     tools: "ToolRegistry"  # the process-wide name→factory tool catalog (app/tools)
     bot: Bot  # transport for tools that talk to the owner directly (ask_user); the probe fakes one
+    # Where `ask_user` parks a question and where the chat router looks for one to answer — the two
+    # sides only meet if they hold the SAME registry, so it is owned here rather than as a global.
+    questions: "PendingQuestions"
     # Trace sink for main agent + every sub-agent; probe sets both to read the whole chain locally.
     local_traces_dir: str | None = None  # None → GCS
     await_trace: bool = False

@@ -108,33 +108,22 @@ class Curator:
                 )
             finally:
                 run = await self._settle(
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                    since=since,
-                    evidence=evidence,
-                    classification=classification,
-                    outcome=outcome,
+                    run_id=run_id, evidence=evidence, classification=classification, outcome=outcome
                 )
             logger.info("Curator pass finished", extra={"changes": run.changes, "cost": outcome.cost})
             return run
 
-    async def _settle(  # noqa: PLR0913 — everything one finished pass has to write down
-        self,
-        *,
-        run_id: str,
-        conversation_id: int,
-        since: datetime.datetime,
-        evidence: Evidence,
-        classification: Classification,
-        outcome: ReviewOutcome,
+    async def _settle(
+        self, *, run_id: str, evidence: Evidence, classification: Classification, outcome: ReviewOutcome
     ) -> CuratorRun:
         """Count what the pass changed, record the run, and tell the owner. Runs on both exits."""
+        conversation_id = evidence.conversation_id
         changes = await RevisionLog(self._deps.database, conversation_id=conversation_id).for_run(run_id)
         run = await self._runs.record(
             CuratorRun(
                 conversation_id=conversation_id,
                 run_id=run_id,
-                since=since,
+                since=evidence.since,
                 exchanges_reviewed=len(evidence.exchanges),
                 owner_messages=evidence.owner_message_count,
                 reactions_reviewed=evidence.reaction_count,

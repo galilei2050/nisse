@@ -48,7 +48,8 @@ class ScheduleRunner:
         """Claim the occurrence (idempotent), re-arm a recurring one, run the agent, deliver the reply.
 
         The `claim` context manager guarantees release: if anything below raises, the claim goes back
-        to PENDING and Cloud Tasks' retry re-runs it. Advance-then-execute: a recurring task is re-armed
+        to PENDING, so the occurrence is re-armable rather than wedged — nothing re-delivers it on its
+        own, since the queue is at-most-once. Advance-then-execute: a recurring task is re-armed
         and re-enqueued for its next occurrence BEFORE the agent runs, so a crash can't drop the schedule.
         A duplicate delivery loses the claim (task is None) and returns without side effects.
         """
@@ -72,7 +73,7 @@ class ScheduleRunner:
                     await self._tasks.mark_done(public_id=public_id)
             finally:
                 # Await the reply's fired history writes on every path (mirrors the chat router), so a
-                # failed fire never abandons completed turns; Cloud Tasks then retries the occurrence.
+                # failed fire never abandons completed turns — the queue never re-delivers them.
                 await self._assistant.flush(conversation_id=task.conversation_id)
 
     @staticmethod

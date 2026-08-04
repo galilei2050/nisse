@@ -26,7 +26,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
-from app.chat.ask import questions
+from app.chat.ask import PendingQuestions
 from app.chat.format import compose_answer, split_message
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
@@ -51,7 +51,7 @@ class NisseBot(TelegramServer):
             assistant=self.assistant,
             transcriber=self._transcriber,
             speaker=self._speaker,
-            questions=questions,  # the same registry `ask_user` parks its questions on
+            questions=self.deps.questions,  # the same registry `ask_user` parks its questions on
         ).build(
             saved=SavedViewer(self._database),
             reactions=ReactionRecorder(self._database, turns=TurnLookup(self._database)),
@@ -112,6 +112,7 @@ class NisseBot(TelegramServer):
             judge=self._judge,
             tools=build_tool_registry(),
             bot=self.bot,  # lets transport tools (ask_user) message the owner directly
+            questions=PendingQuestions(),
         )
 
     @cached_property

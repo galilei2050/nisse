@@ -197,9 +197,6 @@ class PendingQuestions:
             await query.message.edit_reply_markup(reply_markup=pending.keyboard())
 
 
-questions = PendingQuestions()
-
-
 class AskUserTool(Tool):
     """Ask the owner a clarifying question with tappable options; block until they answer.
 
@@ -267,7 +264,7 @@ class AskUserTool(Tool):
 
 
 def _ask_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
-    return [AskUserTool(bot=deps.bot, chat_id=conversation_id, questions=questions)]
+    return [AskUserTool(bot=deps.bot, chat_id=conversation_id, questions=deps.questions)]
 
 
 def register_tools(registrar: ToolRegistrar) -> None:

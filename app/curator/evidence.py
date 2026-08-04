@@ -22,13 +22,12 @@ from typing import NamedTuple, TypedDict, cast
 from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.assistant.history import JUDGE_RETRY_PREFIX
+from app.assistant.history import JUDGE_RETRY_PREFIX, TURNS_COLLECTION
+from app.reactions.store import REACTIONS_COLLECTION
 from app.scheduling.store import SCHEDULED_PREFIX
 
 logger = logging.getLogger(__name__)
 
-_TURNS = "conversation_turns"
-_REACTIONS = "reactions"
 _ANSWER_PREVIEW = 900  # chars of the answer kept per exchange — enough to judge, not the whole essay
 
 
@@ -122,7 +121,10 @@ class TurnTexts(NamedTuple):
 
 
 class EvidenceCollector:
-    """Assembles one window of a conversation into `Evidence`.
+    """Reads the two collections a review window is assembled from.
+
+    Answers both questions the nightly sweep asks of them: which chats were active, and what was said
+    in one of them.
 
     Lifecycle: long-lived — one per `Curator`, reused across conversations (the window and the chat
     are arguments to `collect`, the collections it reads are bound here).
@@ -130,11 +132,11 @@ class EvidenceCollector:
 
     def __init__(self, database: AsyncDatabase) -> None:
         """Bind the two collections a window is assembled from."""
-        self._turns = database[_TURNS]
-        self._reactions = database[_REACTIONS]
+        self._turns = database[TURNS_COLLECTION]
+        self._reactions = database[REACTIONS_COLLECTION]
 
     async def active_conversations(self, *, since: datetime.datetime) -> list[int]:
-        """Conversations with a turn in the window — the ones with anything to learn from."""
+        """Conversation ids with at least one turn since `since`, sorted."""
         ids = await self._turns.distinct("conversation_id", {"created_at": {"$gte": since}})
         logger.info("Curator sweep", extra={"conversations": len(ids)})
         return sorted(ids)
