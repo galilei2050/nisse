@@ -17,12 +17,12 @@ evidence, not spend a turn re-deriving what a Mongo query already knows.
 
 import logging
 from dataclasses import dataclass, field
-from typing import NamedTuple, TypedDict, cast
+from typing import NamedTuple, cast
 
 from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.assistant.history import JUDGE_RETRY_PREFIX, TURNS_COLLECTION
+from app.assistant.history import JUDGE_RETRY_PREFIX, TURNS_COLLECTION, StoredMessage, StoredTurn
 from app.reactions.store import REACTIONS_COLLECTION
 from app.scheduling.store import SCHEDULED_PREFIX
 
@@ -81,36 +81,6 @@ class Evidence:
         if not self.exchanges:
             return "(no conversation in this window)"
         return "\n\n".join(exchange.render() for exchange in self.exchanges)
-
-
-class StoredBlock(TypedDict, total=False):
-    """One content block as stored.
-
-    Only the two keys this module reads are declared, and neither is required — a tool_use or image
-    block legitimately carries neither.
-    """
-
-    type: str
-    text: str
-
-
-class StoredMessage(TypedDict):
-    """One message as the transcript stored it — the history serialises every block to a plain dict.
-
-    Deliberately not the SDK's `MessageParam`: what comes back from Mongo is JSON, and reading it as
-    the type it actually has beats narrowing a union of twenty block shapes to find the text.
-    """
-
-    role: str
-    content: str | list[StoredBlock]
-
-
-class StoredTurn(TypedDict):
-    """One turn document as `conversation_turns` holds it — the fields this module reads."""
-
-    turn_id: int
-    created_at: datetime.datetime
-    messages: list[StoredMessage]
 
 
 class TurnTexts(NamedTuple):

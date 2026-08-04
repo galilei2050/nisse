@@ -21,7 +21,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Self, cast
+from typing import Literal, Self, TypedDict, cast
 
 from anthropic.types import (
     ContentBlock,
@@ -104,6 +104,42 @@ class ConversationTurn(NisseDbModel):
     turn_id: int  # baski Turn.id — sequential int, upsert key with conversation_id
     messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
     message_ids: list[int] = Field(default_factory=list)  # Telegram messages this turn's answer was delivered in
+
+
+class StoredBlock(TypedDict, total=False):
+    """One content block as Mongo holds it. Lifecycle: a read view over one stored field.
+
+    Neither key is required — a tool_use or image block legitimately carries neither.
+    """
+
+    type: str
+    text: str
+
+
+class StoredMessage(TypedDict):
+    """One message as Mongo holds it. Lifecycle: a read view over one stored field.
+
+    Deliberately not the SDK's `MessageParam` that `ConversationTurn` writes: what comes back is
+    JSON, and reading it as the type it actually has beats narrowing a union of twenty block shapes
+    to find the text.
+    """
+
+    role: str
+    content: str | list[StoredBlock]
+
+
+class StoredTurn(TypedDict):
+    """One `conversation_turns` document as a reader outside this module sees it.
+
+    The read half of `ConversationTurn` — same document, declared once here rather than a second time
+    wherever it is read back (the nightly curator is the other reader).
+
+    Lifecycle: a read view — one raw Mongo document.
+    """
+
+    turn_id: int
+    created_at: datetime.datetime
+    messages: list[StoredMessage]
 
 
 def _is_text_block(block: object) -> bool:
