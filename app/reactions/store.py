@@ -4,6 +4,10 @@ A reaction is the cheapest signal the owner can give — one tap, no message —
 it happened and interpreted nowhere: this store only appends what Telegram reported. Telegram sends
 the WHOLE new reaction set on every change, not a delta, so a record keeps both sides (`previous` →
 `current`); an empty `current` is a reaction taken back.
+
+Telegram names only a message, so the record also carries the `turn_id` that message came from,
+resolved once at write time: what the reaction grades is the turn, and the record is useless without
+it — the message→turn link is only knowable while the reply is being sent.
 """
 
 from baski.primitives import datetime
@@ -24,6 +28,7 @@ class Reaction(NisseDbModel):
 
     conversation_id: int
     message_id: int
+    turn_id: int | None  # the transcript turn the reacted message came from; None if it was not an agent answer
     user_id: int
     username: str
     previous: list[str]
@@ -51,6 +56,7 @@ class ReactionStore:
         self,
         *,
         message_id: int,
+        turn_id: int | None,
         user_id: int,
         username: str,
         previous: list[str],
@@ -61,6 +67,7 @@ class ReactionStore:
         reaction = Reaction(
             conversation_id=self._conversation_id,
             message_id=message_id,
+            turn_id=turn_id,
             user_id=user_id,
             username=username,
             previous=previous,

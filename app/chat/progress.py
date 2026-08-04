@@ -137,12 +137,17 @@ class TelegramProgress:
         """Bind to the chat where the progress message lives."""
         self._bot = bot
         self._chat_id = chat_id
-        self._message_id: int | None = None
+        self._message_ids: list[int] = []  # every message sent here, in order; [0] is the live-edited one
         self._segments: list[_Seg] = []  # the chronological stream: process / text / judge blocks, in order
         self._tool_loc: dict[str, tuple[int, int, str]] = {}  # tool name -> (segment idx, line idx, preview)
         self._answer = ""  # the current turn's text, streamed in (live preview); committed into a segment
         self._think_idx = 0
         self._last_edit = 0.0
+
+    @property
+    def message_ids(self) -> list[int]:
+        """The Telegram messages this reply was delivered in — what a later reaction lands on."""
+        return self._message_ids
 
     def _process(self) -> _Seg:
         """The open process block to append a tool/thinking line to — a fresh one after any text/judge."""
@@ -260,7 +265,7 @@ class TelegramProgress:
             return
         self._last_edit = now
         try:
-            await self._send(to_markdown_v2(self._render()), edit=self._message_id is not None)
+            await self._send(to_markdown_v2(self._render()), edit=bool(self._message_ids))
         except TelegramRetryAfter as e:
             self._last_edit = now + e.retry_after  # back off; the next event retries
 
@@ -283,7 +288,7 @@ class TelegramProgress:
     async def _settle(self, body: str) -> None:
         """Convert, size-split, and deliver the final body — first chunk edits in place, rest are new."""
         for i, chunk in enumerate(split_message(to_markdown_v2(body))):
-            await self._send(chunk, edit=i == 0 and self._message_id is not None)
+            await self._send(chunk, edit=i == 0 and bool(self._message_ids))
 
     async def _send(self, text: str, *, edit: bool) -> None:
         """Edit/send already-converted MarkdownV2 *text*, falling back to plain text on a parse error."""
@@ -296,13 +301,11 @@ class TelegramProgress:
                 await self._put(strip_markdown_v2(text), edit=edit, parse_mode=None)
 
     async def _put(self, text: str, *, edit: bool, parse_mode: str | None) -> None:
-        """Edit the live message or send a new one; the first send captures the message id to edit."""
-        message_id = self._message_id
-        if edit and message_id is not None:
+        """Edit the live message or send a new one; every send is remembered, the first one is edited."""
+        if edit and self._message_ids:
             await self._bot.edit_message_text(
-                text=text, chat_id=self._chat_id, message_id=message_id, parse_mode=parse_mode
+                text=text, chat_id=self._chat_id, message_id=self._message_ids[0], parse_mode=parse_mode
             )
             return
         sent = await self._bot.send_message(chat_id=self._chat_id, text=text, parse_mode=parse_mode)
-        if self._message_id is None:
-            self._message_id = sent.message_id
+        self._message_ids.append(sent.message_id)

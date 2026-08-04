@@ -25,7 +25,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
-from app.assistant.history import MongoMessageHistory
+from app.assistant.history import MongoMessageHistory, TurnLookup
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
@@ -48,7 +48,7 @@ class NisseBot(TelegramServer):
             transcriber=self._transcriber,
             speaker=self._speaker,
             saved=SavedViewer(self._database),
-            reactions=ReactionRecorder(self._database),
+            reactions=ReactionRecorder(self._database, turns=TurnLookup(self._database)),
         )
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)

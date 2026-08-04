@@ -9,6 +9,7 @@ of — but private chats do deliver the update; the admin rule is a groups-and-c
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 from aiogram import Router
 from aiogram.types import (
@@ -21,6 +22,9 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app.access import is_allowed
 from app.reactions import ReactionStore
+
+if TYPE_CHECKING:  # injected by the wiring — importing it at runtime would cycle (chat → assistant → chat)
+    from app.assistant.history import TurnLookup
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +47,15 @@ def _labels(reactions: list[ReactionTypeUnion]) -> list[str]:
 
 
 class ReactionRecorder:
-    """Records the owner's reaction changes and drops everyone else's.
+    """Records the owner's reaction changes — resolved to the turn they landed on — and drops everyone else's.
 
     Lifecycle: long-lived (one per bot); the chat comes from each update, not from construction.
     """
 
-    def __init__(self, database: AsyncDatabase) -> None:
-        """Hold the database the per-chat store is opened on, per update."""
+    def __init__(self, database: AsyncDatabase, *, turns: "TurnLookup") -> None:
+        """Hold the database the per-chat store is opened on, plus the message→turn resolver."""
         self._database = database
+        self._turns = turns
 
     def register(self, router: Router) -> None:
         """Wire the reaction handler; this registration is what puts `message_reaction` on the wire."""
@@ -68,13 +73,17 @@ class ReactionRecorder:
         if user is None or username is None or not is_allowed(username):
             return
         current = _labels(reaction.new_reaction)
+        turn_id = await self._turns.turn_for_message(conversation_id=reaction.chat.id, message_id=reaction.message_id)
         store = ReactionStore(self._database, conversation_id=reaction.chat.id)
         await store.record(
             message_id=reaction.message_id,
+            turn_id=turn_id,
             user_id=user.id,
             username=username,
             previous=_labels(reaction.old_reaction),
             current=current,
             reacted_at=reaction.date,
         )
-        logger.info("Reaction recorded", extra={"messageId": reaction.message_id, "current": current})
+        logger.info(
+            "Reaction recorded", extra={"messageId": reaction.message_id, "turnId": turn_id, "current": current}
+        )

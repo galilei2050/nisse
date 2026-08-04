@@ -55,3 +55,8 @@ class Conversation:
         """
         async with self._lock:
             await self._history.flush()
+
+    async def link_messages(self, message_ids: list[int]) -> None:
+        """Record which Telegram messages carried this reply's answer. Runs after `flush()`."""
+        async with self._lock:
+            await self._history.link_messages(message_ids)

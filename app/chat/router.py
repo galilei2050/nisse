@@ -105,6 +105,9 @@ async def _run_turn(  # noqa: PLR0913 — the handler's collaborators, passed st
         # History writes were fired during the reply; await them now the answer is delivered (on
         # every path), so Mongo latency never blocked the user but no completed turn is lost.
         await assistant.flush(conversation_id=message.chat.id)
+        # Then tie the sent messages to that turn — only now do both exist, and a reaction arriving
+        # days later has no other way back to what it graded.
+        await assistant.link_messages(conversation_id=message.chat.id, message_ids=progress.message_ids)
 
 
 async def _resolve_message(message: Message, bot: Bot, transcriber: Transcriber) -> _Resolved | None:
