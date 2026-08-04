@@ -92,13 +92,13 @@ turns:
 lint:
 	uv run ruff format --check app/ infrastructure/
 	uv run ruff check app/ infrastructure/
-	uv run python3 anon_lint.py --recursive app/ infrastructure/
+	uv run python -m baski_lint --recursive app/ infrastructure/
 
 .PHONY: lint-fix
 lint-fix:
 	uv run ruff format app/ infrastructure/
 	uv run ruff check app/ infrastructure/ --fix
-	uv run python3 anon_lint.py --recursive app/ infrastructure/
+	uv run python -m baski_lint --recursive app/ infrastructure/
 
 .PHONY: typecheck
 typecheck:

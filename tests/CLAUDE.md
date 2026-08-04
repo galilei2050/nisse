@@ -33,9 +33,10 @@ probe (`docs/subagents-test-cases.md`), against real deps.
 ## Layout
 
 Unit tests mirror the `app/` module they cover (`tests/memory`, `tests/lists`, `tests/assistant`,
-`tests/backend`, `tests/subagents`). `tests/smoke/` boots the real deploy image and checks it serves.
-The CI `test` job runs the mirrors (`make test-backend`); the `smoke` job runs `tests/smoke/` with
-live secrets. Add a new unit dir to the `test-backend` target in the `Makefile`.
+`tests/backend`, `tests/subagents`, `tests/curator`, `tests/scheduling`). `tests/smoke/` boots the
+real deploy image and checks it serves. The CI `test` job runs everything but `tests/smoke/`
+(`make test-backend`); the `smoke` job runs `tests/smoke/` with live secrets. A new unit dir needs no
+wiring — collection is by discovery, since an enumerated list is a directory silently never run.
 
 **Expectation-first (`app/CLAUDE.md`):** each feature has a `docs/*-test-cases.md`; write the
 expectation before you run, and re-run related cases to catch regressions. A task isn't done until the

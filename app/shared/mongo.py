@@ -9,7 +9,7 @@ from pymongo.errors import OperationFailure
 logger = logging.getLogger(__name__)
 
 
-async def ensure_index(collection: AsyncCollection[Any], keys: Any, **kwargs: Any) -> None:  # noqa: ANN401 — forwards pymongo's polymorphic create_index signature
+async def ensure_index(collection: AsyncCollection[Any], keys: Any, **kwargs: Any) -> None:  # noqa: ANN401, ANON003 — forwards pymongo's polymorphic create_index signature; a wrapper over one pymongo call, called from each store's own ensure_indexes
     """Create an index, but don't let a Mongo user without createIndex rights block startup.
 
     Exception to the fail-fast rule: indexes are a query optimization, not a correctness

@@ -28,6 +28,21 @@ dev = [
 [tool.uv.sources]
 baski = { path = "../baski", editable = true }
 
+# ANON003 (baski_lint) flags a free function that takes a long-lived collaborator as a parameter —
+# it is a method missing its class. baski ships the rule and the third-party client names; the
+# collaborators below are this app's own, so they can only be declared here.
+[tool.anon_lint]
+extend_dependency_types = [
+    "Agent",
+    "Assistant",
+    "MongoMessageHistory",
+    "PendingQuestions",
+    "SchedulingService",
+    "ShortTermMemory",
+    "Speaker",
+    "Transcriber",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
@@ -42,7 +57,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["ALL"]
-external = ["ANON001", "ANON002"]  # anon_lint.py custom rules
+external = ["ANON001", "ANON002", "ANON003"]  # baski_lint custom rules
 ignore = [
     # Formatter conflicts
     "COM812",
