@@ -10,7 +10,7 @@ learn from approval the owner explicitly took back.
 
 from baski.primitives import datetime
 
-from app.curator.evidence import collect, render
+from app.curator.evidence import EvidenceCollector
 
 CONVERSATION = 42
 SINCE = datetime.as_utc(datetime.datetime(2026, 8, 3, 0, 0))
@@ -94,7 +94,7 @@ async def test_a_retracted_reaction_is_not_reported_as_standing() -> None:
         reactions=[_reaction(1, [], at_hour=11), _reaction(1, ["👍"], at_hour=10)],
     )
 
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
 
     assert evidence.exchanges[0].reactions == []
     assert evidence.reaction_count == 0
@@ -111,7 +111,7 @@ async def test_a_multi_turn_answer_folds_into_one_exchange_ending_in_the_real_an
         reactions=[_reaction(3, ["👍"], at_hour=10)],  # the tap landed on the LAST message
     )
 
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
 
     assert len(evidence.exchanges) == 1
     exchange = evidence.exchanges[0]
@@ -131,14 +131,14 @@ async def test_a_judge_retry_is_not_read_as_the_owner_correcting_the_bot() -> No
     redone = _turn(3, "", "Итог: 830 евро.", at_hour=9)
     db = _FakeDatabase(turns=[_turn(1, "посчитай бюджет", "Ты прав в главном…"), retry, redone], reactions=[])
 
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
 
     assert len(evidence.exchanges) == 1
     exchange = evidence.exchanges[0]
     assert exchange.owner_text == "посчитай бюджет"
     assert exchange.answer_text == "Итог: 830 евро."  # the redone answer, not the draft the judge rejected
     assert evidence.owner_message_count == 1
-    assert "Completeness check" not in render(evidence)
+    assert "Completeness check" not in evidence.render()
 
 
 async def test_a_reaction_left_the_next_morning_still_reaches_the_curator() -> None:
@@ -149,7 +149,7 @@ async def test_a_reaction_left_the_next_morning_still_reaches_the_curator() -> N
     late["reacted_at"] = datetime.as_utc(datetime.datetime(2026, 8, 5, 9, 0))  # two days after the turn
     db = _FakeDatabase(turns=[_turn(1, "сравни отели", "вот сравнение")], reactions=[late])
 
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
 
     assert evidence.exchanges[0].reactions == ["👍"]
 
@@ -162,10 +162,10 @@ async def test_a_scheduled_self_prompt_is_not_counted_as_the_owner_speaking() ->
         reactions=[],
     )
 
-    evidence = await collect(db, conversation_id=CONVERSATION, since=SINCE)
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
 
     scheduled, real = evidence.exchanges
     assert scheduled.scheduled and not scheduled.has_owner_input
     assert real.has_owner_input
     assert evidence.owner_message_count == 1
-    assert "NOT the owner" in render(evidence)  # the classifier is told which block to skip
+    assert "NOT the owner" in evidence.render()  # the classifier is told which block to skip

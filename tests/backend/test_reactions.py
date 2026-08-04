@@ -10,7 +10,8 @@ from aiogram import types
 from baski.primitives import datetime
 
 from app.chat.reactions import ReactionRecorder
-from app.chat.router import build_router
+from app.chat.ask import PendingQuestions
+from app.chat.router import ChatRouter
 from app.chat.saved import SavedViewer
 
 OWNER = "galilei"
@@ -73,13 +74,12 @@ def _update(
 def test_the_router_subscribes_to_reaction_updates() -> None:
     """Telegram sends message_reaction only for a registered observer — drop the wiring and the
     signal disappears with no error anywhere."""
-    router = build_router(
+    router = ChatRouter(
         assistant=SimpleNamespace(),
         transcriber=SimpleNamespace(),
         speaker=SimpleNamespace(),
-        saved=SavedViewer(_FakeDatabase()),
-        reactions=_recorder(_FakeDatabase()),
-    )
+        questions=PendingQuestions(),
+    ).build(saved=SavedViewer(_FakeDatabase()), reactions=_recorder(_FakeDatabase()))
     assert "message_reaction" in router.resolve_used_update_types()
 
 

@@ -31,6 +31,10 @@ baski = { path = "../baski", editable = true }
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# Force every logger.info(extra=…) to actually build its LogRecord. At the default WARNING the call
+# returns before that, so a field colliding with a reserved LogRecord attribute (`created`,
+# `taskName`, `module`…) raises in production on a line the suite ran happily past.
+log_level = "INFO"
 
 [tool.ruff]
 line-length = 120

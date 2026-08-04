@@ -17,9 +17,9 @@ from baski.agents import AgentRefusalError
 from baski.primitives import datetime
 
 from app.chat import ask
-from app.chat.ask import AskUserTool, answer_pending, resolve_tap
+from app.chat.ask import AskUserTool, questions
 from app.chat.reactions import ReactionRecorder
-from app.chat.router import build_router
+from app.chat.router import ChatRouter
 from app.chat.saved import SavedViewer
 from tests.backend.test_reactions import _FakeDatabase
 
@@ -29,9 +29,9 @@ SENT_AT = datetime.as_utc(datetime.datetime(2026, 8, 2, 19, 0))
 
 @pytest.fixture(autouse=True)
 def _no_leftover_questions() -> Iterator[None]:
-    """`_pending` is a module global; a question leaked by one test would answer another's message."""
+    """`questions` is process-wide; a question leaked by one test would answer another's message."""
     yield
-    ask._pending.clear()
+    questions._pending.clear()
 
 
 class _FakeQuestion:
@@ -65,7 +65,7 @@ class _FakeBot:
         for row, col in self.taps:
             data = cast("InlineKeyboardMarkup", self.keyboard).inline_keyboard[row][col].callback_data
             assert data is not None
-            resolve_tap(data)
+            questions.resolve_tap(data)
         return self.question
 
     async def send_chat_action(self, **kwargs: Any) -> None:
@@ -95,14 +95,16 @@ class _FakeAssistant:
 
 
 def _tool(bot: _FakeBot) -> AskUserTool:
-    return AskUserTool(bot=cast("Bot", bot), chat_id=CHAT_ID)
+    return AskUserTool(bot=cast("Bot", bot), chat_id=CHAT_ID, questions=questions)
 
 
 def _router(assistant: _FakeAssistant) -> Any:
-    return build_router(
+    return ChatRouter(
         assistant=cast("Any", assistant),
-        transcriber=object(),
-        speaker=object(),
+        transcriber=cast("Any", object()),
+        speaker=cast("Any", object()),
+        questions=questions,  # the tool under test parks on this same registry
+    ).build(
         saved=SavedViewer(_FakeDatabase()),
         reactions=ReactionRecorder(_FakeDatabase(), turns=cast("Any", None)),
     )
@@ -172,7 +174,7 @@ async def test_a_second_question_in_the_same_chat_is_refused() -> None:
     assert await _tool(bot).execute(question="Дата?", options=["сегодня", "завтра"]) == (
         "A question of yours is still unanswered — wait for it before asking another."
     )
-    assert answer_pending(chat_id=CHAT_ID, text="до 5к")
+    assert questions.answer(chat_id=CHAT_ID, text="до 5к")
     assert await asyncio.wait_for(first, timeout=1.0) == "The user answered: до 5к"
 
 
@@ -187,7 +189,7 @@ async def test_a_failed_send_leaves_no_question_behind() -> None:
     with pytest.raises(ConnectionError):
         await _tool(_BrokenBot()).execute(question="Во сколько?", options=["09:00", "12:00"])
 
-    assert not answer_pending(chat_id=CHAT_ID, text="в 9 утра")
+    assert not questions.answer(chat_id=CHAT_ID, text="в 9 утра")
 
 
 async def test_a_typed_message_settles_the_question_instead_of_starting_a_turn() -> None:

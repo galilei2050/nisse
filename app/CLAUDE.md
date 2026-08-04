@@ -27,7 +27,8 @@ app/
 
   shared/           cross-domain code — no domain logic of its own
     deps.py         CoreDeps — the shared clients + services every tool is built from
-    models.py       NisseDbModel for Mongo docs: `_id`↔`id` + audit fields (created_at/updated_at/deleted_at, soft-delete)
+    models.py       NisseDbModel for Mongo docs: `_id`↔`id` + audit fields (created_at/updated_at/deleted_at, soft-delete);
+                    PublicIdModel adds the short agent-facing `public_id` (memories, scheduled tasks)
     revisions.py    CHANGE HISTORY: append-only `revisions` (collection/target/kind/before/after/
                     actor/run_id). Every content-LOSING write records the text it destroyed, so an
                     unattended curator edit is readable and undoable. Who is writing is ambient —
@@ -38,7 +39,8 @@ app/
                     would collide
 
   chat/             Telegram I/O — the ONLY aiogram Router
-    router.py       text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
+    router.py       `ChatRouter` (holds assistant + transcriber + speaker + the `questions` registry;
+                    `.build(saved=, reactions=)` assembles the aiogram Router). Text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
                     Assistant.reply(on_event=TelegramProgress) → answer. Photos → JPEG image block;
                     documents → image or application/pdf block if the model reads it (else declined); >20MB declined
                     (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer).
@@ -74,14 +76,16 @@ app/
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
-                    these"). One process/event loop (max_instances=1) so the tap resolves the parked turn's
+                    these"). Every parked question lives in the process-wide `questions` (`PendingQuestions`) —
+                    one registry the tool, the tap handler, a typed reply and the probe all go through.
+                    One process/event loop (max_instances=1) so the tap resolves the parked turn's
                     Future in memory — no queue. The callback handler resolves it DIRECTLY, never via
                     Assistant.reply (whose per-chat lock the parked turn holds). Needs the Bot → CoreDeps.bot
                     (required). At most ONE open question per chat — a second one is refused, since a typed
                     answer is routed by chat alone. Timeout is a module constant (300s).
                     Whether the agent CHOOSES to ask is the only thing worth measuring here, so the probe
-                    supplies a fake bot and taps through `resolve_tap` — see Manual probe, cases in
-                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `answer_pending`
+                    supplies a fake bot and taps through `questions.resolve_tap` — see Manual probe, cases in
+                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `questions.answer`
                     before starting a turn, since the parked turn holds the chat lock the new message
                     would queue behind.
     progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
@@ -147,7 +151,7 @@ app/
     tools.py        update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity + current focus); injected into the system EVERY turn via the tool's async system_prompt(); edited like a list (add/remove whole lines in one call, mirrors list_edit + shared match_unique) so the agent touches only named lines and never rewrites the block wholesale, size-capped so it stays lean
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
-    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + claim/reschedule/mark_done (runner, by id)
+    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + FireStore (runner, by id: claim/reschedule/mark_done)
     tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
     service.py      SchedulingService.enqueue_fire (reuses baski CloudTasksScheduler) + LoggingScheduler stand-in
     runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
@@ -376,7 +380,7 @@ make revisions U=<id> [RUN=<id>]      # the change history — who changed what,
 
 - **Injected context** is the ground truth for what the model saw — read it first.
 - **`=== ASKED THE OWNER ===`** counts the `ask_user` questions the agent chose to raise. The probe
-  passes a fake bot that taps the first option through `resolve_tap`, so a clarifying question doesn't
+  passes a fake bot that taps the first option through `questions.resolve_tap`, so a clarifying question doesn't
   hang the run and multi-select takes the real toggle-then-Done path. Tuning when the agent asks vs
   guesses means running several probes on genuine forks AND on unambiguous controls — cases in
   `docs/ask-test-cases.md`. One run is noise.

@@ -33,7 +33,7 @@ class LoggingScheduler:
         logger.info(
             "Scheduler (no Cloud Tasks): would enqueue",
             extra={
-                "taskName": task_name,
+                "cloudTaskName": task_name,  # NOT `taskName` — LogRecord owns that name since 3.12
                 "scheduleTime": str(schedule_time),
                 "endpoint": endpoint,
                 "payloadBytes": len(payload),

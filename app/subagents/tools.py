@@ -56,7 +56,23 @@ class SubagentListTool(Tool):
         configs = await self._store.list()
         if not configs:
             return "No sub-agents are configured in this conversation."
-        return "\n\n".join(_render(config) for config in configs)
+        return "\n\n".join(self._render(config) for config in configs)
+
+    @staticmethod
+    def _render(config: SubagentConfig) -> str:
+        """One config as this tool's result text — full prompts, since the curator edits them verbatim.
+
+        Kept here rather than on `SubagentConfig`: the shape is this tool's output contract, not the
+        record's, and a second reader would want a different one.
+        """
+        return (
+            f"### {config.name}\n"
+            f"description: {config.description}\n"
+            f"model: {config.model} · context_tokens: {config.context_tokens} · max_turns: {config.max_turns}\n"
+            f"tool_names: {', '.join(config.tool_names)}\n"
+            f"system_prompt:\n{config.system_prompt}\n"
+            f"judge_prompt:\n{config.judge_prompt}"
+        )
 
 
 class SubagentSaveTool(Tool):
@@ -107,7 +123,8 @@ class SubagentSaveTool(Tool):
             return rejection
         existing = await self._store.get(config.name)
         await self._store.save(config)
-        logger.info("Sub-agent saved", extra={"subagent": config.name, "created": existing is None})
+        # NOT `created` — LogRecord owns that name, and the clash raises AFTER the config is written
+        logger.info("Sub-agent saved", extra={"subagent": config.name, "isNew": existing is None})
         verb = "Updated" if existing else "Created"
         return (
             f"{verb} sub-agent '{config.name}' ({config.model}, tools: {', '.join(config.tool_names)}). "
@@ -135,18 +152,6 @@ class SubagentSaveTool(Tool):
                 "conversation. Call subagent_list to see what exists."
             )
         return None
-
-
-def _render(config: SubagentConfig) -> str:
-    """One config as readable text — full prompts, since the curator edits them verbatim."""
-    return (
-        f"### {config.name}\n"
-        f"description: {config.description}\n"
-        f"model: {config.model} · context_tokens: {config.context_tokens} · max_turns: {config.max_turns}\n"
-        f"tool_names: {', '.join(config.tool_names)}\n"
-        f"system_prompt:\n{config.system_prompt}\n"
-        f"judge_prompt:\n{config.judge_prompt}"
-    )
 
 
 def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
