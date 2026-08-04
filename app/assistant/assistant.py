@@ -115,3 +115,12 @@ class Assistant:
         """Await the conversation's durable history writes — called after the answer is sent."""
         conversation = await self._conversations.get(conversation_id)
         await conversation.flush()
+
+    async def link_messages(self, *, conversation_id: int, message_ids: list[int]) -> None:
+        """Tie the Telegram messages that delivered the answer to the turn that produced it.
+
+        Only knowable in the chat layer, only useful later: it is how a reaction on one of those
+        messages resolves to a turn. Called after `flush()`, so the turn document already exists.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        await conversation.link_messages(message_ids)

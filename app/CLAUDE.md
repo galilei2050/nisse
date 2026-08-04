@@ -58,6 +58,9 @@ app/
     reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record.
                     Registering the handler IS the wiring, and it gates on the allow-list by hand
                     (`AllowlistMiddleware` sits on `message` only); rationale in the module docstring.
+                    Telegram names only a message, so it resolves the turn behind it through
+                    `TurnLookup` (injected by the wiring — a runtime import would cycle) and stores
+                    the `turn_id` on the record.
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
@@ -80,7 +83,10 @@ app/
                     current turn streamed a sentence at a time via TextDelta, throttled to 0.5s)
                     renders plain; a `Judged` verdict renders bold (`**⚖️ …**`) right after the text
                     it graded (that draft is kept, never wiped). finish(result) settles the whole
-                    stream + cost footer; finish_text(text) is the error/refusal path.
+                    stream + cost footer; finish_text(text) is the error/refusal path. `message_ids`
+                    exposes every message it sent (the live one plus each extra a split answer took),
+                    which the router hands to `Assistant.link_messages` — a reaction can land on any
+                    of them.
     format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
                     → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
     transcribe.py   voice file → text (Transcriber; ElevenLabs Scribe v2, language auto-detected; provider-swappable)
@@ -93,7 +99,7 @@ app/
     conversations.py Conversations — registry: builds each chat's agent once and caches it (main model
                     `MAIN_MODEL = claude-opus-5`; sub-agents pick their own in agents.yml)
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
-    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter. `add_photo`/`add_document` append a user image/PDF message the model reads natively; its base64 block is persisted like any other, so the image survives a reload and stays in context for follow-ups
+    history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; truncate sizes the window via baski `effective_input_tokens` (incl. cached prefix), not raw `input_tokens` — prompt caching shrinks the latter. `add_photo`/`add_document` append a user image/PDF message the model reads natively; its base64 block is persisted like any other, so the image survives a reload and stays in context for follow-ups. `link_messages` stamps the Telegram message ids the answer was delivered in onto the newest turn (called by the chat router AFTER `flush()` — it deliberately does not upsert, so it can't create a turn doc missing its audit fields); `TurnLookup` is the reverse read, message → turn, used by the reaction recorder
     judge_prompt.py NISSE_JUDGE_PROMPT — the rubric handed to the judge as `instructions=`. Grades two
                     axes: COMPLETENESS (did the reply deliver the ask) and HONESTY (flattery in place of
                     an assessment · a verdict on a one-sided account · a conclusion put in the owner's
@@ -116,7 +122,12 @@ app/
     store.py        Reaction + ReactionStore (Mongo `reactions`, append-only, scoped per conversation).
                     Telegram sends the whole new reaction set on every change, not a delta, so a record
                     keeps both sides (`previous` → `current`); an empty `current` is a reaction taken
-                    back. Nothing reads it yet — it accumulates until there's a decided use.
+                    back. Each record also carries the `turn_id` the reacted message came from
+                    (`None` for a message no turn produced — a transcript echo, a `/lists` view, an
+                    error notice): a reaction grades a turn, and the message→turn link is knowable
+                    only while the reply is being sent, so it is resolved once at write time rather
+                    than left for a reader that could no longer reconstruct it. Nothing reads the
+                    store yet — it accumulates until there's a decided use.
 
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)

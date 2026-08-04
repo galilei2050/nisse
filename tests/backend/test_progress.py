@@ -41,7 +41,7 @@ class _FakeBot:
 
     async def send_message(self, *, chat_id: int, text: str, parse_mode: str | None):
         self.sends.append(text)
-        return SimpleNamespace(message_id=1)
+        return SimpleNamespace(message_id=len(self.sends))  # distinct ids, as Telegram gives
 
     async def edit_message_text(self, *, text: str, chat_id: int, message_id: int, parse_mode: str | None):
         self.edits.append(text)
@@ -101,6 +101,21 @@ async def test_judge_verdict_is_inline_after_its_text():
     assert "Добавь цены" in final  # the verdict's feedback is shown
     # chronology: graded text, then its verdict, then the redo
     assert final.index("Черновик") < final.index("Добавь цены") < final.index("Финал")
+
+
+async def test_every_delivered_message_id_is_kept_when_the_answer_splits():
+    """The owner can react to any chunk of a long answer; an id we never recorded is a reaction that
+    can never be traced back to the turn it graded."""
+    bot = _FakeBot()
+    prog = TelegramProgress(bot=bot, chat_id=1)
+    await prog(TurnStarted(turn=1))
+    await prog(Message(text="Начинаю."))  # first send — the live message the rest edits
+    await prog(Message(text="Длинный ответ. " * 500))  # >4096 chars → settles across several messages
+    await prog.finish(_result("…"))
+
+    assert len(prog.message_ids) > 1  # it really split, so the ids of the extra messages matter
+    assert prog.message_ids == list(range(1, len(bot.sends) + 1))  # every send recorded, in order
+    assert bot.edits  # the first message was edited in place, not re-sent
 
 
 async def test_finish_appends_cost_footer():

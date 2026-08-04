@@ -90,6 +90,9 @@ class _FakeAssistant:
     async def flush(self, **kwargs: Any) -> None:
         pass
 
+    async def link_messages(self, **kwargs: Any) -> None:
+        pass
+
 
 def _tool(bot: _FakeBot) -> AskUserTool:
     return AskUserTool(bot=cast("Bot", bot), chat_id=CHAT_ID)
@@ -101,7 +104,7 @@ def _router(assistant: _FakeAssistant) -> Any:
         transcriber=object(),
         speaker=object(),
         saved=SavedViewer(_FakeDatabase()),
-        reactions=ReactionRecorder(_FakeDatabase()),
+        reactions=ReactionRecorder(_FakeDatabase(), turns=cast("Any", None)),
     )
 
 

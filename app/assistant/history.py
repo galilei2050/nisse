@@ -37,7 +37,7 @@ from anthropic.types.base64_pdf_source_param import Base64PDFSourceParam
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
 from baski.primitives import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.blocks import block_type
@@ -99,6 +99,7 @@ class ConversationTurn(NisseDbModel):
     conversation_id: int
     turn_id: int  # baski Turn.id — sequential int, upsert key with conversation_id
     messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
+    message_ids: list[int] = Field(default_factory=list)  # Telegram messages this turn's answer was delivered in
 
 
 def _is_text_block(block: object) -> bool:
@@ -175,6 +176,7 @@ class MongoMessageHistory(MessageHistory):
         col = database[_COLLECTION]
         await ensure_index(col, [("conversation_id", 1), ("turn_id", 1)], unique=True)
         await ensure_index(col, [("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+        await ensure_index(col, [("conversation_id", 1), ("message_ids", 1)])  # TurnLookup's reverse lookup
 
     # --- MessageHistory protocol: in-memory turn assembly ---
 
@@ -332,6 +334,19 @@ class MongoMessageHistory(MessageHistory):
         """
         self._turns = [turn for turn in self._turns if _has_text(turn)]
 
+    async def link_messages(self, message_ids: list[int]) -> None:
+        """Attach the Telegram messages that delivered the newest turn's answer to that turn.
+
+        The link is only knowable at send time, and it is what lets a later emoji reaction on one of
+        those messages be traced back to the turn it graded. Call it AFTER `flush()`: the turn insert
+        is fire-and-forget, and this update deliberately does not upsert — a document created here
+        would miss the insert's `$setOnInsert` audit fields.
+        """
+        await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "turn_id": self._next_turn_id},
+            {"$addToSet": {"message_ids": {"$each": message_ids}}},
+        )
+
     async def _write_turn(self, turn: Turn) -> None:
         """Insert one turn document, once. A pure tool turn is written already soft-deleted."""
         now = datetime.now()
@@ -350,3 +365,27 @@ class MongoMessageHistory(MessageHistory):
             },
             upsert=True,
         )
+
+
+class TurnLookup:
+    """Reverse lookup over `conversation_turns`: a delivered Telegram message → the turn it came from.
+
+    The forward link is written by `MongoMessageHistory.link_messages`. Lifecycle: long-lived — one
+    per bot, held by whoever sees Telegram message ids without owning a conversation's history.
+    """
+
+    def __init__(self, database: AsyncDatabase) -> None:
+        """Bind to the turns collection; the conversation is a query argument, not a scope."""
+        self._collection = database[_COLLECTION]
+
+    async def turn_for_message(self, *, conversation_id: int, message_id: int) -> int | None:
+        """The turn a message belongs to, or None.
+
+        None is ordinary: many messages are not an agent answer at all — a transcript echo, a
+        `/lists` view, an error notice. A pruned turn keeps its link, so old answers stay resolvable.
+        """
+        doc = await self._collection.find_one(
+            {"conversation_id": conversation_id, "message_ids": message_id},
+            {"turn_id": 1},
+        )
+        return doc["turn_id"] if doc else None
