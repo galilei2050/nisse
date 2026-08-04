@@ -74,6 +74,7 @@ max-complexity = 8
 "infrastructure/**" = ["INP001", "S106", "D104"]
 # probe.py is a manual CLI harness whose stdout IS its output — print is intended (T201).
 "app/probe.py" = ["T201"]
+"app/curate_probe.py" = ["T201"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

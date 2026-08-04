@@ -26,9 +26,16 @@ app/
   access.py         AllowlistMiddleware — owner-only gate (outer middleware)
 
   shared/           cross-domain code — no domain logic of its own
-    db.py           Mongo client / AsyncDatabase accessor
+    deps.py         CoreDeps — the shared clients + services every tool is built from
     models.py       NisseDbModel for Mongo docs: `_id`↔`id` + audit fields (created_at/updated_at/deleted_at, soft-delete)
-    providers.py    role → model_id presets (main · judge · curator · task)
+    revisions.py    CHANGE HISTORY: append-only `revisions` (collection/target/kind/before/after/
+                    actor/run_id). Every content-LOSING write records the text it destroyed, so an
+                    unattended curator edit is readable and undoable. Who is writing is ambient —
+                    `acting_as(Actor.CURATOR, run_id=…)` wraps the nightly pass; outside it the
+                    actor is the assistant. A separate collection, NOT a second version in place:
+                    `memories`/`lists` unique indexes deliberately span soft-deleted docs (list
+                    revive, public_id never reused), so a superseded copy beside the live one
+                    would collide
 
   chat/             Telegram I/O — the ONLY aiogram Router
     router.py       text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
@@ -55,6 +62,9 @@ app/
                     editing it) — an over-long record is cut with a note saying so, never spilled into
                     extra messages that would orphan below the restored index. Plain text, no
                     MarkdownV2 — the content is the owner's own words, shown byte-for-byte.
+                    `/help` closes with what the owner can't discover by reading commands: that
+                    reactions are the cheap feedback channel, and that the nightly curator edits
+                    these same stores and reports in the morning.
     reactions.py    ReactionRecorder — the `message_reaction` update → one append-only Mongo record.
                     Registering the handler IS the wiring, and it gates on the allow-list by hand
                     (`AllowlistMiddleware` sits on `message` only); rationale in the module docstring.
@@ -122,12 +132,15 @@ app/
     store.py        Reaction + ReactionStore (Mongo `reactions`, append-only, scoped per conversation).
                     Telegram sends the whole new reaction set on every change, not a delta, so a record
                     keeps both sides (`previous` → `current`); an empty `current` is a reaction taken
-                    back. Each record also carries the `turn_id` the reacted message came from
+                    back. The nightly curator reads this store — the LAST record per turn is its
+                    current state, so a retracted 👍 never reads as still standing.
+                    Each record also carries the `turn_id` the reacted message came from
                     (`None` for a message no turn produced — a transcript echo, a `/lists` view, an
                     error notice): a reaction grades a turn, and the message→turn link is knowable
                     only while the reply is being sent, so it is resolved once at write time rather
-                    than left for a reader that could no longer reconstruct it. Nothing reads the
-                    store yet — it accumulates until there's a decided use.
+                    than left for a reader that could no longer reconstruct it. What an emoji MEANS
+                    is still undecided (owner's call) — the curator reads the emoji plus the
+                    conversation around it, and no polarity table is hardcoded.
 
   prompts/          living system-prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
@@ -150,7 +163,11 @@ app/
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
-    store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() is seed-only)
+    store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() records the
+                    config it replaced — a sub-agent's prompt IS its behaviour)
+    tools.py        subagent_list / subagent_save — runtime roster management (CURATOR-ONLY, never
+                    in MAIN_TOOLS): a save is validated against the live registry and an allow-list
+                    of models before it can break the next conversation build
     tool.py         SubagentTool — wraps one config as a delegating Tool; runs a fresh isolated Agent
                     (own model/tools/judge/context) on the pinned prompt, returns its answer. Builds
                     its tools through the shared `deps.tools` registry (same as the main agent). A
@@ -161,9 +178,20 @@ app/
                     researcher's living investigation record, injected every turn (NOT a Mongo store)
     registry.py     TOMBSTONE — the tool registry moved to `app/tools/`; delete this file
 
-  curator/          nightly self-maintenance agent (off the request path)
-    curator.py      scans the day's chats → maintain knowledge, learn skills, tune prompt
-    router.py       HTTP trigger Cloud Scheduler hits nightly (/curate)
+  curator/          nightly self-maintenance agent (off the request path) — SHIPPED
+    evidence.py     the day's turns folded into EXCHANGES (owner message + final answer + the
+                    reactions on it, resolved via turn_id); a `[Запланировано]` self-prompt is
+                    flagged, not counted as owner input
+    classify.py     one offline call labelling each owner message (request/praise/rephrase/
+                    rejection/correction/clarification/directive/social) — taxonomy from
+                    Don-Yehiya et al. / arXiv:2507.23158, NOT invented; noisy by design, so a
+                    label is a lead to verify, never a trigger
+    prompt.py       NISSE_CURATOR_PROMPT + CURATOR_JUDGE_PROMPT — the feature itself
+    curator.py      collect → classify → agent (inside acting_as(CURATOR)) → count revisions →
+                    record the run → message the owner the report
+    store.py        CuratorRun + CuratorRunStore (`curator_runs`); an idle pass is recorded too
+    router.py       POST /curate — Cloud Scheduler nightly (empty body = every active chat)
+                    (design + verified behaviour: docs/curator.md; app/curator/CLAUDE.md)
 
   tools/            the process-wide TOOL REGISTRY both the main agent and sub-agents build from
     registry.py     ToolRegistry (name→factory) + ToolRegistrar Protocol — generic, tool-agnostic
@@ -181,8 +209,9 @@ app/
                     a research sub-agent is just a seeded SubagentConfig, no code.
 ```
 
-`curator/`, `skills/`, `tools/` are design intent (not built yet); the sections below describe them.
-Shipped today: `chat`, `assistant`, `memory`, `prompts`, `scheduling`, `search`, `subagents`, `shared`. The
+`skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
+`assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
+`tools`, `shared`. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`), wired here via `CoreDeps.judge`
 → `AgentConfig.judge` — not a local `app/judge/`. baski owns the MECHANISM (the Gemini call, the `Verdict`
 schema); nisse owns the POLICY — every construction site passes `instructions=NISSE_JUDGE_PROMPT`
@@ -341,6 +370,8 @@ on any feature — read from the agent's own trace:
 make probe MSG="…" [U=<id>]      # one agent run; prints injected context, tool calls, answer
 make memories                    # dump `memories` (live + soft-deleted)
 make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
+make curate U=<id> [DAYS=n] [DRY=1]   # one curator pass: evidence, every change with its `before`, the report
+make revisions U=<id> [RUN=<id>]      # the change history — who changed what, and what it replaced
 ```
 
 - **Injected context** is the ground truth for what the model saw — read it first.
@@ -416,13 +447,19 @@ rubric, one refine pass below threshold; off by default — doubles cost/latency
 harness** (`evals/`, sibling to `tests/`: a scenario dataset replayed through `Assistant.reply()`
 and scored to catch regressions). Judge input = what `TraceCollector` records.
 
-## Self-maintenance (nightly curator) — planned
+## Self-maintenance (nightly curator) — SHIPPED
 
-One background agent, nightly only (Cloud Scheduler → `/curate`); no per-turn reflection. It reviews
-the day's chats and does three jobs: extract/refresh/expire **memory**, write **learned-skill** specs
-for repeated patterns, and **tune the prompt** overlay. Every mutation is an append-only versioned
-Mongo record (revertible) — runtime-editable state lives in **Mongo, never in code**; effective
-prompt = base `prompt.py` + overlay, learned skills = specs loaded alongside `skills/`.
+One background agent, nightly only (Cloud Scheduler → `/curate` at 04:00 PT); no per-turn reflection.
+It reviews the day's exchanges plus the owner's reactions, labels what each owner message was doing,
+and maintains **core memory**, **memories**, **lists**, and **sub-agent configs** — through the same
+tools the live assistant uses. Learned-skill specs are still unbuilt (they wait on `skills/`).
+
+Every content-losing mutation appends to `revisions` with the text it replaced, attributed to the
+run (`app/shared/revisions.py`) — runtime-editable state lives in **Mongo, never in code**. The pass
+ends by messaging the owner what it changed and on what evidence; a change the owner cannot see is
+one they cannot trust. Full design, research grounding, and the three rules that keep it from
+drifting (quote the owner · recurrence before a standing rule · praise proves nothing):
+`docs/curator.md`.
 
 ## baski building blocks (don't reinvent)
 

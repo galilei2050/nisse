@@ -22,17 +22,23 @@ import yaml
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.shared.revisions import Actor, acting_as
 from app.subagents import SubagentConfig, SubagentStore
 
 _AGENTS_YML = Path(__file__).resolve().parent.parent / "app" / "subagents" / "agents.yml"
 
 
 async def _seed_one(database: AsyncDatabase, conversation_id: int, definitions: list[dict]) -> None:
-    """Upsert every agent defined in agents.yml for one conversation."""
+    """Upsert every agent defined in agents.yml for one conversation.
+
+    Attributed to the seed script: `save()` records a revision, and without this the change history
+    would name the assistant for a roster rewrite that came from a file and a human running `make`.
+    """
     store = SubagentStore(database, conversation_id=conversation_id)
-    for definition in definitions:
-        saved = await store.save(SubagentConfig(conversation_id=conversation_id, **definition))
-        print(f"seeded '{saved.name}' for conversation {conversation_id} (tools: {', '.join(saved.tool_names)})")
+    with acting_as(Actor.SEED, run_id=_AGENTS_YML.name):
+        for definition in definitions:
+            saved = await store.save(SubagentConfig(conversation_id=conversation_id, **definition))
+            print(f"seeded '{saved.name}' for conversation {conversation_id} (tools: {', '.join(saved.tool_names)})")
 
 
 async def main(target: str) -> None:

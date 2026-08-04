@@ -59,6 +59,18 @@ test-backend-dry-run:
 probe:
 	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
 
+# One curator maintenance pass, outside Cloud Scheduler: prints evidence, changes, and the report.
+# `make curate U=<conversation_id> [DAYS=7] [DRY=1]`. Real API/DB — it edits the live stores unless DRY=1.
+.PHONY: curate
+curate:
+	uv run python -m app.curate_probe --conversation-id $(U) --days $(or $(DAYS),1) $(if $(DRY),--dry-run,)
+
+# Companion to curate: dump one conversation's change history (who changed what, and what it replaced).
+# `make revisions U=<conversation_id> [RUN=<run_id>]`.
+.PHONY: revisions
+revisions:
+	uv run python scripts/show_revisions.py $(U) $(RUN)
+
 # Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>` (or U=all).
 .PHONY: seed
 seed:
@@ -95,7 +107,7 @@ typecheck:
 # Functional tests — pure, no running backend. Part of `make test` / CI.
 .PHONY: test-backend
 test-backend:
-	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/ tests/subagents/
+	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/ tests/subagents/ tests/curator/
 
 # Smoke — boot the real bot (polling) and verify it's healthy against Telegram. Leaves the
 # bot running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see

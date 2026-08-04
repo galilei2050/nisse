@@ -3,7 +3,11 @@
 Unlike `memories` (discrete facts, recalled on demand by the agent), a prompt here is a single
 document injected into the system prompt every turn. `core_memory` is the first type: the small,
 always-on block of standing behaviour rules + canonical owner identity + current focus. One document
-per `(conversation_id, prompt_type)`, overwritten in place — no soft-delete, no versioning.
+per `(conversation_id, prompt_type)`, overwritten in place.
+
+The document has no second copy, so every overwrite first appends the block it replaces to
+`revisions` — the only place a rewritten set of standing rules survives, and the only way the owner
+can see what a nightly curator pass changed about how the bot behaves.
 """
 
 from enum import StrEnum
@@ -13,6 +17,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
+from app.shared.revisions import ChangeKind, RevisionLog
 
 _COLLECTION = "prompts"
 
@@ -38,6 +43,7 @@ class PromptStore:
         """Bind to the prompts collection for one conversation; every query is scoped to it."""
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
+        self._revisions = RevisionLog(database, conversation_id=conversation_id)
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
@@ -50,7 +56,21 @@ class PromptStore:
         return doc["content"] if doc else None
 
     async def set(self, prompt_type: PromptType, content: str) -> None:
-        """Overwrite the prompt of this type in place (upsert) — the document is replaced wholesale."""
+        """Overwrite the prompt of this type in place (upsert), recording the text it replaces.
+
+        This document has no second copy — the revision is the only place the previous block
+        survives, and the only way the owner can see what a curator pass rewrote.
+        """
+        previous = await self.get(prompt_type)
+        if previous == content:
+            return  # an edit that matched nothing; recording it would inflate the owner's change count
+        await self._revisions.record(
+            collection=_COLLECTION,
+            target=prompt_type,
+            kind=ChangeKind.REPLACE if previous is not None else ChangeKind.CREATE,
+            before=previous,
+            after=content,
+        )
         now = datetime.now()
         await self._collection.update_one(
             {"conversation_id": self._conversation_id, "prompt_type": prompt_type},

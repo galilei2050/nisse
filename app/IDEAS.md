@@ -131,15 +131,30 @@ owner in the loop (already the curator's safety invariants).
 
 ## Self-improvement (curator)
 
-- **Out-of-band background-review fork** — after a turn, a forked agent (cache-parity, memory/skill
-  tools only) decides what to save/update; zero user-facing latency. The review **prompts** are the gem.
+The curator is **shipped** (`app/curator/`, design: `docs/curator.md`). Taken from the prior art
+below: the review-prompt shape and hermes' "do NOT capture" list (a transient failure hardened into a
+rule becomes a refusal the agent quotes at itself for months); the never-delete/keep-recoverable
+invariant; openclaw's gate-before-promotion discipline (nisse's version: recurrence, not weights);
+and the rule that the pass must never learn from its own output. Still menu items:
+
+- **Out-of-band background-review fork** — nisse reviews NIGHTLY over a window, not after each turn.
+  The per-turn fork (cache-parity, zero user-facing latency) is the unbuilt half; it would catch a
+  correction the same evening instead of the next morning, at the cost of a fork per turn.
   _src:_ `hermes: agent/background_review.py`.
-- **Curator safety invariants** — touch only `created_by:agent`, **archive not delete**, pinned exempt,
-  snapshot-before-mutate, `rollback`. = our auto+rollback. _src:_ `hermes: agent/curator.py`, `curator_backup.py`.
-- **Dreaming** — scored, gated, explainable promotion; keep `DREAMS.md` separate from durable `MEMORY.md`
-  to avoid feedback loops. Copy the gating discipline, not the weights. _src:_ `openclaw: docs/concepts/dreaming.md`.
+- **Pinning** — hermes lets the owner pin a record so the curator may improve but never
+  archive/consolidate it. nisse has no pin: the curator may touch anything, and the owner's recourse
+  is the change history. Worth adding the first time it removes something that should have stayed.
+  _src:_ `hermes: agent/curator.py`.
+- **Dry-run mode as a review gate** — hermes can run the pass report-only for a human to approve
+  before a live run. nisse's `make curate DRY=1` stops after the classification (developer tool);
+  a full report-only pass the owner approves is the unbuilt version. _src:_ `hermes: agent/curator.py`.
+- **Scored promotion (dreaming)** — weighted signals + thresholds. nisse gates on recurrence + owner
+  evidence instead; adopt weights only if recurrence proves too blunt. Keep the diary/report
+  separate from the durable store either way — that separation is what stops feedback loops.
+  _src:_ `openclaw: docs/concepts/dreaming.md`.
 - **Iterative-update-the-prior-summary** — feed the curator the current overlay, ask it to revise not
-  rewrite. _src:_ `hermes: agent/context_compressor.py` (_generate_summary — iterative-update prompt; orchestrated by `agent/conversation_compression.py`).
+  rewrite. Partly live: core memory is edited line-by-line, never rewritten wholesale.
+  _src:_ `hermes: agent/context_compressor.py` (_generate_summary — iterative-update prompt; orchestrated by `agent/conversation_compression.py`).
 
 ## Scheduling / self-invocation
 
@@ -248,18 +263,21 @@ Unlike the prior-art catalogue above, these are features the **owner has asked f
 backlog. Not yet designed or decided; captured here so the ask isn't lost. Promote each to `CLAUDE.md`
 + a design doc when it's picked up.
 
-- **Use the recorded reactions** — `reactions/` now stores the owner's taps raw (see `CLAUDE.md`); the
-  undecided half is what they should *mean*: quality feedback on an answer, a "remember this" trigger,
-  or both split by emoji.
+- **Use the recorded reactions** — DONE as evidence: each record carries the `turn_id` it graded, and
+  the nightly curator reads the current emoji per turn. Still undecided (owner's call): what a given
+  emoji should MEAN. No polarity table is hardcoded — the curator reads the emoji plus the
+  conversation around it, and the research says a 👍 alone is not evidence of quality anyway
+  (`docs/curator.md`).
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
 - **Central command registry → auto-derived BotCommand menu** — `chat/saved.py` ships the viewer
   commands and publishes its own menu from one `SavedCommand`/`BOT_COMMANDS` pair; the open half is a
   registry every future command module registers into, instead of one list per module.
-- **Knowledge-consolidation bot** — an agent that consolidates and updates stored knowledge. This is
-  the nightly **curator** (see "Self-improvement (curator)" above + `curator/` in `CLAUDE.md`) — track
-  the ask against that design.
-- **Convenient sub-agent management (gap)** — editing sub-agents still means editing YAML +
-  re-seeding: definitions live in `app/subagents/agents.yml`, seeded per conversation via
-  `make seed U=<id>` (`SubagentStore.save()` is seed-only). Want a convenient flow (command / tool /
-  admin surface) to create and tune sub-agents without touching files. Must stay a **trusted admin surface** (`subagents/CLAUDE.md`: it drives
-  which tools/model/prompts run — never wire a naive user-facing writer to it).
+- **Knowledge-consolidation bot** — DONE: the nightly curator (`app/curator/`, `docs/curator.md`).
+  It merges duplicates, corrects contradicted facts in place, drops stored junk, and promotes a
+  repeated correction into a standing rule — reporting every change to the owner.
+- **Convenient sub-agent management (gap)** — PARTLY DONE: `subagent_list` / `subagent_save`
+  (`app/subagents/tools.py`) edit the roster at runtime, no YAML and no re-seed. It stayed a
+  **trusted admin surface** — the tools are curator-only, deliberately absent from `MAIN_TOOLS`, and
+  a save is validated against the live registry + a model allow-list. The unbuilt half is an owner-facing
+  flow (a command to tune a sub-agent from chat) and cache invalidation: an edit takes effect on the
+  next process start, since a conversation's agent is built once and cached.

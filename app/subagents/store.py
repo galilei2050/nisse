@@ -9,6 +9,7 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
+from app.shared.revisions import ChangeKind, RevisionLog
 
 _COLLECTION = "subagents"
 
@@ -42,6 +43,7 @@ class SubagentStore:
         """Bind to the subagents collection for one conversation; every query is scoped to it."""
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
+        self._revisions = RevisionLog(database, conversation_id=conversation_id)
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
@@ -58,8 +60,27 @@ class SubagentStore:
         query = {"conversation_id": self._conversation_id, "deleted_at": None}
         return [SubagentConfig.model_validate(doc) async for doc in self._collection.find(query)]
 
+    async def get(self, name: str) -> SubagentConfig | None:
+        """One live config by name within this conversation, or None."""
+        doc = await self._collection.find_one(
+            {"conversation_id": self._conversation_id, "name": name, "deleted_at": None}
+        )
+        return SubagentConfig.model_validate(doc) if doc else None
+
     async def save(self, config: SubagentConfig) -> SubagentConfig:
-        """Insert or replace by (conversation_id, name) — idempotent, for the seed script."""
+        """Insert or replace by (conversation_id, name), recording the config it replaced.
+
+        The seed script and the curator share this path: a sub-agent's prompt IS its behaviour, so a
+        replaced one has to stay readable somewhere — the revision is where the old text survives.
+        """
+        previous = await self.get(config.name)
+        await self._revisions.record(
+            collection=_COLLECTION,
+            target=config.name,
+            kind=ChangeKind.REPLACE if previous is not None else ChangeKind.CREATE,
+            before=previous.model_dump_json(exclude={"id"}, indent=2) if previous else None,
+            after=config.model_dump_json(exclude={"id"}, indent=2),
+        )
         result = await self._collection.find_one_and_replace(
             {"conversation_id": self._conversation_id, "name": config.name},
             config.model_dump(exclude={"id"}),
