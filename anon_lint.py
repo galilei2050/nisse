@@ -32,7 +32,10 @@ _TUPLE_MIN_FLAG_ELEMENTS = 2
 # A dict annotation must have exactly key + value to be a candidate.
 _DICT_SLICE_ELEMENTS = 2
 
-NOQA_RE = re.compile(r"#\s*noqa\s*:\s*([A-Za-z0-9, ]+)")
+# Codes only — the reason text that follows must NOT be swallowed into the last code, or
+# `# noqa: ANON003 wraps one pymongo call` suppresses nothing while looking like it does. (It works
+# out with an em dash purely because the dash falls outside the code pattern.)
+NOQA_RE = re.compile(r"#\s*noqa\s*:\s*([A-Za-z]+[0-9]+(?:\s*,\s*[A-Za-z]+[0-9]+)*)")
 
 # ANON003 — a long-lived collaborator is bound in a constructor, never threaded through calls. A
 # module-level function that takes one is a method missing its class, and the behaviour around it has
@@ -40,6 +43,7 @@ NOQA_RE = re.compile(r"#\s*noqa\s*:\s*([A-Za-z0-9, ]+)")
 # `CoreDeps` is deliberately absent: a tool factory `(deps, conversation_id) -> list[Tool]` is the
 # registry's contract, and the point of CoreDeps is to be passed.
 DEPENDENCY_TYPES = {
+    # Clients and transports
     "AsyncAnthropic",
     "AsyncDatabase",
     "AsyncCollection",
@@ -50,6 +54,15 @@ DEPENDENCY_TYPES = {
     "SerpApiClient",
     "Scheduler",
     "Judge",
+    # This app's own long-lived collaborators — every one is bound in some constructor today
+    "Agent",
+    "Assistant",
+    "MongoMessageHistory",
+    "PendingQuestions",
+    "SchedulingService",
+    "ShortTermMemory",
+    "Speaker",
+    "Transcriber",
 }
 # Anything named this way is one too, without having to enumerate every store in the repo.
 DEPENDENCY_SUFFIXES = ("Store", "Log", "Registry")
@@ -114,7 +127,12 @@ def _subscript_base(node: ast.expr) -> str | None:
 
 
 def _dependency_name(annotation: ast.expr | None) -> str | None:
-    """The dependency type this annotation names, or None. Unwraps `X[...]` and a quoted `"X"`."""
+    """The dependency type this annotation names, or None.
+
+    Sees through every spelling the same parameter takes: `X`, `X[...]`, `pkg.X`, a quoted `"X"`
+    under TYPE_CHECKING, and `X | None` / `Optional[X]` — otherwise adding ` | None` is a one-token
+    way to silence the rule while changing nothing about the design it exists to catch.
+    """
     if annotation is None:
         return None
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
@@ -122,6 +140,10 @@ def _dependency_name(annotation: ast.expr | None) -> str | None:
             annotation = ast.parse(annotation.value, mode="eval").body
         except SyntaxError:
             return None
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _dependency_name(annotation.left) or _dependency_name(annotation.right)
+    if _subscript_base(annotation) == "Optional" and isinstance(annotation, ast.Subscript):
+        return _dependency_name(annotation.slice)
     name = _subscript_base(annotation) or _name_of(annotation)
     if name is None:
         return None
