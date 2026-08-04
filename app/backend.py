@@ -26,10 +26,13 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
+from app.chat.format import compose_answer
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
+from app.curator import Curator, build_curate_route
+from app.curator import ensure_indexes as ensure_curator_indexes
 from app.lists import ListStore
 from app.reactions import ReactionStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
@@ -70,10 +73,22 @@ class NisseBot(TelegramServer):
         )
 
     def add_webhook_routes(self, app: FastAPI) -> None:
-        """Mount the scheduling fire endpoint Cloud Tasks calls when a task is due (webhook mode)."""
+        """Mount the worker endpoints: the scheduling fire, and the nightly curator (webhook mode)."""
         service = SchedulingService(scheduler=self.deps.scheduler, endpoint=self.deps.schedule_endpoint)
-        runner = ScheduleRunner(assistant=self.assistant, bot=self.bot, database=self._database, scheduling=service)
+        runner = ScheduleRunner(
+            assistant=self.assistant,
+            bot=self.bot,
+            database=self._database,
+            scheduling=service,
+            format_answer=compose_answer,  # the Telegram rendering, supplied here so scheduling needn't import chat
+        )
         build_fire_route(app, runner)
+        build_curate_route(app, self.curator)
+
+    @cached_property
+    def curator(self) -> Curator:
+        """The nightly maintenance pass; Cloud Scheduler drives it through POST /curate."""
+        return Curator(self.deps, bot=self.bot)
 
     @cached_property
     def assistant(self) -> Assistant:
@@ -171,6 +186,7 @@ class NisseBot(TelegramServer):
         await ListStore.ensure_indexes(self._database)
         await ReactionStore.ensure_indexes(self._database)
         await SubagentStore.ensure_indexes(self._database)
+        await ensure_curator_indexes(self._database)
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""

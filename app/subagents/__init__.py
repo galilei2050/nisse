@@ -10,6 +10,7 @@ from app.subagents.hypothesis_tree import (
 )
 from app.subagents.store import SubagentConfig, SubagentStore
 from app.subagents.tool import SubagentTool
+from app.subagents.tools import register_management_tools
 from app.tools.registry import ToolRegistrar
 
 
@@ -24,6 +25,7 @@ def register_tools(registrar: ToolRegistrar) -> None:
     """
     registrar.register("hypothesis_tree", lambda _deps, _conversation_id: build_hypothesis_tree_tools())
     registrar.register("short_term", lambda _deps, _conversation_id: [ShortTermMemory()])
+    register_management_tools(registrar)  # `subagents` — the curator-only roster read/write pair
 
 
 __all__ = [

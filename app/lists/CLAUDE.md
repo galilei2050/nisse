@@ -37,6 +37,9 @@ The routing the agent applies:
 - This makes lists usable for append-mostly *prose* logs (e.g. contradictions), but it can't edit a
   word *inside* an item — for that, a long-term memory body (`recall_edit`) is the right home.
 - `clear=true` soft-deletes the whole list (NisseDbModel `deleted_at`); reads filter `{"deleted_at": None}`.
+- Every mutation appends to `revisions` (`app/shared/revisions.py`) — including `add`, which loses
+  nothing: a dedupe pass runs as clear-then-add, and a history showing only the clear reads as "the
+  list was destroyed". The nightly curator edits lists unattended, so the log has to be honest.
 
 Mirrors the `app/memory` store/tool pattern; wired in `Conversations._build_list_tools`; index
 ensured in `backend.py`. `chat/saved.py` reads the same store directly for the owner's `/lists`

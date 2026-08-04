@@ -82,9 +82,14 @@ locally and links via baski's `sub_trace_ids`). Walk it with `analyze-traces/tra
   token volume dominates cost/quality (research: `docs/orchestrator-subagent-architecture.md` §3.2,
   §5). The downward brief (goal / output format / boundaries) lives in `SubagentTool.Input.prompt`'s
   description — the strongest lever available under the owner's fixed single-string interface.
-- **`subagents` is a trusted admin surface.** It drives which tools/model/prompts run; seed it from an
-  admin script only. Never wire a user-facing writer to it. `tool_names` is validated against the
-  registry; `model`/prompts are trusted because the seed channel is.
+- **`subagents` is a trusted admin surface.** It drives which tools/model/prompts run. Two writers
+  exist, both trusted: the seed script, and the nightly curator through `subagent_list` /
+  `subagent_save` (`tools.py`, registered as `subagents` — curator-only, deliberately NOT in
+  `MAIN_TOOLS`, so nothing the owner types in chat reaches this write path). Never wire a
+  user-facing writer to it. A save validates `tool_names` against the live registry and `model`
+  against `ALLOWED_MODELS` *before* writing — an unknown tool name would otherwise surface as a
+  crash at the next conversation build, taking the whole chat down rather than one tool call. The
+  config it replaced is kept in `revisions`, since a sub-agent's prompt IS its behaviour.
 - **Stateless & isolated.** Fresh `InMemoryMessageHistory` per call (no warm session — that would
   reintroduce a second state writer, §1.4/§2.2). Each run gets its own trace (baski creates it).
 - **When to configure one at all:** only for genuine context-isolation/compression wins (deep

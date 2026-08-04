@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from baski.primitives import datetime
 
-from app.chat.format import compose_answer
 from app.scheduling.store import ScheduleKind, claim, mark_done, reschedule
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
     from aiogram import Bot
+    from baski.agents import AgentExecuteResult
     from pymongo.asynchronous.database import AsyncDatabase
 
     from app.assistant import Assistant
     from app.scheduling.service import SchedulingService
+
+# How a result becomes the text sent to the owner. Taken as a dependency rather than imported:
+# `app.chat` imports this package (the /schedules viewer), so importing the chat layer back closed a
+# real cycle that only stayed quiet because backend.py happened to load `app.chat` first.
+AnswerFormatter = Callable[["AgentExecuteResult"], str]
 
 
 class ScheduleRunner:
@@ -23,14 +29,21 @@ class ScheduleRunner:
     Lifecycle: long-lived — built once when the fire route is mounted, serves every fire.
     """
 
-    def __init__(
-        self, *, assistant: Assistant, bot: Bot, database: AsyncDatabase, scheduling: SchedulingService
+    def __init__(  # noqa: PLR0913 — one collaborator per thing a fire touches
+        self,
+        *,
+        assistant: Assistant,
+        bot: Bot,
+        database: AsyncDatabase,
+        scheduling: SchedulingService,
+        format_answer: AnswerFormatter,
     ) -> None:
-        """Hold the collaborators a fire needs: the agent, the Telegram bot, the DB, the enqueuer."""
+        """Hold the collaborators a fire needs: the agent, the bot, the DB, the enqueuer, the formatter."""
         self._assistant = assistant
         self._bot = bot
         self._database = database
         self._scheduling = scheduling
+        self._format_answer = format_answer
 
     async def fire(self, *, public_id: str, fire_at: datetime.datetime) -> None:
         """Claim the occurrence (idempotent), re-arm a recurring one, run the agent, deliver the reply.
@@ -55,7 +68,7 @@ class ScheduleRunner:
                 result = await self._assistant.reply(
                     conversation_id=task.conversation_id, text=f"[Запланировано] {task.instruction}"
                 )
-                await self._bot.send_message(chat_id=task.conversation_id, text=compose_answer(result))
+                await self._bot.send_message(chat_id=task.conversation_id, text=self._format_answer(result))
                 if task.kind is ScheduleKind.ONCE:
                     await mark_done(self._database, public_id=public_id)
             finally:

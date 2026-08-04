@@ -1,0 +1,146 @@
+# The curator — nightly self-maintenance
+
+One agent pass, once a night, off the request path. It reads a day of conversation plus the owner's
+emoji reactions, works out what the owner was *doing* in each message, and edits the four stores that
+decide how the assistant behaves tomorrow: core memory, long-term memories, lists, and sub-agents.
+
+The assistant's model is frozen — it cannot get smarter. What it can do is start tomorrow from a
+better store. That is the whole ceiling of this feature, and worth stating plainly: the curator makes
+nisse better at *this owner's context and procedures*, never fundamentally more capable.
+
+## Why the safety machinery is the feature
+
+An unattended agent editing its own standing rules is exactly the thing the project's decision
+principles warn about: **an unverifiable miss is disproportionately costly**, and a change the owner
+cannot see is unverifiable by construction. Three properties keep the pass trustworthy:
+
+1. **Every write is attributed and reversible.** The pass wraps its work in `acting_as(CURATOR)`, so
+   each store records the text it replaced against that run id (`app/shared/revisions.py`,
+   `make revisions U=<id>`). `before` is the copy that would otherwise be gone.
+2. **The owner is told.** The pass ends by messaging its report — what changed, on what evidence, and
+   what it deliberately left alone. Silent self-modification is the trust-killer.
+3. **Recurrence gates durable rules.** A standing rule needs the owner to have shown it more than
+   once, or stated it as standing. One irritated message on a bad day is not policy.
+
+## The evidence
+
+`evidence.py` assembles the window in plain code — no model call for what a query already knows.
+
+**A turn is not an exchange.** The transcript stores one turn per API call, so a question that took
+three tool rounds is one turn with the owner's words and two with the assistant's narration. Handed
+over raw, most entries read as "owner said nothing" and the day looks like the assistant talking to
+itself. Turns are folded back into exchanges: one owner message, the *final* answer (the middle turns
+are live progress narration), and any reactions that landed anywhere inside.
+
+**Reactions resolve through `turn_id`.** Telegram names only `(chat_id, message_id)`; the link exists
+because the chat layer records which messages carried which answer (`MongoMessageHistory.link_messages`).
+The reaction log is append-only with the whole set per record, so the *last* record for a turn is its
+present state — an earlier 👍 that was taken back must not read as still standing.
+
+**A scheduled self-prompt is not the owner.** A reminder firing enters the transcript as a user
+message. Marked as such, so the curator never learns from prompts it wrote itself.
+
+## The classifier
+
+One call over the whole window labels each owner message. It is **offline by design** — an inline
+classifier on a single-user bot is a rejected direction (`app/CLAUDE.md`: no cost/latency machinery
+without amortization); here the whole day costs one call and serves the only consumer there is.
+
+The taxonomy is not invented. It follows the implicit-feedback ontology of Don-Yehiya et al. (2024),
+as densely re-annotated by Liu, Zhang & Choi, *User Feedback in Human-LLM Dialogues: A Lens to
+Understand Users But Noisy as a Learning Signal* (arXiv:2507.23158) — positive feedback plus four
+negative kinds (rephrase, make-aware-without-correction, make-aware-with-correction, ask-for-
+clarification). Two labels are added for what this bot routes on and that ontology has no slot for:
+`directive` (a standing rule) and `social`.
+
+| Kind | What it is | What it is worth |
+|---|---|---|
+| `request` | a task or question, no verdict | context |
+| `praise` | approves the last answer | **nothing** — see below |
+| `rephrase` | re-asked the same thing differently | the answer missed, silently |
+| `rejection` | "that's wrong", no fix given | a miss, cause unknown |
+| `correction` | what was wrong AND what right is | the richest signal |
+| `clarification` | asks for what the answer omitted | a gap in the answer |
+| `directive` | a rule for future behaviour | core-memory candidate |
+| `social` | venting, chat, no task | context |
+
+Three findings from that paper shape how the labels may be used, and they are why nothing here
+triggers a change on its own:
+
+- **Praise is a bad learning signal.** Prompts that drew positive feedback scored slightly *lower* on
+  quality and higher on toxicity — people praise most warmly when the model went along with a request
+  it should have pushed back on. Nothing is promoted on approval alone.
+- **Content beats polarity.** *What* was unsatisfactory teaches; a thumbs-down does not. Every label
+  carries the owner's exact words and what the miss was about.
+- **Automatic labelling is noisy** (~49% on the fine-grained set). A label is a lead to verify
+  against the transcript, never a fact to act on — the curator's prompt says so explicitly.
+
+## What the curator may change, and what it may never learn
+
+Its whole surface is four tool sets (`CURATOR_TOOLS`): `memory`, `lists`, `core_memory`, `subagents`.
+No web, no `ask_user` — the owner is asleep. It uses the **same tools as the live assistant**, so
+there is one write path per store rather than a parallel curator-only one that could drift.
+
+The "do NOT capture" list is adapted from hermes' background-review prompt, and it is the part most
+worth keeping intact: environment/setup failures, negative claims about capabilities ("search does
+not work"), transient errors that resolved, one-off task narratives, and **its own output**. Each of
+those hardens into a permanent self-inflicted constraint the assistant later quotes at itself.
+
+Its judge is its own (`CURATOR_JUDGE_PROMPT`), not the assistant's. The assistant's completeness
+rubric grades how fully an answer served a request and would push a maintenance pass toward doing
+more work on thinner evidence; the curator's rubric grades the opposite discipline — is every claimed
+change backed by something the owner said, and is a quiet night reported as one.
+
+## Change history
+
+`revisions` is append-only: `{collection, target, kind, before, after, actor, run_id}`. Both the
+assistant (mid-conversation) and the curator write through it; the actor rides a context variable, so
+no tool factory has to thread it.
+
+It is a separate collection rather than a second version in the edited one, because `memories` and
+`lists` carry unique indexes that **deliberately** span soft-deleted documents: re-adding a cleared
+list revives its document, and a soft-deleted memory keeps its `public_id` reserved. A superseded
+copy beside the live one would collide with both rules.
+
+This matches the consolidation literature's default — recency-wins with explicit invalidation, old
+state kept for audit, current state unambiguous — and its verdict that eviction is a compliance tool,
+not a quality one: good consolidation makes stale facts unretrievable without deleting them.
+
+## Running it
+
+```
+make curate U=<conversation_id>            # one real pass: evidence, changes, report
+make curate U=<conversation_id> DRY=1      # stop after the classification, change nothing
+make curate U=<conversation_id> DAYS=7     # a wider window
+make revisions U=<conversation_id>         # the change history, oldest first
+```
+
+In prod, Cloud Scheduler POSTs `/curate` nightly at 04:00 America/Los_Angeles
+(`infrastructure/services/curator_schedule.py`); an empty body means "every conversation with recent
+traffic". Retries are off: a retry would re-apply edits the first attempt already made.
+
+## Verified behaviour
+
+A seeded day (a correction repeated twice, a standing directive, duplicate memories, a stale fact, a
+case-duplicated list, praise, and a 👍) produced, on two consecutive runs:
+
+- the repeated currency correction promoted to core memory, justified by **both** occurrences;
+- the duplicate memories merged into one, the loser soft-deleted;
+- the stale city corrected in place, keeping the prior value in the record;
+- the list de-duplicated;
+- praise and the 👍 explicitly named in the report as **not** grounds for any change;
+- the one-off trip queries explicitly not stored as facts.
+
+Every one of those changes is in `revisions` with its `before`. The first run exposed a real gap —
+the list dedupe ran as clear-then-add and only the clear was recorded, so the history read "list
+destroyed"; `ListStore.add` now records too.
+
+## Known limits
+
+- **Emoji have no fixed meaning.** The curator reads the emoji itself and the conversation around it;
+  no polarity table is hardcoded, because what a given emoji means is the owner's call and has not
+  been decided (`app/IDEAS.md`, owner wishlist).
+- **Sub-agent edits take effect on the next process start** — a conversation's agent is built once
+  and cached.
+- **No rollback command yet.** `before` holds the text and `make revisions` shows it, but putting a
+  version back is a manual edit today.
