@@ -76,7 +76,8 @@ app/
     ask.py          the ask_user TOOL: mid-turn clarifying question with tappable options. Agent calls it like
                     any tool; the owner sees an inline keyboard; the call BLOCKS on an in-memory asyncio.Future
                     until they tap, then returns the choice (single=one tap; multi=toggle+Done; plus "None of
-                    these"). Every parked question lives in the process-wide `questions` (`PendingQuestions`) —
+                    these"). Every parked question lives in one `PendingQuestions` registry, held on
+                    `CoreDeps.questions` and handed to both the tool and the router —
                     one registry the tool, the tap handler, a typed reply and the probe all go through.
                     One process/event loop (max_instances=1) so the tap resolves the parked turn's
                     Future in memory — no queue. The callback handler resolves it DIRECTLY, never via
@@ -85,7 +86,7 @@ app/
                     answer is routed by chat alone. Timeout is a module constant (300s).
                     Whether the agent CHOOSES to ask is the only thing worth measuring here, so the probe
                     supplies a fake bot and taps through `questions.resolve_tap` — see Manual probe, cases in
-                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls `questions.answer`
+                    `docs/ask-test-cases.md`. A TYPED answer counts too: the router calls its registry's `answer`
                     before starting a turn, since the parked turn holds the chat lock the new message
                     would queue behind.
     progress.py     TelegramProgress — baski AgentEvents → ONE live-edited message, rendered as an
@@ -288,10 +289,12 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 ## Dependency wiring — a process-wide tool registry (`app/tools/`)
 
 `CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
-anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`) **plus the tool
-`registry`** — a `ToolRegistry` (name→factory) built at startup by `build_tool_registry()`. `bot` is
-the aiogram client for the rare tool that messages the owner directly (`ask_user`) — required, since
-the probe fakes one rather than going without.
+anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`, `questions`)
+**plus the tool `registry`** — a `ToolRegistry` (name→factory) built at startup by
+`build_tool_registry()`. `bot` is the aiogram client for the rare tool that messages the owner
+directly (`ask_user`) — required, since the probe fakes one rather than going without. `questions` is
+the one `PendingQuestions` registry per process: `ask_user` parks a question on it and the chat
+router looks there for one to answer, so the two sides only meet if they hold the same object.
 
 **Each domain registers its own tools** (ownership by domain, like routers). A domain exposes a
 factory `(deps, conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)` that

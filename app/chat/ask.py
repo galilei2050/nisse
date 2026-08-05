@@ -4,8 +4,8 @@ When one missing fact would change the answer, the agent calls `ask_user` instea
 spraying variants. To the agent it is an ordinary tool that returns the owner's choice; to the owner it
 is a Telegram message with tappable options. The tool blocks the agent turn on an in-memory
 `asyncio.Future` until the owner taps; the `callback_query` handler here (wired onto the chat router)
-resolves it — as does a typed reply, which the chat router hands to `questions.answer` before it would
-start a new turn. There is exactly one process, one event loop (Cloud Run `max_instances=1`), so the
+resolves it — as does a typed reply, which the chat router hands to the registry's `answer` before it
+would start a new turn. There is exactly one process, one event loop (Cloud Run `max_instances=1`), so the
 answer and the parked turn share the Future in memory — no queue, no cross-process sync. Both paths
 resolve the Future DIRECTLY, never through `assistant.reply()`, whose per-chat lock the parked turn
 still holds — routing an answer through it would deadlock until the question expired.
@@ -67,7 +67,10 @@ class _Tap(StrEnum):
 
 @dataclass(slots=True)
 class _Pending:
-    """One in-flight question: the Future the agent awaits, its options, and the live selection."""
+    """One in-flight question: the Future the agent awaits, its options, and the live selection.
+
+    Lifecycle: short-lived — one per open question, dropped when it resolves or times out.
+    """
 
     token: str  # what its buttons carry back
     future: asyncio.Future[str]
@@ -110,7 +113,7 @@ class PendingQuestions:
     At most ONE open question per chat — `AskUserTool.execute` refuses a second through `busy`, since
     `answer` routes a typed reply by chat alone and would otherwise pick between them at random.
 
-    Lifecycle: long-lived — one per process (the `questions` singleton below).
+    Lifecycle: long-lived — one per process, built at startup and held on `CoreDeps.questions`.
     """
 
     def __init__(self) -> None:
