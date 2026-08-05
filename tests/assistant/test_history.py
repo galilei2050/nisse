@@ -183,7 +183,7 @@ async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
         hist.truncate(_BIG_USAGE)
 
     assert [t.id for t in hist.turns] == [1, 2, 3]
-    hist.trim()  # the next reply is where the window actually moves
+    hist.compact()  # the reply boundary is where the transcript actually shrinks
     assert [t.id for t in hist.turns] == [2, 3]
 
 
@@ -219,8 +219,8 @@ async def test_over_budget_sheds_machinery_before_it_drops_words() -> None:
     assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"  # Mongo keeps it whole
 
 
-async def test_trim_persists_so_dropped_turns_do_not_resurrect() -> None:
-    """The load-bearing case: a turn dropped by trim() is soft-deleted in Mongo, not resurrected."""
+async def test_compaction_persists_so_dropped_turns_do_not_resurrect() -> None:
+    """The load-bearing case: a turn dropped by compact() is soft-deleted in Mongo, not resurrected."""
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -231,7 +231,7 @@ async def test_trim_persists_so_dropped_turns_do_not_resurrect() -> None:
     assert _active_ids(col) == [1, 2, 3]
 
     hist.truncate(_BIG_USAGE)  # the loop reports an over-budget call...
-    hist.trim()  # ...and the next reply drops the oldest turn (id 1) from context
+    hist.compact()  # ...and the reply boundary drops the oldest turn (id 1) from context
     await hist.flush()
     assert _active_ids(col) == [2, 3]  # turn 1 soft-deleted in Mongo
     assert col.docs[(1, 1)]["messages"]  # ...but content intact — recoverable
@@ -319,7 +319,7 @@ async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
     _add_tool_turn(hist)
     _add_answer(hist, "answer")
     await hist.flush()
-    hist.drop_tool_turns()
+    hist.compact()
 
     assert _active_ids(col) == [1, 3]
     assert col.docs[(1, 2)]["deleted_at"] is not None  # tool turn soft-deleted

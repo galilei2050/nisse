@@ -64,7 +64,34 @@ _PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # how long a turn keeps its to
 class MongoTurn(Turn):
     """A transcript turn that also carries its UTC send-time, used to render the recency marker."""
 
+    messages: list[MessageParam] = field(default_factory=list)  # restated so mypy sees the type here
     created_at: datetime.datetime = field(kw_only=True)
+
+    def keep_only_text(self) -> bool:
+        """Throw away everything in this turn except what was said, and report whether anything went.
+
+        Kept: `text` blocks — the owner's message, the agent's answer. Dropped: the `tool_use` calls,
+        their `tool_result` payloads, attached images/PDFs and `thinking`. A message left with nothing
+        goes entirely.
+
+        A call and its result are always in the same turn, so both leave together and no `tool_use` is
+        left without its `tool_result`.
+        """
+        kept: list[MessageParam] = []
+        for message in self.messages:
+            content = message["content"]
+            if isinstance(content, str):
+                kept.append(message)
+                continue
+            blocks = list(content)
+            texts = [b for b in blocks if _is_text_block(b)]
+            if not texts:
+                continue
+            kept.append(message if len(texts) == len(blocks) else MessageParam(role=message["role"], content=texts))
+        if kept == self.messages:
+            return False
+        self.messages = kept
+        return True
 
 
 def _turn_marker(turn_id: int, at: datetime.datetime, prev_at: datetime.datetime | None) -> str:
@@ -171,24 +198,6 @@ def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 —
     return MessageParam(role=message["role"], content=kept)
 
 
-def _words_only(message: MessageParam) -> MessageParam | None:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
-    """Keep a message's conversational text, drop the machinery around it; None if nothing is left.
-
-    Machinery is the tool call, its payload, the attached image/PDF and the reasoning — everything the
-    exchange consumed on the way to its answer. A tool call and its result live in the same turn (baski
-    adds both inside one history context), so shedding a whole turn's machinery never orphans a
-    `tool_use` from its `tool_result`.
-    """
-    content = message["content"]
-    if isinstance(content, str):
-        return message
-    blocks = list(content)
-    kept = [b for b in blocks if _is_text_block(b)]
-    if not kept:
-        return None
-    return message if len(kept) == len(blocks) else MessageParam(role=message["role"], content=kept)
-
-
 def _has_text(turn: Turn) -> bool:
     """True if the turn has any conversational text — a user question or an assistant reply.
 
@@ -210,7 +219,8 @@ class MongoMessageHistory(MessageHistory):
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies. Call
     `load()` before the first reply to restore the active transcript. During a reply each completed
     turn is written fire-and-forget (`__exit__`); `flush()` awaits those writes after the answer is
-    sent. `drop_tool_turns()` removes pure tool turns from the active transcript between replies.
+    sent. Between replies `compact()` is the only thing that shrinks the transcript, and `_forget()`
+    the only way a turn leaves it.
     """
 
     def __init__(self, *, database: AsyncDatabase, conversation_id: int) -> None:
@@ -325,70 +335,76 @@ class MongoMessageHistory(MessageHistory):
         """
         self._last_input_tokens = effective_input_tokens(usage)
 
-    def trim(self) -> None:
-        """Free context when the reply that just finished left it near the budget, cheapest cure first.
+    def compact(self) -> None:
+        """Shrink the transcript once the answer is delivered. The only place it is allowed to shrink.
 
-        Called once per reply, after the answer is delivered: the reply keeps every turn it started
-        with, and the prefix only ever moves between replies, so the transcript the loop sees is
-        append-only and stays cacheable.
+        Nothing here may run during a reply: the loop has to see an append-only transcript, or the
+        cached prefix stops matching and the reply loses context it is still composing against.
 
-        Machinery goes before words. Tool payloads, attachments and reasoning are three quarters of the
-        transcript's bulk (measured, Aug 2026) and their value was consumed by the answer that used
-        them; the conversation itself is what the owner expects to still be there. So an over-budget
-        reply first sheds old machinery, and only a reply that is STILL over budget after that drops
-        whole turns — one cure per reply, judged on the next reply's real measurement rather than a
-        local guess at token counts.
+        Three cuts, ordered by what they cost the owner — each one runs only if the cheaper one was
+        not enough:
+
+        1. a pure tool round said nothing, so it always goes;
+        2. a turn past `_PAYLOAD_RETENTION` gives up its tool data but keeps its words;
+        3. only a context still near the budget after that gives up whole exchanges.
+
+        Steps 2 and 3 are judged on `_last_input_tokens` — the real size of the run that just finished,
+        not a local guess at token counts — so each reply applies at most one of them and the next
+        reply's measurement says whether it was enough.
         """
+        self._forget({turn.id for turn in self._turns if not _has_text(turn)}, reason="tool-only")
         if self._last_input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
             return
-        if self._shed_payloads():
+        if self._reduce_old_turns_to_text():
             return
-        count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
-        dropped, self._turns = self._turns[:count], self._turns[count:]
-        self._dropped.update(turn.id for turn in dropped)
-        logger.info(
-            "Truncated message history",
-            extra={"inputTokens": self._last_input_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
-        )
+        self._drop_oldest_turns()
 
-    def _shed_payloads(self) -> bool:
-        """Strip tool payloads, attachments and reasoning from turns older than `_PAYLOAD_RETENTION`.
+    def _reduce_old_turns_to_text(self) -> bool:
+        """Leave only what was said in every turn past `_PAYLOAD_RETENTION`. True if anything went.
 
-        A follow-up reaches back into the output of the exchange it follows up on — "show me the second
-        one you found" — so an hour of machinery stays reachable, which covers 85% of the owner's
-        messages (measured over 1,007 gaps). Older machinery is dead weight that evicts the
-        conversation itself.
+        An hour, because a follow-up reaches into the output of the exchange it follows — "show me the
+        second one you found". 85% of the owner's messages arrive within an hour of the previous one
+        (measured over 1,007 gaps), so an hour covers that; past it the search dumps and attachments
+        are never referenced again, while taking about three quarters of the transcript's space.
 
-        In-memory only, like `drop_tool_turns`: Mongo keeps every turn whole. Permanent, and done at a
-        reply boundary, so a turn sheds its payload once and the transcript never changes mid-run.
-        Returns whether anything was actually freed.
+        In memory only — Mongo keeps every turn whole, so what was cut stays readable and recoverable.
         """
         cutoff = datetime.now() - _PAYLOAD_RETENTION
-        freed = False
+        reduced = False
         for turn in self._turns:
-            if datetime.as_utc(turn.created_at) > cutoff:
-                continue
-            kept = [m for m in (_words_only(msg) for msg in turn.messages) if m is not None]
-            if kept != turn.messages:
-                turn.messages = kept
-                freed = True
-        emptied = [turn.id for turn in self._turns if not turn.messages]
-        if emptied:
-            self._turns = [turn for turn in self._turns if turn.messages]
-            self._dropped.update(emptied)
-        if freed:
-            logger.info("Shed old tool payloads", extra={"inputTokens": self._last_input_tokens})
-        return freed
+            if datetime.as_utc(turn.created_at) <= cutoff:
+                reduced = turn.keep_only_text() or reduced  # call first: every old turn is reduced, not just one
+        if reduced:
+            logger.info("Reduced old turns to text", extra={"inputTokens": self._last_input_tokens})
+        return reduced
+
+    def _drop_oldest_turns(self) -> None:
+        """Give up the oldest slice of the conversation — the last resort, when nothing cheaper is left."""
+        count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
+        self._forget({turn.id for turn in self._turns[:count]}, reason="over-budget")
+
+    def _forget(self, turn_ids: set[int], *, reason: str) -> int:
+        """Take turns out of the active transcript — the one way turns leave it.
+
+        `flush()` soft-deletes them in Mongo, so they never come back on `load()` and stay recoverable
+        there. Pure tool rounds were already written soft-deleted, so their update simply matches
+        nothing.
+        """
+        if not turn_ids:
+            return 0
+        before = len(self._turns)
+        self._turns = [turn for turn in self._turns if turn.id not in turn_ids]
+        self._dropped.update(turn_ids)
+        removed = before - len(self._turns)
+        logger.info(
+            "Turns left the transcript",
+            extra={"reason": reason, "turnIds": sorted(turn_ids), "turnsAfter": len(self._turns)},
+        )
+        return removed
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
-        """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
-        ids = set(turn_ids)
-        original = len(self._turns)
-        self._turns = [turn for turn in self._turns if turn.id not in ids]
-        removed = original - len(self._turns)
-        self._dropped.update(ids)
-        logger.info("Turns deleted by agent", extra={"turnIds": sorted(ids), "turnsRemoved": removed})
-        return removed
+        """Remove whole turns by id — the agent's own `prune_transcript` reaching into its context."""
+        return self._forget(set(turn_ids), reason="agent")
 
     # --- persistence ---
 
@@ -409,7 +425,7 @@ class MongoMessageHistory(MessageHistory):
         ]
         # Mongo keeps every turn whole, so a restart would otherwise restore machinery this
         # conversation already shed. Free here too — a cold start has no cached prefix to lose.
-        self._shed_payloads()
+        self._reduce_old_turns_to_text()
 
         newest = await self._collection.find_one(
             {"conversation_id": self._conversation_id},
@@ -437,14 +453,6 @@ class MongoMessageHistory(MessageHistory):
                 {"conversation_id": self._conversation_id, "turn_id": {"$in": list(dropped)}, "deleted_at": None},
                 {"$set": {"deleted_at": now, "updated_at": now}},
             )
-
-    def drop_tool_turns(self) -> None:
-        """Drop pure tool turns from the active transcript so the next reply's context stays lean.
-
-        Their Mongo docs were already written soft-deleted (see `_write_turn`), so this is an
-        in-memory prune only — no extra write, and the full turn stays recoverable in Mongo.
-        """
-        self._turns = [turn for turn in self._turns if _has_text(turn)]
 
     async def link_messages(self, message_ids: list[int]) -> None:
         """Attach the Telegram messages that delivered the newest turn's answer to that turn.

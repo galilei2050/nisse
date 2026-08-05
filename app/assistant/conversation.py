@@ -32,9 +32,9 @@ class Conversation:
         each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
         the one agent's history at once.
 
-        The window shrinks only here, after the answer is delivered (`trim`): this reply keeps every
-        turn it started with, and the transcript the loop sees is append-only, so the cached prefix
-        holds. Trimming inside the loop cuts context out from under a reply mid-thought AND rewrites
+        The transcript shrinks only here, after the answer is delivered (`compact`): this reply keeps
+        every turn it started with, and the one the loop sees is append-only, so the cached prefix
+        holds. Shrinking inside the loop cuts context out from under a reply mid-thought AND rewrites
         the whole cache on every remaining turn.
         """
         async with self._lock:
@@ -49,8 +49,7 @@ class Conversation:
                 if text:
                     self._history.add_user_text(text)
             result = await self._agent.execute()
-            self._history.drop_tool_turns()
-            self._history.trim()
+            self._history.compact()
         return result
 
     async def flush(self) -> None:

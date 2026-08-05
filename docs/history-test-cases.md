@@ -24,15 +24,17 @@ Write the expected Mongo end-state **before** running; then compare.
   written **already soft-deleted** (`deleted_at` set); `drop_tool_turns()` then removes it from the
   active in-memory transcript so the next reply's context stays lean.
 - **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
-  writes, then soft-deletes turns dropped by `trim()`/`delete_messages` — so trimming is durable
+  writes, then soft-deletes turns dropped by `compact()`/`delete_messages` — so trimming is durable
   and dropped turns don't resurrect on the next `load()`.
-- **Machinery is freed before words.** An over-budget reply first strips tool calls, payloads,
-  attachments and reasoning from turns older than `_PAYLOAD_RETENTION` (`_shed_payloads`); only a reply
-  that is still over budget after that drops whole turns. A tool call and its result live in the same
-  turn, so shedding never leaves a `tool_use` without its `tool_result`.
-- **The window moves only between replies.** `truncate()` (called by the loop after every API call)
-  just records the context size; `trim()` frees context once per reply, after the answer is
-  delivered. A turn dropped mid-run would both shrink the context a reply is still composing against
+- **One method shrinks the transcript: `compact()`**, once per reply, after the answer is delivered
+  (`truncate()`, which the loop calls after every API call, only records the context size). It cuts in
+  order of what the loss costs: a pure tool round always goes → a turn past `_PAYLOAD_RETENTION` keeps
+  its words but gives up its tool data, attachments and reasoning → only then do whole turns go. A tool
+  call and its result live in the same turn, so a reduced turn never has a `tool_use` without its
+  `tool_result`.
+- **Turns leave through one door.** `_forget()` is the only thing that removes a turn from the active
+  transcript — compaction and the agent's `prune_transcript` (`delete_turns`) both go through it, so
+  every removal is soft-deleted on `flush()` the same way. A turn dropped mid-run would both shrink the context a reply is still composing against
   and move the head of the message list, invalidating the whole cached prefix.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).

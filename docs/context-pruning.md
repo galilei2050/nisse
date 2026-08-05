@@ -160,7 +160,7 @@ whole cached prefix via `effective_input_tokens`), already operates on **all** t
 soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing pure-tool
 turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
 
-**Where it fires matters as much as when.** Trimming runs **once per reply** (`trim()`, called from
+**Where it fires matters as much as when.** Trimming runs **once per reply** (`compact()`, called from
 `Conversation.reply` after the answer is delivered), never inside the agent loop. baski reports usage
 after every API call, and dropping a turn there costs twice over:
 
@@ -174,12 +174,12 @@ after every API call, and dropping a turn there costs twice over:
 Trimming after the answer keeps the reply whole and reacts to the freshest measurement — the run that
 just finished — instead of the previous one's.
 
-**Machinery before words.** Age is the wrong axis to cut on: the budget was being spent on payloads
+**Tool data before words.** Age is the wrong axis to cut on: the budget was being spent on payloads
 while the conversation itself was evicted. Measured on the owner's transcript (dated snapshot, Aug
 2026): of everything already pushed out of context, **42% was base64 images/PDFs, 30% tool results,
 6% reasoning, 5% tool arguments — and only 16% was actual conversation text**; of what was still IN
 context, 45% was tool payloads. So an over-budget reply first sheds machinery from turns older than
-`_PAYLOAD_RETENTION` (`_shed_payloads`), and only a reply that is *still* over budget after that drops
+`_PAYLOAD_RETENTION` (`_reduce_old_turns_to_text`), and only a reply that is *still* over budget drops
 whole turns. At the same budget this roughly **2.5×** the window (29 turns / 3.4h → 57 turns / 8.5h,
 simulated on the real transcript). Days of memory need a bigger budget, not a better filter.
 
@@ -219,8 +219,8 @@ appears. For DISPOSABLE turns it saves nothing, which is correct.
 ## 7. Code touch-points
 | File | What |
 |---|---|
-| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget; `truncate()` records each call's size, `trim()` drops the oldest turns. |
-| `app/assistant/conversation.py` | calls `trim()` once per reply — the only place the window is allowed to move. |
+| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget; `truncate()` records each call's size, `compact()` does the shrinking, `_forget()` is the only way a turn leaves. |
+| `app/assistant/conversation.py` | calls `compact()` once per reply — the only place the transcript is allowed to shrink. |
 | baski `DeleteMessagesTool` (`delete_messages.py`) | `keep_last=N` — keep only the last N turns, drop the rest in one call (`turn_ids` still supported). |
 | `tests/assistant/test_history.py` | covers `keep_last` durability and budget-driven truncation. |
 
