@@ -187,6 +187,38 @@ async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
     assert [t.id for t in hist.turns] == [2, 3]
 
 
+async def test_over_budget_sheds_machinery_before_it_drops_words() -> None:
+    """The cheap cure runs first: an old search dump leaves, the exchange around it stays readable."""
+    col = _FakeCollection()
+    col.docs[(1, 1)] = {
+        "conversation_id": 1,
+        "turn_id": 1,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=3),
+        "deleted_at": None,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "сейчас поищу"},
+                    {"type": "tool_use", "id": "t1", "name": "google_search", "input": {"q": "x"}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "huge dump"}]},
+        ],
+    }
+    hist = _history(col)
+    await hist.load()
+    _add_tool_turn(hist, "t2")  # this reply's own machinery — a follow-up still needs it
+
+    assert [t.id for t in hist.turns] == [1, 2]  # the old exchange is still in the conversation
+    blocks = [b for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"]]
+    texts = [b.get("text") for b in blocks if isinstance(b, dict)]
+    assert "сейчас поищу" in texts  # its words survived
+    payloads = [b for b in blocks if isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")]
+    assert [b.get("tool_use_id") or b.get("id") for b in payloads] == ["t2", "t2"]  # only the fresh pair remains
+    assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"  # Mongo keeps it whole
+
+
 async def test_trim_persists_so_dropped_turns_do_not_resurrect() -> None:
     """The load-bearing case: a turn dropped by trim() is soft-deleted in Mongo, not resurrected."""
     col = _FakeCollection()

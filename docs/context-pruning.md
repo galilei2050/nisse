@@ -174,6 +174,20 @@ after every API call, and dropping a turn there costs twice over:
 Trimming after the answer keeps the reply whole and reacts to the freshest measurement — the run that
 just finished — instead of the previous one's.
 
+**Machinery before words.** Age is the wrong axis to cut on: the budget was being spent on payloads
+while the conversation itself was evicted. Measured on the owner's transcript (dated snapshot, Aug
+2026): of everything already pushed out of context, **42% was base64 images/PDFs, 30% tool results,
+6% reasoning, 5% tool arguments — and only 16% was actual conversation text**; of what was still IN
+context, 45% was tool payloads. So an over-budget reply first sheds machinery from turns older than
+`_PAYLOAD_RETENTION` (`_shed_payloads`), and only a reply that is *still* over budget after that drops
+whole turns. At the same budget this roughly **2.5×** the window (29 turns / 3.4h → 57 turns / 8.5h,
+simulated on the real transcript). Days of memory need a bigger budget, not a better filter.
+
+The retention window exists for follow-ups: "show me the second one you found" reaches back into the
+tool output of the exchange it follows. 63% of the owner's messages arrive within 5 minutes of the
+previous one and 85% within an hour (1,007 gaps, Jun–Aug 2026), so an hour of payloads covers the
+follow-up case while everything older sheds.
+
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the
 model's *optional* deliberate cleanup on a topic change. It is no longer the safety net; the

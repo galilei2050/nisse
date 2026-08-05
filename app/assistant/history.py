@@ -57,6 +57,7 @@ _MAX_TOKENS = 32_000  # context budget: trim() drops oldest turns as effective i
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
+_PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # how long a turn keeps its tool payloads/attachments
 
 
 @dataclass
@@ -168,6 +169,24 @@ def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 —
     if len(kept) == len(blocks):
         return message
     return MessageParam(role=message["role"], content=kept)
+
+
+def _words_only(message: MessageParam) -> MessageParam | None:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
+    """Keep a message's conversational text, drop the machinery around it; None if nothing is left.
+
+    Machinery is the tool call, its payload, the attached image/PDF and the reasoning — everything the
+    exchange consumed on the way to its answer. A tool call and its result live in the same turn (baski
+    adds both inside one history context), so shedding a whole turn's machinery never orphans a
+    `tool_use` from its `tool_result`.
+    """
+    content = message["content"]
+    if isinstance(content, str):
+        return message
+    blocks = list(content)
+    kept = [b for b in blocks if _is_text_block(b)]
+    if not kept:
+        return None
+    return message if len(kept) == len(blocks) else MessageParam(role=message["role"], content=kept)
 
 
 def _has_text(turn: Turn) -> bool:
@@ -307,13 +326,22 @@ class MongoMessageHistory(MessageHistory):
         self._last_input_tokens = effective_input_tokens(usage)
 
     def trim(self) -> None:
-        """Drop the oldest turns when the reply that just finished left the context near the budget.
+        """Free context when the reply that just finished left it near the budget, cheapest cure first.
 
         Called once per reply, after the answer is delivered: the reply keeps every turn it started
         with, and the prefix only ever moves between replies, so the transcript the loop sees is
         append-only and stays cacheable.
+
+        Machinery goes before words. Tool payloads, attachments and reasoning are three quarters of the
+        transcript's bulk (measured, Aug 2026) and their value was consumed by the answer that used
+        them; the conversation itself is what the owner expects to still be there. So an over-budget
+        reply first sheds old machinery, and only a reply that is STILL over budget after that drops
+        whole turns — one cure per reply, judged on the next reply's real measurement rather than a
+        local guess at token counts.
         """
         if self._last_input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
+            return
+        if self._shed_payloads():
             return
         count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
         dropped, self._turns = self._turns[:count], self._turns[count:]
@@ -322,6 +350,35 @@ class MongoMessageHistory(MessageHistory):
             "Truncated message history",
             extra={"inputTokens": self._last_input_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
         )
+
+    def _shed_payloads(self) -> bool:
+        """Strip tool payloads, attachments and reasoning from turns older than `_PAYLOAD_RETENTION`.
+
+        A follow-up reaches back into the output of the exchange it follows up on — "show me the second
+        one you found" — so an hour of machinery stays reachable, which covers 85% of the owner's
+        messages (measured over 1,007 gaps). Older machinery is dead weight that evicts the
+        conversation itself.
+
+        In-memory only, like `drop_tool_turns`: Mongo keeps every turn whole. Permanent, and done at a
+        reply boundary, so a turn sheds its payload once and the transcript never changes mid-run.
+        Returns whether anything was actually freed.
+        """
+        cutoff = datetime.now() - _PAYLOAD_RETENTION
+        freed = False
+        for turn in self._turns:
+            if datetime.as_utc(turn.created_at) > cutoff:
+                continue
+            kept = [m for m in (_words_only(msg) for msg in turn.messages) if m is not None]
+            if kept != turn.messages:
+                turn.messages = kept
+                freed = True
+        emptied = [turn.id for turn in self._turns if not turn.messages]
+        if emptied:
+            self._turns = [turn for turn in self._turns if turn.messages]
+            self._dropped.update(emptied)
+        if freed:
+            logger.info("Shed old tool payloads", extra={"inputTokens": self._last_input_tokens})
+        return freed
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
         """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
@@ -350,6 +407,9 @@ class MongoMessageHistory(MessageHistory):
         self._turns = [
             MongoTurn(id=doc["turn_id"], messages=list(doc["messages"]), created_at=doc["created_at"]) for doc in active
         ]
+        # Mongo keeps every turn whole, so a restart would otherwise restore machinery this
+        # conversation already shed. Free here too — a cold start has no cached prefix to lose.
+        self._shed_payloads()
 
         newest = await self._collection.find_one(
             {"conversation_id": self._conversation_id},
