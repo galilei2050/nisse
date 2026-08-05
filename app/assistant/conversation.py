@@ -48,8 +48,12 @@ class Conversation:
                         self._history.add_photo(data=media.data, media_type=media.media_type)
                 if text:
                     self._history.add_user_text(text)
-            result = await self._agent.execute()
-            self._history.compact()
+            try:
+                result = await self._agent.execute()
+            finally:
+                # Owed whatever the loop did: a run that raised still appended its turns, and without
+                # this they pile up until the next successful reply — each retry re-sending them.
+                self._history.compact()
         return result
 
     async def flush(self) -> None:

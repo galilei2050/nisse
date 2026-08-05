@@ -21,6 +21,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Literal, Self, TypedDict, cast
 
 from anthropic.types import (
@@ -53,26 +54,37 @@ TURNS_COLLECTION = "conversation_turns"  # public: the curator reads this collec
 # persisted like any other turn, so anything reading the transcript back as "what the owner said"
 # must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
 JUDGE_RETRY_PREFIX = "[Completeness check]"
-_MAX_TOKENS = 32_000  # context budget: trim() drops oldest turns as effective input nears this
+_MAX_TOKENS = 32_000  # context budget: compact() starts shrinking as effective input nears this
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
 _PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # how long a turn keeps its tool payloads/attachments
 
 
+class ForgetReason(StrEnum):
+    """Why a turn left the active transcript — a log dimension, so the values are filtered on."""
+
+    NO_TEXT = "no-text"  # a pure tool round: nothing was said in it
+    OVER_BUDGET = "over-budget"  # the context outgrew the budget and the oldest exchanges went
+    AGENT = "agent"  # the agent's own prune_transcript call
+
+
 @dataclass
 class MongoTurn(Turn):
     """A transcript turn that also carries its UTC send-time, used to render the recency marker."""
 
-    messages: list[MessageParam] = field(default_factory=list)  # restated so mypy sees the type here
+    # baski ships no `py.typed`, so `Turn` reaches mypy as `Any` and the inherited field has no type
+    # it can resolve — every `self.messages` here then fails with "Cannot determine type". Restating
+    # the same declaration gives this class one concrete type back.
+    messages: list[MessageParam] = field(default_factory=list)
     created_at: datetime.datetime = field(kw_only=True)
 
     def keep_only_text(self) -> bool:
-        """Throw away everything in this turn except what was said, and report whether anything went.
+        """Strip every block except `text`; return True if anything was removed.
 
-        Kept: `text` blocks — the owner's message, the agent's answer. Dropped: the `tool_use` calls,
-        their `tool_result` payloads, attached images/PDFs and `thinking`. A message left with nothing
-        goes entirely.
+        Kept: `text` blocks — the owner's message, the agent's answer. Dropped: `tool_use` calls,
+        their `tool_result` payloads, attached images/PDFs and `thinking`. A message left with no
+        blocks is dropped whole.
 
         A call and its result are always in the same turn, so both leave together and no `tool_use` is
         left without its `tool_result`.
@@ -88,7 +100,10 @@ class MongoTurn(Turn):
             if not texts:
                 continue
             kept.append(message if len(texts) == len(blocks) else MessageParam(role=message["role"], content=texts))
-        if kept == self.messages:
+        # Compared against the thinking-stripped form, because that is what `format_for_api` already
+        # sends for a settled turn. Dropping only thinking frees nothing, and reporting it as a
+        # reduction would keep starving the cut that does free something.
+        if kept == [_strip_thinking(message) for message in self.messages]:
             return False
         self.messages = kept
         return True
@@ -327,7 +342,7 @@ class MongoMessageHistory(MessageHistory):
         return not self._turns and input_tokens > self.max_tokens // 2
 
     def truncate(self, usage: Usage) -> None:
-        """Record how big the context was on this call. The window is resized between replies — `trim`.
+        """Record this call's context size. The transcript itself is only ever shrunk by `compact()`.
 
         baski calls this after every API call of the loop. Dropping turns here would move the head of
         the message list mid-run, so the cached prefix stops matching and the whole transcript is
@@ -336,59 +351,66 @@ class MongoMessageHistory(MessageHistory):
         self._last_input_tokens = effective_input_tokens(usage)
 
     def compact(self) -> None:
-        """Shrink the transcript once the answer is delivered. The only place it is allowed to shrink.
+        """Shrink the transcript. The only method that does, and it runs once the agent loop has ended.
 
-        Nothing here may run during a reply: the loop has to see an append-only transcript, or the
+        Never call it from inside the loop: the loop has to see a transcript that only grows, or the
         cached prefix stops matching and the reply loses context it is still composing against.
 
-        Three cuts, ordered by what they cost the owner — each one runs only if the cheaper one was
-        not enough:
+        Three cuts:
 
-        1. a pure tool round said nothing, so it always goes;
-        2. a turn past `_PAYLOAD_RETENTION` gives up its tool data but keeps its words;
-        3. only a context still near the budget after that gives up whole exchanges.
+        1. turns with no text at all go — nothing was said in them, so this one always runs;
+        2. over budget: turns older than `_PAYLOAD_RETENTION` lose their tool calls, results,
+           attachments and thinking, and keep their text;
+        3. over budget with nothing left to strip: whole turns go, oldest first.
 
-        Steps 2 and 3 are judged on `_last_input_tokens` — the real size of the run that just finished,
-        not a local guess at token counts — so each reply applies at most one of them and the next
-        reply's measurement says whether it was enough.
+        Only 2 and 3 cost the owner anything, and both wait for the context to actually reach the
+        budget — a small conversation keeps every photo it was sent, however old. The budget is read
+        from `_last_input_tokens`: the measured size of the run that just finished, not a local guess
+        at token counts. One cut per reply, and the next reply's measurement says whether it was
+        enough.
         """
-        self._forget({turn.id for turn in self._turns if not _has_text(turn)}, reason="tool-only")
-        if self._last_input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
-            return
-        if self._reduce_old_turns_to_text():
-            return
-        self._drop_oldest_turns()
+        shrunk = self._forget({turn.id for turn in self._turns if not _has_text(turn)}, reason=ForgetReason.NO_TEXT) > 0
+        if self._last_input_tokens >= int(self.max_tokens * _TRUNCATE_THRESHOLD):
+            if not self._reduce_old_turns_to_text():
+                self._drop_oldest_turns()
+            shrunk = True
+        if shrunk:
+            # The recorded size describes the transcript as it was BEFORE these cuts. Left standing, it
+            # makes `context_status()` report a fullness that no longer exists — "[Context: 187% used]"
+            # after a drop — which reads to the agent as an order to prune. Zero omits the footer until
+            # the next API call measures the real thing.
+            self._last_input_tokens = 0
 
     def _reduce_old_turns_to_text(self) -> bool:
-        """Leave only what was said in every turn past `_PAYLOAD_RETENTION`. True if anything went.
+        """Strip everything but text from turns past `_PAYLOAD_RETENTION`; True if anything was removed.
 
         An hour, because a follow-up reaches into the output of the exchange it follows — "show me the
         second one you found". 85% of the owner's messages arrive within an hour of the previous one
-        (measured over 1,007 gaps), so an hour covers that; past it the search dumps and attachments
-        are never referenced again, while taking about three quarters of the transcript's space.
+        (1,007 gaps, June-August 2026). Tool payloads and attachments were 45% of the live context when
+        that was measured, so dropping the old ones buys most of the room a shorter transcript would.
 
         In memory only — Mongo keeps every turn whole, so what was cut stays readable and recoverable.
         """
         cutoff = datetime.now() - _PAYLOAD_RETENTION
-        reduced = False
-        for turn in self._turns:
-            if datetime.as_utc(turn.created_at) <= cutoff:
-                reduced = turn.keep_only_text() or reduced  # call first: every old turn is reduced, not just one
+        reduced = [
+            turn.id for turn in self._turns if datetime.as_utc(turn.created_at) <= cutoff and turn.keep_only_text()
+        ]
         if reduced:
-            logger.info("Reduced old turns to text", extra={"inputTokens": self._last_input_tokens})
-        return reduced
+            # Which turns, not just how many: "why did you forget the photo I sent?" needs an answer.
+            logger.info("Reduced old turns to text", extra={"turnIds": reduced})
+        return bool(reduced)
 
     def _drop_oldest_turns(self) -> None:
-        """Give up the oldest slice of the conversation — the last resort, when nothing cheaper is left."""
+        """Drop the oldest `_TRUNCATE_PERCENTAGE` of turns (at least one) — nothing cheaper is left."""
         count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
-        self._forget({turn.id for turn in self._turns[:count]}, reason="over-budget")
+        self._forget({turn.id for turn in self._turns[:count]}, reason=ForgetReason.OVER_BUDGET)
 
-    def _forget(self, turn_ids: set[int], *, reason: str) -> int:
-        """Take turns out of the active transcript — the one way turns leave it.
+    def _forget(self, turn_ids: set[int], *, reason: ForgetReason) -> int:
+        """Remove turns from the active transcript and queue their soft-delete.
 
-        `flush()` soft-deletes them in Mongo, so they never come back on `load()` and stay recoverable
-        there. Pure tool rounds were already written soft-deleted, so their update simply matches
-        nothing.
+        Every removal goes through here — compaction and the agent's `delete_turns` — so all of them
+        persist the same way on `flush()` and none can come back on `load()`. A turn already written
+        soft-deleted (a pure tool round) simply matches nothing when that update runs.
         """
         if not turn_ids:
             return 0
@@ -404,7 +426,7 @@ class MongoMessageHistory(MessageHistory):
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
         """Remove whole turns by id — the agent's own `prune_transcript` reaching into its context."""
-        return self._forget(set(turn_ids), reason="agent")
+        return self._forget(set(turn_ids), reason=ForgetReason.AGENT)
 
     # --- persistence ---
 
@@ -423,9 +445,9 @@ class MongoMessageHistory(MessageHistory):
         self._turns = [
             MongoTurn(id=doc["turn_id"], messages=list(doc["messages"]), created_at=doc["created_at"]) for doc in active
         ]
-        # Mongo keeps every turn whole, so a restart would otherwise restore machinery this
-        # conversation already shed. Free here too — a cold start has no cached prefix to lose.
-        self._reduce_old_turns_to_text()
+        # Restored whole, payloads and all: nothing here knows yet how big the context actually is,
+        # and cutting on a guess would take the photo out of a conversation nowhere near its budget.
+        # The first `compact()` after the first reply has a real measurement and cuts then, if needed.
 
         newest = await self._collection.find_one(
             {"conversation_id": self._conversation_id},

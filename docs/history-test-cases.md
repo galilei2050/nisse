@@ -21,21 +21,28 @@ Write the expected Mongo end-state **before** running; then compare.
 - Each agentic turn = one document in `conversation_turns`, keyed by `(conversation_id, turn_id)` (unique).
 - **Write-on-commit:** each turn is written to Mongo the moment it completes (`__exit__` fires a
   fire-and-forget task). A pure tool turn (messages are only `tool_use`/`tool_result`, no text) is
-  written **already soft-deleted** (`deleted_at` set); `drop_tool_turns()` then removes it from the
-  active in-memory transcript so the next reply's context stays lean.
+  written **already soft-deleted** (`deleted_at` set); `compact()`'s first cut then removes it from
+  the active in-memory transcript so the next reply's context stays lean.
 - **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
   writes, then soft-deletes turns dropped by `compact()`/`delete_messages` — so trimming is durable
   and dropped turns don't resurrect on the next `load()`.
-- **One method shrinks the transcript: `compact()`**, once per reply, after the answer is delivered
-  (`truncate()`, which the loop calls after every API call, only records the context size). It cuts in
-  order of what the loss costs: a pure tool round always goes → a turn past `_PAYLOAD_RETENTION` keeps
-  its words but gives up its tool data, attachments and reasoning → only then do whole turns go. A tool
-  call and its result live in the same turn, so a reduced turn never has a `tool_use` without its
-  `tool_result`.
+- **One method shrinks the transcript: `compact()`**, once per reply, after the agent loop has
+  finished (`truncate()`, which the loop calls after every API call, only records the context size).
+  A turn dropped mid-loop would both shrink the context a reply is still composing against and move
+  the head of the message list, invalidating the whole cached prefix.
+- **Its three cuts, in order of what the loss costs:** a turn with no text always goes → *over
+  budget*, turns past `_PAYLOAD_RETENTION` keep their text but give up tool calls, results,
+  attachments and reasoning → *still over budget*, whole turns go, oldest first. A tool call and its
+  result live in the same turn, so a stripped turn never has a `tool_use` without its `tool_result`.
+- **Nothing costly is cut on a guess.** Both budget-gated cuts need a measurement that actually
+  crossed the threshold, and `load()` restores turns whole — so a small conversation keeps its
+  attachments however old, and a restart doesn't change what the model can see.
+- **The size counter is cleared by a cut** (`_last_input_tokens = 0`), because it described the
+  transcript as it was before. Otherwise `context_status()` reports a fullness that no longer exists
+  and the agent reads it as an instruction to prune.
 - **Turns leave through one door.** `_forget()` is the only thing that removes a turn from the active
   transcript — compaction and the agent's `prune_transcript` (`delete_turns`) both go through it, so
-  every removal is soft-deleted on `flush()` the same way. A turn dropped mid-run would both shrink the context a reply is still composing against
-  and move the head of the message list, invalidating the whole cached prefix.
+  every removal is soft-deleted on `flush()` the same way and carries a `ForgetReason` in the log.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
 - **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —

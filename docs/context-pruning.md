@@ -23,7 +23,7 @@ the Anthropic `count_tokens` API (reconstruction 42,869 vs. actual `cache_read` 
 at ≈1.3 chars/token, so Russian history is ~3× heavier than a naive char count suggests.)
 
 ### Why history accumulates
-- `drop_tool_turns()` only removes turns with **no text**. Any turn carrying assistant text is kept
+- the pure-tool-turn cut only removes turns with **no text**. Any turn carrying assistant text is kept
   forever. So all conversational back-and-forth (incl. disposable chatter) piles up.
 - `truncate()` exists and is token-based, but its threshold sat **above any context the conversation
   actually reached** (the owner notices bloat first), so it never fired. No deterministic mechanism
@@ -157,11 +157,11 @@ current code keeps forever. That wants **deterministic dropping**, no summarizat
 above any reached context, so it never fired) until the **existing** trimming actually bites — when
 effective input nears the budget it drops the oldest turns. It is already token-based (counts the
 whole cached prefix via `effective_input_tokens`), already operates on **all** turns, and already
-soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing pure-tool
-turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
+soft-deletes to Mongo (recoverable → not destructive); the first cut of `compact()` keeps removing
+pure-tool turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
 
 **Where it fires matters as much as when.** Trimming runs **once per reply** (`compact()`, called from
-`Conversation.reply` after the answer is delivered), never inside the agent loop. baski reports usage
+`Conversation.reply` once the agent loop has finished), never inside the loop. baski reports usage
 after every API call, and dropping a turn there costs twice over:
 
 - *Quality* — it cuts context out from under a reply that is still being composed. Observed in
@@ -169,24 +169,29 @@ after every API call, and dropping a turn there costs twice over:
   and 60 → 48 → 41 → 35 messages while the model was answering.
 - *Money* — it moves the head of the message list, so the cached prefix stops matching and the whole
   transcript is re-written at the 1.25x write rate instead of read back at 0.1x. 22 of 27 full-prefix
-  breaks followed an over-budget call; the rewrites were ~13% of the period's API spend.
+  breaks followed an over-budget call; the rewrites were ~13% of API spend over Aug 1-5, 2026.
 
-Trimming after the answer keeps the reply whole and reacts to the freshest measurement — the run that
-just finished — instead of the previous one's.
+Trimming once the loop is done keeps the reply whole and reacts to the freshest measurement — the run
+that just finished — instead of the previous one's.
 
 **Tool data before words.** Age is the wrong axis to cut on: the budget was being spent on payloads
 while the conversation itself was evicted. Measured on the owner's transcript (dated snapshot, Aug
 2026): of everything already pushed out of context, **42% was base64 images/PDFs, 30% tool results,
 6% reasoning, 5% tool arguments — and only 16% was actual conversation text**; of what was still IN
-context, 45% was tool payloads. So an over-budget reply first sheds machinery from turns older than
+context, 45% was tool payloads. So an over-budget reply first strips tool data from turns older than
 `_PAYLOAD_RETENTION` (`_reduce_old_turns_to_text`), and only a reply that is *still* over budget drops
-whole turns. At the same budget this roughly **2.5×** the window (29 turns / 3.4h → 57 turns / 8.5h,
-simulated on the real transcript). Days of memory need a bigger budget, not a better filter.
+whole turns. Simulated on the real transcript at the same budget, that is roughly twice the turns and
+2.5× the time span (29 turns / 3.4h → 57 turns / 8.5h). Days of memory need a bigger budget, not a
+better filter.
+
+Both cuts wait for a measurement that actually crossed the budget, and `load()` restores turns whole
+for the same reason: a conversation nowhere near its budget keeps every photo and every dump it was
+ever sent, and what the model can see does not depend on how long the process has been up.
 
 The retention window exists for follow-ups: "show me the second one you found" reaches back into the
 tool output of the exchange it follows. 63% of the owner's messages arrive within 5 minutes of the
-previous one and 85% within an hour (1,007 gaps, Jun–Aug 2026), so an hour of payloads covers the
-follow-up case while everything older sheds.
+previous one and 85% within an hour (1,007 gaps, June-August 2026), so an hour of payloads covers the
+follow-up case while everything older is stripped.
 
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the

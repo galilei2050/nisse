@@ -2,8 +2,9 @@
 
 The fake collection models only the operations MongoMessageHistory uses. Turns are driven through
 the real context manager so `__exit__` fires the fire-and-forget write; `flush()` awaits it. The
-load-bearing test is `test_trim_persists`: a turn dropped from context by `trim()` must end
-up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud Run cold start).
+load-bearing test is `test_compaction_persists_so_dropped_turns_do_not_resurrect`: a turn dropped
+by `compact()` must end up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud
+Run cold start).
 """
 
 from types import SimpleNamespace
@@ -13,9 +14,10 @@ from baski.primitives import datetime as dt
 
 from baski.agents.tools.delete_messages import DeleteMessagesTool
 
+from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 
-_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → triggers truncate
+_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → what compact() reads as over budget
 
 
 class _FakeCursor:
@@ -187,36 +189,163 @@ async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
     assert [t.id for t in hist.turns] == [2, 3]
 
 
-async def test_over_budget_sheds_machinery_before_it_drops_words() -> None:
-    """The cheap cure runs first: an old search dump leaves, the exchange around it stays readable."""
-    col = _FakeCollection()
-    col.docs[(1, 1)] = {
+def _seed_old_search(col: _FakeCollection, turn_id: int, tool_id: str, said: str) -> None:
+    """A narrated search from hours ago: the agent's words, its call, and the dump that came back."""
+    col.docs[(1, turn_id)] = {
         "conversation_id": 1,
-        "turn_id": 1,
+        "turn_id": turn_id,
         "created_at": dt.datetime.now() - dt.timedelta(hours=3),
         "deleted_at": None,
         "messages": [
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "text", "text": "сейчас поищу"},
-                    {"type": "tool_use", "id": "t1", "name": "google_search", "input": {"q": "x"}},
+                    {"type": "text", "text": said},
+                    {"type": "tool_use", "id": tool_id, "name": "google_search", "input": {"q": "x"}},
                 ],
             },
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "huge dump"}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "huge dump"}]},
         ],
     }
+
+
+def _seed_old_photo(col: _FakeCollection, turn_id: int) -> None:
+    """A photo the owner sent hours ago, with its caption."""
+    col.docs[(1, turn_id)] = {
+        "conversation_id": 1,
+        "turn_id": turn_id,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=2),
+        "deleted_at": None,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}},
+                    {"type": "text", "text": "что на чеке?"},
+                ],
+            }
+        ],
+    }
+
+
+def _add_narrated_tool_turn(hist: MongoMessageHistory, tool_id: str) -> None:
+    """A tool round the model narrated — text plus the call, which is what Opus actually produces."""
+    with hist:
+        hist.add_assistant(
+            [
+                {"type": "text", "text": "сейчас гляну"},
+                {"type": "tool_use", "id": tool_id, "name": "google_search", "input": {}},
+            ]
+        )
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": tool_id, "content": "fresh dump"}])
+
+
+def _kinds(hist: MongoMessageHistory) -> list[str]:
+    """Every block type the API would receive, in order."""
+    return [
+        b["type"] for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict)
+    ]
+
+
+async def test_over_budget_strips_tool_data_and_keeps_every_turn() -> None:
+    """Cut 2: old calls, dumps and attachments go; the words and the turns themselves all stay."""
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    _seed_old_search(col, 2, "t2", "уточню ещё раз")
+    _seed_old_photo(col, 3)
     hist = _history(col)
     await hist.load()
-    _add_tool_turn(hist, "t2")  # this reply's own machinery — a follow-up still needs it
+    _add_user(hist, "и что там?")  # this reply, well inside the retention window
+    _add_narrated_tool_turn(hist, "fresh")
 
-    assert [t.id for t in hist.turns] == [1, 2]  # the old exchange is still in the conversation
-    blocks = [b for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"]]
-    texts = [b.get("text") for b in blocks if isinstance(b, dict)]
-    assert "сейчас поищу" in texts  # its words survived
-    payloads = [b for b in blocks if isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")]
-    assert [b.get("tool_use_id") or b.get("id") for b in payloads] == ["t2", "t2"]  # only the fresh pair remains
-    assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"  # Mongo keeps it whole
+    hist.truncate(_BIG_USAGE)
+    hist.compact()
+
+    assert [t.id for t in hist.turns] == [1, 2, 3, 4, 5]  # nothing was dropped
+    texts = [b["text"] for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] == "text"]
+    assert "сейчас поищу" in texts and "уточню ещё раз" in texts and "что на чеке?" in texts
+    assert "image" not in _kinds(hist)  # the old attachment went with the rest
+    fresh_pairs = [b for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] in ("tool_use", "tool_result")]
+    assert [b.get("id") or b.get("tool_use_id") for b in fresh_pairs] == ["fresh", "fresh"]  # only this reply's pair
+    # Mongo is untouched — including the mixed text+tool_use message, which is what a careless
+    # in-place edit would corrupt (`load` hands out the stored dicts themselves).
+    assert len(col.docs[(1, 1)]["messages"][0]["content"]) == 2
+    assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"
+
+
+async def test_a_second_over_budget_reply_drops_turns_once_nothing_is_left_to_strip() -> None:
+    """Cut 3, and only after cut 2 has nothing more to give — the escalation, in order."""
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    _seed_old_search(col, 2, "t2", "уточню ещё раз")
+    hist = _history(col)
+    await hist.load()
+
+    hist.truncate(_BIG_USAGE)
+    hist.compact()
+    assert [t.id for t in hist.turns] == [1, 2]  # first over-budget reply strips, keeps both turns
+
+    hist.truncate(_BIG_USAGE)  # still over budget on the next reply
+    hist.compact()
+    assert [t.id for t in hist.turns] == [2]  # now the oldest goes
+
+
+async def test_small_conversation_keeps_its_attachments_however_old() -> None:
+    """Nowhere near the budget: an hours-old photo is still there, warm process or fresh reload."""
+    col = _FakeCollection()
+    _seed_old_photo(col, 1)
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "так сколько вышло?")
+
+    hist.compact()  # no measurement over budget → no cuts
+
+    assert "image" in _kinds(hist)
+
+
+async def test_reply_runs_the_whole_loop_before_the_transcript_is_touched() -> None:
+    """The point of the design: the loop sees a transcript that only grows, cut only once it is done.
+
+    The stand-in agent is not a mock of a live client — it is the seam that records what the loop saw.
+    """
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    _seed_old_search(col, 2, "t2", "уточню ещё раз")
+    hist = _history(col)
+    await hist.load()
+    hist.truncate(_BIG_USAGE)  # the previous reply already ran over budget
+
+    seen: list[list[str]] = []
+
+    async def execute() -> str:
+        seen.append(_kinds(hist))
+        return "answer"
+
+    agent = SimpleNamespace(on_event=None, execute=execute)
+    scratchpad = SimpleNamespace(clear=lambda: None)
+    conversation = Conversation(agent=agent, history=hist, short_term=scratchpad)  # type: ignore[arg-type]
+
+    await conversation.reply(text="и что там?")
+
+    assert "tool_result" in seen[0]  # the loop still had the payloads it might be asked about
+    assert "tool_result" not in _kinds(hist)  # and they are gone only afterwards
+    assert [t.id for t in hist.turns] == [1, 2, 3]  # cutting payloads was enough; no turn was dropped
+
+
+async def test_compaction_clears_the_stale_size_so_the_context_footer_cannot_lie() -> None:
+    """The recorded size describes the pre-cut transcript; left standing it reads as 187% full."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    _add_answer(hist, "3")
+
+    hist.truncate(_BIG_USAGE)
+    assert hist.context_status() is not None  # a real measurement renders the footer
+    hist.compact()
+
+    assert hist.context_status() is None  # after cutting, no footer until the next real measurement
 
 
 async def test_compaction_persists_so_dropped_turns_do_not_resurrect() -> None:
