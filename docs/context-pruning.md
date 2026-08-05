@@ -153,45 +153,33 @@ protection and RAG-recall — real value at scale, but over-engineered for one o
 The **real, observed** problem is the DISPOSABLE class accumulating across sessions: tool-less text the
 current code keeps forever. That wants **deterministic dropping**, no summarization, no topic model.
 
-**Decision — deterministic budget:** lower the `_MAX_TOKENS` budget in `history.py` (it was set far
-above any reached context, so it never fired) until the **existing** trimming actually bites — when
-effective input nears the budget it drops the oldest turns. It is already token-based (counts the
-whole cached prefix via `effective_input_tokens`), already operates on **all** turns, and already
-soft-deletes to Mongo (recoverable → not destructive); the first cut of `compact()` keeps removing
-pure-tool turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
+**Decision — narrow the view, don't destroy the record.** Dropping the oldest turns by age answered the
+wrong question. Measured on the owner's transcript (dated snapshot, Aug 2026): of everything already
+pushed out of context, **42% was base64 images/PDFs, 30% tool results, 6% reasoning, 5% tool arguments
+— and only 16% was actual conversation text**; of what was still IN context, 45% was tool payloads.
+The budget was being spent on consumed payloads while the conversation itself was evicted, leaving the
+assistant an 11-minute memory of a six-week relationship (8 turns of 2,280).
 
-**Where it fires matters as much as when.** Trimming runs **once per reply** (`compact()`, called from
-`Conversation.reply` once the agent loop has finished), never inside the loop. baski reports usage
-after every API call, and dropping a turn there costs twice over:
+So the split moved to `format_for_api`: past `_PAYLOAD_RETENTION` a turn is sent as its **words alone**
+— no calls, results, attachments or thinking. That is a *view*. The turn objects and their Mongo
+documents keep everything, so the window can be widened at any time and it all comes back, and no
+process ever destroys what it merely stopped sending.
 
-- *Quality* — it cuts context out from under a reply that is still being composed. Observed in
-  production traces (dated snapshot, Aug 2026): single replies whose transcript went 56 → 47 → 15
-  and 60 → 48 → 41 → 35 messages while the model was answering.
-- *Money* — it moves the head of the message list, so the cached prefix stops matching and the whole
-  transcript is re-written at the 1.25x write rate instead of read back at 0.1x. 22 of 27 full-prefix
-  breaks followed an over-budget call; the rewrites were ~13% of API spend over Aug 1-5, 2026.
+The window exists for follow-ups: "show me the second one you found" reaches into the output of the
+exchange it follows. 63% of the owner's messages arrive within 5 minutes of the previous one and 85%
+within an hour (1,007 gaps, June-August 2026), so an hour covers that case.
 
-Trimming once the loop is done keeps the reply whole and reacts to the freshest measurement — the run
-that just finished — instead of the previous one's.
+**Nothing shrinks the transcript automatically any more.** `truncate()` records the size for the
+`[Context: N% used]` footer and nothing else; a turn leaves only when the agent deletes it on purpose
+(`prune_transcript`). Dropping a turn *during* the loop, which is what the old budget-driven trimming
+did, cost twice over — in production traces (dated snapshot, Aug 2026), single replies whose
+transcript went 56 → 47 → 15 and 60 → 48 → 41 → 35 messages while the model was answering, and cache
+rewrites worth ~13% of API spend over Aug 1-5, 2026 (22 of 27 full-prefix breaks followed an
+over-budget call).
 
-**Tool data before words.** Age is the wrong axis to cut on: the budget was being spent on payloads
-while the conversation itself was evicted. Measured on the owner's transcript (dated snapshot, Aug
-2026): of everything already pushed out of context, **42% was base64 images/PDFs, 30% tool results,
-6% reasoning, 5% tool arguments — and only 16% was actual conversation text**; of what was still IN
-context, 45% was tool payloads. So an over-budget reply first strips tool data from turns older than
-`_PAYLOAD_RETENTION` (`_reduce_old_turns_to_text`), and only a reply that is *still* over budget drops
-whole turns. Simulated on the real transcript at the same budget, that is roughly twice the turns and
-2.5× the time span (29 turns / 3.4h → 57 turns / 8.5h). Days of memory need a bigger budget, not a
-better filter.
-
-Both cuts wait for a measurement that actually crossed the budget, and `load()` restores turns whole
-for the same reason: a conversation nowhere near its budget keeps every photo and every dump it was
-ever sent, and what the model can see does not depend on how long the process has been up.
-
-The retention window exists for follow-ups: "show me the second one you found" reaches back into the
-tool output of the exchange it follows. 63% of the owner's messages arrive within 5 minutes of the
-previous one and 85% within an hour (1,007 gaps, June-August 2026), so an hour of payloads covers the
-follow-up case while everything older is stripped.
+The open question this leaves is the ceiling: with only the view narrowing, the text of a very long
+conversation keeps accumulating. Text is the cheap part (16% of the bulk), and `_MAX_TOKENS` no longer
+gates anything — if that changes, raise it deliberately rather than reviving automatic eviction.
 
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the
@@ -224,8 +212,7 @@ appears. For DISPOSABLE turns it saves nothing, which is correct.
 ## 7. Code touch-points
 | File | What |
 |---|---|
-| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget; `truncate()` records each call's size, `compact()` does the shrinking, `_forget()` is the only way a turn leaves. |
-| `app/assistant/conversation.py` | calls `compact()` once per reply — the only place the transcript is allowed to shrink. |
+| `app/assistant/history.py` | `format_for_api` sends a turn whole or, past `_PAYLOAD_RETENTION`, as `MongoTurn.said()`; `truncate()` only records the size; `delete_turns` is the only way a turn leaves. |
 | baski `DeleteMessagesTool` (`delete_messages.py`) | `keep_last=N` — keep only the last N turns, drop the rest in one call (`turn_ids` still supported). |
 | `tests/assistant/test_history.py` | covers `keep_last` durability and budget-driven truncation. |
 

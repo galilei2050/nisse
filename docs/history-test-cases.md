@@ -21,32 +21,25 @@ Write the expected Mongo end-state **before** running; then compare.
 - Each agentic turn = one document in `conversation_turns`, keyed by `(conversation_id, turn_id)` (unique).
 - **Write-on-commit:** each turn is written to Mongo the moment it completes (`__exit__` fires a
   fire-and-forget task). A pure tool turn (messages are only `tool_use`/`tool_result`, no text) is
-  written **already soft-deleted** (`deleted_at` set); `compact()`'s first cut then removes it from
-  the active in-memory transcript so the next reply's context stays lean.
+  written **already soft-deleted** (`deleted_at` set), so this process still has it for a follow-up
+  while a later one won't restore it.
 - **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
-  writes, then soft-deletes turns dropped by `compact()`/`delete_messages` — so trimming is durable
-  and dropped turns don't resurrect on the next `load()`.
-- **One method shrinks the transcript: `compact()`**, once per reply, after the agent loop has
-  finished (`truncate()`, which the loop calls after every API call, only records the context size).
-  A turn dropped mid-loop would both shrink the context a reply is still composing against and move
-  the head of the message list, invalidating the whole cached prefix.
-- **Its three cuts, in order of what the loss costs:** a turn with no text always goes → *over
-  budget*, turns past `_PAYLOAD_RETENTION` keep their text but give up tool calls, results,
-  attachments and reasoning → *still over budget*, whole turns go, oldest first. A tool call and its
-  result live in the same turn, so a stripped turn never has a `tool_use` without its `tool_result`.
-- **Nothing costly is cut on a guess.** Both budget-gated cuts need a measurement that actually
-  crossed the threshold, and `load()` restores turns whole — so a small conversation keeps its
-  attachments however old, and a restart doesn't change what the model can see.
-- **The size counter is cleared by a cut** (`_last_input_tokens = 0`), because it described the
-  transcript as it was before. Otherwise `context_status()` reports a fullness that no longer exists
-  and the agent reads it as an instruction to prune.
-- **Mongo holds the turn as it happened, always.** Compaction edits the in-memory transcript only, and
-  the durable write is handed a snapshot taken when the turn completed — so a turn stripped in memory
-  before its own fire-and-forget write lands still reaches Mongo whole. Nothing but `deleted_at` and
-  `message_ids` ever changes on a stored turn.
-- **Turns leave through one door.** `_forget()` is the only thing that removes a turn from the active
-  transcript — compaction and the agent's `prune_transcript` (`delete_turns`) both go through it, so
-  every removal is soft-deleted on `flush()` the same way and carries a `ForgetReason` in the log.
+  writes, then soft-deletes turns the agent deleted — so a prune is durable and its turns don't
+  resurrect on the next `load()`.
+- **Nothing shrinks the transcript.** `truncate()`, which the loop calls after every API call, only
+  records the context size for the `[Context: N% used]` footer. A turn dropped mid-loop would both
+  shrink the context a reply is still composing against and move the head of the message list,
+  invalidating the whole cached prefix.
+- **What narrows is the VIEW, in `format_for_api`.** Past `_PAYLOAD_RETENTION` a turn is sent as its
+  words alone (`MongoTurn.said()`): no tool calls, results, attachments or thinking. Before that it is
+  sent whole (`MongoTurn.rendered()`), so a follow-up can reach into the output it refers to. An old
+  turn that was nothing but tool machinery is sent as nothing at all, `[Turn N]` marker included. A
+  call and its result live in the same turn, so a narrowed turn never has a `tool_use` without its
+  `tool_result`.
+- **Hiding is reversible; deleting is not.** The turn objects and their Mongo documents keep
+  everything, so widening the window sends it all again. A turn leaves the transcript only through
+  `delete_turns` — the agent's own `prune_transcript`, a deliberate act — and `deleted_at` and
+  `message_ids` remain the only fields that ever change on a stored turn.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
 - **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —

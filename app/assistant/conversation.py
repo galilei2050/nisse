@@ -31,11 +31,6 @@ class Conversation:
         message, with the caption text as a second one. `short_term` is a per-reply scratchpad, cleared
         each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
         the one agent's history at once.
-
-        The transcript shrinks only here, after the answer is delivered (`compact`): this reply keeps
-        every turn it started with, and the one the loop sees is append-only, so the cached prefix
-        holds. Shrinking inside the loop cuts context out from under a reply mid-thought AND rewrites
-        the whole cache on every remaining turn.
         """
         async with self._lock:
             self._short_term.clear()
@@ -48,13 +43,7 @@ class Conversation:
                         self._history.add_photo(data=media.data, media_type=media.media_type)
                 if text:
                     self._history.add_user_text(text)
-            try:
-                result = await self._agent.execute()
-            finally:
-                # Owed whatever the loop did: a run that raised still appended its turns, and without
-                # this they pile up until the next successful reply — each retry re-sending them.
-                self._history.compact()
-        return result
+            return await self._agent.execute()
 
     async def flush(self) -> None:
         """Await the reply's durable history writes. Called after the answer is sent to the user.

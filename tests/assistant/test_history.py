@@ -14,7 +14,6 @@ from baski.primitives import datetime as dt
 
 from baski.agents.tools.delete_messages import DeleteMessagesTool
 
-from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
 
 _BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → what compact() reads as over budget
@@ -172,8 +171,13 @@ async def test_each_turn_written_exactly_once() -> None:
     assert len(col.inserted_ids) == 3  # each turn inserted exactly once
 
 
-async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
-    """Every loop turn reports usage; none may drop a turn — a moved head rewrites the whole cache."""
+async def test_reported_usage_never_moves_the_transcript() -> None:
+    """The loop reports its context size after every call; none of that may drop a turn.
+
+    A turn leaving mid-run moves the head of the message list, so the cached prefix stops matching and
+    the whole transcript is re-written on every remaining turn — and the reply loses context it is
+    still composing against.
+    """
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -185,8 +189,6 @@ async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
         hist.truncate(_BIG_USAGE)
 
     assert [t.id for t in hist.turns] == [1, 2, 3]
-    hist.compact()  # the reply boundary is where the transcript actually shrinks
-    assert [t.id for t in hist.turns] == [2, 3]
 
 
 def _seed_old_search(col: _FakeCollection, turn_id: int, tool_id: str, said: str) -> None:
@@ -247,129 +249,75 @@ def _kinds(hist: MongoMessageHistory) -> list[str]:
     ]
 
 
-async def test_over_budget_strips_tool_data_and_keeps_every_turn() -> None:
-    """Cut 2: old calls, dumps and attachments go; the words and the turns themselves all stay."""
+async def test_an_old_turn_is_sent_as_its_words_alone() -> None:
+    """Past the window the API stops seeing the calls, dumps and attachments — the words stay."""
     col = _FakeCollection()
     _seed_old_search(col, 1, "t1", "сейчас поищу")
     _seed_old_search(col, 2, "t2", "уточню ещё раз")
     _seed_old_photo(col, 3)
     hist = _history(col)
     await hist.load()
-    _add_user(hist, "и что там?")  # this reply, well inside the retention window
+    _add_user(hist, "и что там?")
     _add_narrated_tool_turn(hist, "fresh")
 
-    hist.truncate(_BIG_USAGE)
-    hist.compact()
+    sent = hist.format_for_api()
+    texts = [b["text"] for m in sent if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] == "text"]
+    payloads = [b for m in sent if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] in ("tool_use", "tool_result")]
 
-    assert [t.id for t in hist.turns] == [1, 2, 3, 4, 5]  # nothing was dropped
-    texts = [b["text"] for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] == "text"]
     assert "сейчас поищу" in texts and "уточню ещё раз" in texts and "что на чеке?" in texts
-    assert "image" not in _kinds(hist)  # the old attachment went with the rest
-    fresh_pairs = [b for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] in ("tool_use", "tool_result")]
-    assert [b.get("id") or b.get("tool_use_id") for b in fresh_pairs] == ["fresh", "fresh"]  # only this reply's pair
-    # Mongo is untouched — including the mixed text+tool_use message, which is what a careless
-    # in-place edit would corrupt (`load` hands out the stored dicts themselves).
-    assert len(col.docs[(1, 1)]["messages"][0]["content"]) == 2
+    assert "image" not in _kinds(hist)  # the hours-old attachment is not sent
+    assert [b.get("id") or b.get("tool_use_id") for b in payloads] == ["fresh", "fresh"]  # only this reply's pair
+
+
+async def test_a_fresh_turn_is_sent_whole_so_a_follow_up_can_reach_its_output() -> None:
+    """"Show me the second one you found" needs the dump of the exchange it follows."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "поищи автосервисы")
+    _add_narrated_tool_turn(hist, "fresh")
+
+    kinds = _kinds(hist)
+
+    assert "tool_use" in kinds and "tool_result" in kinds
+
+
+async def test_rendering_leaves_the_transcript_and_mongo_untouched() -> None:
+    """Hiding is a view. Ask for the same transcript twice and nothing has been lost in between."""
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    hist = _history(col)
+    await hist.load()
+
+    hist.format_for_api()
+
+    assert [len(t.messages) for t in hist.turns] == [2]  # the turn still holds both messages
+    assert len(col.docs[(1, 1)]["messages"][0]["content"]) == 2  # ...text AND the call
     assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"
+    assert "tool_use" not in _kinds(hist)  # ...while the API still doesn't see them
 
 
-async def test_a_second_over_budget_reply_drops_turns_once_nothing_is_left_to_strip() -> None:
-    """Cut 3, and only after cut 2 has nothing more to give — the escalation, in order."""
+async def test_an_old_turn_that_was_only_machinery_is_sent_as_nothing() -> None:
+    """No words, nothing to say: an old pure tool round costs not even its `[Turn N]` marker."""
     col = _FakeCollection()
-    _seed_old_search(col, 1, "t1", "сейчас поищу")
-    _seed_old_search(col, 2, "t2", "уточню ещё раз")
+    col.docs[(1, 1)] = {
+        "conversation_id": 1,
+        "turn_id": 1,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=3),
+        "deleted_at": None,
+        "messages": [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "dump"}]},
+        ],
+    }
     hist = _history(col)
     await hist.load()
 
-    hist.truncate(_BIG_USAGE)
-    hist.compact()
-    assert [t.id for t in hist.turns] == [1, 2]  # first over-budget reply strips, keeps both turns
-
-    hist.truncate(_BIG_USAGE)  # still over budget on the next reply
-    hist.compact()
-    assert [t.id for t in hist.turns] == [2]  # now the oldest goes
+    assert hist.format_for_api() == []
 
 
-async def test_small_conversation_keeps_its_attachments_however_old() -> None:
-    """Nowhere near the budget: an hours-old photo is still there, warm process or fresh reload."""
-    col = _FakeCollection()
-    _seed_old_photo(col, 1)
-    hist = _history(col)
-    await hist.load()
-    _add_user(hist, "так сколько вышло?")
-
-    hist.compact()  # no measurement over budget → no cuts
-
-    assert "image" in _kinds(hist)
-
-
-async def test_reply_runs_the_whole_loop_before_the_transcript_is_touched() -> None:
-    """The point of the design: the loop sees a transcript that only grows, cut only once it is done.
-
-    The stand-in agent is not a mock of a live client — it is the seam that records what the loop saw.
-    """
-    col = _FakeCollection()
-    _seed_old_search(col, 1, "t1", "сейчас поищу")
-    _seed_old_search(col, 2, "t2", "уточню ещё раз")
-    hist = _history(col)
-    await hist.load()
-    hist.truncate(_BIG_USAGE)  # the previous reply already ran over budget
-
-    seen: list[list[str]] = []
-
-    async def execute() -> str:
-        seen.append(_kinds(hist))
-        return "answer"
-
-    agent = SimpleNamespace(on_event=None, execute=execute)
-    scratchpad = SimpleNamespace(clear=lambda: None)
-    conversation = Conversation(agent=agent, history=hist, short_term=scratchpad)  # type: ignore[arg-type]
-
-    await conversation.reply(text="и что там?")
-
-    assert "tool_result" in seen[0]  # the loop still had the payloads it might be asked about
-    assert "tool_result" not in _kinds(hist)  # and they are gone only afterwards
-    assert [t.id for t in hist.turns] == [1, 2, 3]  # cutting payloads was enough; no turn was dropped
-
-
-async def test_a_turn_reduced_before_its_write_lands_still_reaches_mongo_whole() -> None:
-    """The archive is the record of what happened; an in-memory cut must never reach it.
-
-    The write is fire-and-forget and `flush()` awaits it only after the reply, so a long run can
-    compact a turn before its own write task has run. Mongo must still get the tool call and its dump.
-    """
-    col = _FakeCollection()
-    hist = _history(col)
-    await hist.load()
-    _add_narrated_tool_turn(hist, "t1")
-
-    hist.turns[0].keep_only_text()  # the cut happens before the pending write is awaited
-    await hist.flush()
-
-    stored = col.docs[(1, 1)]["messages"]
-    assert [b["type"] for b in stored[0]["content"]] == ["text", "tool_use"]
-    assert stored[1]["content"][0]["content"] == "fresh dump"
-    assert _kinds(hist) == ["text", "text"]  # ...while the context itself did lose the payload
-
-
-async def test_compaction_clears_the_stale_size_so_the_context_footer_cannot_lie() -> None:
-    """The recorded size describes the pre-cut transcript; left standing it reads as 187% full."""
-    col = _FakeCollection()
-    hist = _history(col)
-    await hist.load()
-    _add_user(hist, "1")
-    _add_answer(hist, "2")
-    _add_answer(hist, "3")
-
-    hist.truncate(_BIG_USAGE)
-    assert hist.context_status() is not None  # a real measurement renders the footer
-    hist.compact()
-
-    assert hist.context_status() is None  # after cutting, no footer until the next real measurement
-
-
-async def test_compaction_persists_so_dropped_turns_do_not_resurrect() -> None:
-    """The load-bearing case: a turn dropped by compact() is soft-deleted in Mongo, not resurrected."""
+async def test_delete_turns_persists_and_keeps_the_deleted_turn_readable() -> None:
+    """The load-bearing case: what the agent deletes is soft-deleted in Mongo, never resurrected."""
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -379,34 +327,15 @@ async def test_compaction_persists_so_dropped_turns_do_not_resurrect() -> None:
     await hist.flush()
     assert _active_ids(col) == [1, 2, 3]
 
-    hist.truncate(_BIG_USAGE)  # the loop reports an over-budget call...
-    hist.compact()  # ...and the reply boundary drops the oldest turn (id 1) from context
-    await hist.flush()
-    assert _active_ids(col) == [2, 3]  # turn 1 soft-deleted in Mongo
-    assert col.docs[(1, 1)]["messages"]  # ...but content intact — recoverable
-
-    cold = _history(col)  # simulate a Cloud Run cold start
-    await cold.load()
-    assert [t.id for t in cold.turns] == [2, 3]  # turn 1 does NOT come back
-
-
-async def test_delete_turns_persists() -> None:
-    """delete_turns (the agent's delete_messages tool) is made durable on flush()."""
-    col = _FakeCollection()
-    hist = _history(col)
-    await hist.load()
-    _add_user(hist, "1")
-    _add_answer(hist, "2")
-    _add_answer(hist, "3")
-    await hist.flush()
-
     removed = await hist.delete_turns([2])
     assert removed == 1
     await hist.flush()
+    assert _active_ids(col) == [1, 3]
+    assert col.docs[(1, 2)]["messages"]  # content intact — recoverable
 
-    cold = _history(col)
+    cold = _history(col)  # simulate a Cloud Run cold start
     await cold.load()
-    assert [t.id for t in cold.turns] == [1, 3]
+    assert [t.id for t in cold.turns] == [1, 3]  # turn 2 does NOT come back
 
 
 async def test_prune_transcript_keep_last_drops_older_turns_durably() -> None:
@@ -460,7 +389,12 @@ async def test_turn_marker_handles_naive_created_at_from_mongo() -> None:
 
 
 async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
-    """A pure tool turn is written already soft-deleted and dropped from context, yet kept in full."""
+    """A pure tool turn is written already soft-deleted: this session still uses it, a later one won't.
+
+    It stays in the live transcript, because a follow-up in the next few minutes may reach into its
+    output. The soft-delete is what keeps it from being restored hours later, when only the words are
+    still worth sending.
+    """
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -468,12 +402,11 @@ async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
     _add_tool_turn(hist)
     _add_answer(hist, "answer")
     await hist.flush()
-    hist.compact()
 
     assert _active_ids(col) == [1, 3]
     assert col.docs[(1, 2)]["deleted_at"] is not None  # tool turn soft-deleted
     assert col.docs[(1, 2)]["messages"]  # but recoverable
-    assert [t.id for t in hist.turns] == [1, 3]  # dropped from the active transcript
+    assert [t.id for t in hist.turns] == [1, 2, 3]  # and still usable while this process lives
 
     cold = _history(col)
     await cold.load()
