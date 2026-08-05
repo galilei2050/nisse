@@ -24,8 +24,11 @@ Write the expected Mongo end-state **before** running; then compare.
   written **already soft-deleted** (`deleted_at` set); `drop_tool_turns()` then removes it from the
   active in-memory transcript so the next reply's context stays lean.
 - **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
-  writes, then soft-deletes turns dropped by `truncate()`/`delete_messages` — so trimming is durable
+  writes, then soft-deletes turns dropped by `trim()`/`delete_messages` — so trimming is durable
   and dropped turns don't resurrect on the next `load()`.
+- **The window moves only between replies.** `truncate()` (called by the loop after every API call)
+  just records the context size; `trim()` does the dropping, once per reply. A turn dropped mid-run
+  would move the head of the message list and invalidate the whole cached prefix.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
 - **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —
@@ -42,7 +45,7 @@ Write the expected Mongo end-state **before** running; then compare.
   live, from the Mongo doc on `load()`), normalized through baski `as_utc`.
 
 > The unit tests in `tests/assistant/test_history.py` cover these invariants (write-once, durable
-> truncate, durable delete, recoverable pure-tool prune) against a fake collection. The probe
+> trim, durable delete, recoverable pure-tool prune) against a fake collection. The probe
 > scenarios below were last run against the **pre-rewrite** `save()` design — re-run them on the
 > next live probe to confirm end-to-end against real Mongo.
 

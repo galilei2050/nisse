@@ -2,7 +2,7 @@
 
 The fake collection models only the operations MongoMessageHistory uses. Turns are driven through
 the real context manager so `__exit__` fires the fire-and-forget write; `flush()` awaits it. The
-load-bearing test is `test_truncate_persists`: a turn dropped from context by `truncate()` must end
+load-bearing test is `test_trim_persists`: a turn dropped from context by `trim()` must end
 up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud Run cold start).
 """
 
@@ -170,8 +170,25 @@ async def test_each_turn_written_exactly_once() -> None:
     assert len(col.inserted_ids) == 3  # each turn inserted exactly once
 
 
-async def test_truncate_persists_so_dropped_turns_do_not_resurrect() -> None:
-    """The load-bearing case: a turn dropped by truncate() is soft-deleted in Mongo, not resurrected."""
+async def test_over_budget_call_does_not_move_the_prefix_mid_run() -> None:
+    """Every loop turn reports usage; none may drop a turn — a moved head rewrites the whole cache."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    _add_answer(hist, "3")
+
+    for _ in range(3):  # three over-budget calls inside one run
+        hist.truncate(_BIG_USAGE)
+
+    assert [t.id for t in hist.turns] == [1, 2, 3]
+    hist.trim()  # the next reply is where the window actually moves
+    assert [t.id for t in hist.turns] == [2, 3]
+
+
+async def test_trim_persists_so_dropped_turns_do_not_resurrect() -> None:
+    """The load-bearing case: a turn dropped by trim() is soft-deleted in Mongo, not resurrected."""
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -181,7 +198,8 @@ async def test_truncate_persists_so_dropped_turns_do_not_resurrect() -> None:
     await hist.flush()
     assert _active_ids(col) == [1, 2, 3]
 
-    hist.truncate(_BIG_USAGE)  # over budget → drops the oldest turn (id 1) from context
+    hist.truncate(_BIG_USAGE)  # the loop reports an over-budget call...
+    hist.trim()  # ...and the next reply drops the oldest turn (id 1) from context
     await hist.flush()
     assert _active_ids(col) == [2, 3]  # turn 1 soft-deleted in Mongo
     assert col.docs[(1, 1)]["messages"]  # ...but content intact — recoverable

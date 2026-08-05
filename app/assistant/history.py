@@ -53,7 +53,7 @@ TURNS_COLLECTION = "conversation_turns"  # public: the curator reads this collec
 # persisted like any other turn, so anything reading the transcript back as "what the owner said"
 # must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
 JUDGE_RETRY_PREFIX = "[Completeness check]"
-_MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
+_MAX_TOKENS = 32_000  # context budget: trim() drops oldest turns as effective input nears this
 _TRUNCATE_THRESHOLD = 0.9
 _TRUNCATE_PERCENTAGE = 0.3
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
@@ -298,17 +298,28 @@ class MongoMessageHistory(MessageHistory):
         return not self._turns and input_tokens > self.max_tokens // 2
 
     def truncate(self, usage: Usage) -> None:
-        """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
-        context_tokens = effective_input_tokens(usage)
-        self._last_input_tokens = context_tokens
-        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
+        """Record how big the context was on this call. The window is resized between replies — `trim`.
+
+        baski calls this after every API call of the loop. Dropping turns here would move the head of
+        the message list mid-run, so the cached prefix stops matching and the whole transcript is
+        re-written at 1.25x on every remaining turn instead of read back at 0.1x.
+        """
+        self._last_input_tokens = effective_input_tokens(usage)
+
+    def trim(self) -> None:
+        """Drop the oldest turns when the last reply left the context near the budget.
+
+        Called once per reply, before the loop starts, so the prefix only ever moves between replies —
+        within a run the transcript is append-only and stays cacheable.
+        """
+        if self._last_input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
             return
         count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
         dropped, self._turns = self._turns[:count], self._turns[count:]
         self._dropped.update(turn.id for turn in dropped)
         logger.info(
             "Truncated message history",
-            extra={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
+            extra={"inputTokens": self._last_input_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
         )
 
     async def delete_turns(self, turn_ids: list[int]) -> int:

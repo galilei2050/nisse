@@ -25,16 +25,18 @@ class Conversation:
         self._lock = asyncio.Lock()
 
     async def reply(self, *, text: str, media: Media | None = None, on_event: Listener = noop) -> AgentExecuteResult:
-        """Run one reply over the reused agent: reset the scratchpad, append the message, drive the loop.
+        """Run one reply over the reused agent: reset the scratchpad, size the window, append, drive the loop.
 
         `media` is a photo/PDF the user attached (None for a text/voice turn) — added as its own user
         message, with the caption text as a second one. `short_term` is a per-reply scratchpad, cleared
         each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
-        the one agent's history at once.
+        the one agent's history at once. The reply boundary is also the only point where the context
+        window is allowed to shrink (`trim`) — inside the loop it would break the prompt cache.
         """
         async with self._lock:
             self._short_term.clear()
             self._agent.on_event = on_event
+            self._history.trim()
             with self._history:
                 if media is not None:
                     if media.media_type is MediaType.PDF:

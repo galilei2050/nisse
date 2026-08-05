@@ -154,11 +154,18 @@ The **real, observed** problem is the DISPOSABLE class accumulating across sessi
 current code keeps forever. That wants **deterministic dropping**, no summarization, no topic model.
 
 **Decision — deterministic budget:** lower the `_MAX_TOKENS` budget in `history.py` (it was set far
-above any reached context, so it never fired) until the **existing** `truncate()` actually bites —
-when effective input nears the budget it drops the oldest turns. `truncate()` is already token-based
-(counts the whole cached prefix via `effective_input_tokens`), already operates on **all** turns, and
-already soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing
-pure-tool turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
+above any reached context, so it never fired) until the **existing** trimming actually bites — when
+effective input nears the budget it drops the oldest turns. It is already token-based (counts the
+whole cached prefix via `effective_input_tokens`), already operates on **all** turns, and already
+soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing pure-tool
+turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
+
+**Where it fires matters as much as when.** Trimming runs **once per reply** (`trim()`, called from
+`Conversation.reply`), never inside the agent loop — baski reports usage after every API call, and
+dropping a turn there moves the head of the message list, so the cached prefix stops matching and the
+whole transcript is re-written at the 1.25x write rate instead of read back at 0.1x. Measured on
+production traces (dated snapshot, Aug 2026): 22 of 27 full-prefix breaks followed an over-budget
+call, and the rewrites they caused were ~13% of the period's API spend.
 
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the
@@ -191,7 +198,8 @@ appears. For DISPOSABLE turns it saves nothing, which is correct.
 ## 7. Code touch-points
 | File | What |
 |---|---|
-| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget that drives `truncate()`; lowered so it actually fires. |
+| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget; `truncate()` records each call's size, `trim()` drops the oldest turns. |
+| `app/assistant/conversation.py` | calls `trim()` once per reply — the only place the window is allowed to move. |
 | baski `DeleteMessagesTool` (`delete_messages.py`) | `keep_last=N` — keep only the last N turns, drop the rest in one call (`turn_ids` still supported). |
 | `tests/assistant/test_history.py` | covers `keep_last` durability and budget-driven truncation. |
 
