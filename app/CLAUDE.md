@@ -27,6 +27,8 @@ app/
 
   shared/           cross-domain code — no domain logic of its own
     deps.py         CoreDeps — the shared clients + services every tool is built from
+    sending.py      MessageSender Protocol — how a domain hands a finished message to the chat layer
+                    (curator report, fired task's answer); implemented by `chat/sender.py`
     models.py       NisseDbModel for Mongo docs: `_id`↔`id` + audit fields (created_at/updated_at/deleted_at, soft-delete);
                     PublicIdModel adds the short agent-facing `public_id` (memories, scheduled tasks)
     revisions.py    CHANGE HISTORY: append-only `revisions` (collection/target/kind/before/after/
@@ -104,6 +106,14 @@ app/
                     of them.
     format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
                     → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
+    sender.py       MarkdownSender — the send path for a message composed OFF the reply path (the
+                    curator's report, a fired task's answer): convert → size-split → send as
+                    MarkdownV2, retrying a rejected chunk as plain text. Those two callers used a bare
+                    `send_message`, so markdown arrived as literal `**`/`##` and an over-long message
+                    was rejected whole. They take it as `shared.MessageSender` (a Protocol) — a domain
+                    module reaching into the transport would couple it, and `app.chat` imports
+                    scheduling, so the import would cycle. The interactive reply does NOT go through
+                    here: `TelegramProgress` edits a live message and owns its own rendering.
     transcribe.py   voice file → text (Transcriber; ElevenLabs Scribe v2, language auto-detected; provider-swappable)
     speak.py        text → voice (Speaker; Sonnet re-voices the markdown reply for speech — Haiku derailed,
                     treating the text as a prompt to answer — then ElevenLabs TTS → Ogg/Opus). Voice id +
@@ -441,7 +451,8 @@ Three tools: `remind` (one-off), `schedule_routine` (recurring every N hours), a
   **atomic CAS-claim** (`claim`: PENDING→RUNNING for this public_id+fire_at — the single idempotency
   point under Cloud Tasks' at-least-once delivery) → recurring: advance + re-enqueue the next
   occurrence BEFORE running → `Assistant.reply(conversation_id)` (same agent as a live turn) →
-  `bot.send_message` → ONCE: mark DONE. A duplicate delivery loses the claim and no-ops.
+  `MessageSender.send` (converted + size-split, `chat/sender.py`) → ONCE: mark DONE. A duplicate
+  delivery loses the claim and no-ops.
 - **No app-level OIDC check** on the route — same protection as baski's `/tasks/update` worker
   (Cloud Tasks OIDC + Cloud Run ingress). The tools exist in every mode; only webhook mode has the
   public `/schedule/fire` callback, so only there does a fire actually run.

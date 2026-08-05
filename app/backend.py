@@ -27,9 +27,10 @@ from app.access import AllowlistMiddleware
 from app.assistant import NISSE_JUDGE_PROMPT, Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
 from app.chat.ask import PendingQuestions
-from app.chat.format import compose_answer, split_message
+from app.chat.format import compose_answer
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
+from app.chat.sender import MarkdownSender
 from app.chat.speak import Speaker
 from app.chat.transcribe import Transcriber
 from app.curator import Curator, build_curate_route
@@ -80,7 +81,7 @@ class NisseBot(TelegramServer):
         service = SchedulingService(scheduler=self.deps.scheduler, endpoint=self.deps.schedule_endpoint)
         runner = ScheduleRunner(
             assistant=self.assistant,
-            bot=self.bot,
+            sender=self.sender,
             database=self._database,
             scheduling=service,
             format_answer=compose_answer,  # the Telegram rendering, supplied here so scheduling needn't import chat
@@ -89,9 +90,14 @@ class NisseBot(TelegramServer):
         build_curate_route(app, self.curator)
 
     @cached_property
+    def sender(self) -> MarkdownSender:
+        """How a message composed off the reply path (a report, a fired task's answer) reaches the owner."""
+        return MarkdownSender(self.bot)
+
+    @cached_property
     def curator(self) -> Curator:
         """The nightly maintenance pass; Cloud Scheduler drives it through POST /curate."""
-        return Curator(self.deps, bot=self.bot, split_message=split_message)
+        return Curator(self.deps, sender=self.sender)
 
     @cached_property
     def assistant(self) -> Assistant:

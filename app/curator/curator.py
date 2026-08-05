@@ -20,10 +20,8 @@ one write path per store, not a parallel curator-only one that could drift from 
 
 import logging
 import secrets
-from collections.abc import Callable
 from typing import NamedTuple
 
-from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, ToolSet
 from baski.env import get_env
@@ -35,7 +33,7 @@ from app.curator.classify import Classification, MessageClassifier
 from app.curator.evidence import Evidence, EvidenceCollector
 from app.curator.prompt import CURATOR_JUDGE_PROMPT, NISSE_CURATOR_PROMPT, REVIEW_BRIEF
 from app.curator.store import CuratorRun, CuratorRunStore
-from app.shared import CoreDeps
+from app.shared import CoreDeps, MessageSender
 from app.shared.revisions import Actor, RevisionLog, acting_as
 
 logger = logging.getLogger(__name__)
@@ -47,12 +45,6 @@ CURATOR_TOOLS = ["memory", "lists", "core_memory", "subagents"]  # its whole sur
 _CONTEXT_TOKENS = 120_000  # a day of transcript plus the stores it reads back
 _MAX_TURNS = 40
 _WINDOW = datetime.timedelta(days=1)
-
-
-# How the report is cut to Telegram's message limit. Taken as a dependency, not imported: the
-# splitter lives in the chat layer, and a domain module reaching into the transport is the coupling
-# `ScheduleRunner` was just freed from.
-MessageSplitter = Callable[[str], list[str]]
 
 
 class ReviewOutcome(NamedTuple):
@@ -73,11 +65,10 @@ _CRASH_REPORT = "⚠️ Проход упал на середине. Сколь�
 class Curator:
     """Runs one maintenance pass over one conversation. Lifecycle: long-lived, one per bot."""
 
-    def __init__(self, deps: CoreDeps, *, bot: Bot, split_message: MessageSplitter) -> None:
-        """Hold the shared clients, the bot the report goes out on, and the chat layer's splitter."""
+    def __init__(self, deps: CoreDeps, *, sender: MessageSender) -> None:
+        """Hold the shared clients and the channel the report goes out on."""
         self._deps = deps
-        self._bot = bot
-        self._split_message = split_message
+        self._sender = sender
         self._runs = CuratorRunStore(deps.database)
         self._evidence = EvidenceCollector(deps.database)
         self._classifier = MessageClassifier(deps.anthropic)
@@ -201,16 +192,14 @@ class Curator:
         )
 
     async def _send_report(self, *, conversation_id: int, run: CuratorRun) -> None:
-        """Message the owner what the pass did, split to Telegram's size limit like every other send.
+        """Message the owner what the pass did.
 
-        A night with many changes runs past 4096 characters, and an over-long message is rejected
-        whole — the report would vanish while the edits stood. Degrades on a transport failure only:
-        the edits are durable and in the run record, so a Telegram outage must not undo a good pass.
+        Degrades on a transport failure only: the edits are durable and in the run record, so a
+        Telegram outage must not undo a good pass.
         """
         header = f"🌙 Ночная уборка · изменений: {run.changes} · разобрано сообщений: {run.owner_messages}"
         try:
-            for chunk in self._split_message(f"{header}\n\n{run.report}"):
-                await self._bot.send_message(chat_id=conversation_id, text=chunk)
+            await self._sender.send(chat_id=conversation_id, text=f"{header}\n\n{run.report}")
         except TelegramAPIError:
             logger.warning("Curator report not delivered; changes stand and are in the run record", exc_info=True)
 

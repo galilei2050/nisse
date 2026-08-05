@@ -10,12 +10,12 @@ from baski.primitives import datetime
 from app.scheduling.store import SCHEDULED_PREFIX, FireStore, ScheduleKind
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
-    from aiogram import Bot
     from baski.agents import AgentExecuteResult
     from pymongo.asynchronous.database import AsyncDatabase
 
     from app.assistant import Assistant
     from app.scheduling.service import SchedulingService
+    from app.shared import MessageSender
 
 # How a result becomes the text sent to the owner. Taken as a dependency, not imported: `app.chat`
 # imports this package (the /schedules viewer), so importing the chat layer back would cycle.
@@ -32,14 +32,14 @@ class ScheduleRunner:
         self,
         *,
         assistant: Assistant,
-        bot: Bot,
+        sender: MessageSender,
         database: AsyncDatabase,
         scheduling: SchedulingService,
         format_answer: AnswerFormatter,
     ) -> None:
-        """Hold the collaborators a fire needs: the agent, the bot, the task store, the enqueuer, the formatter."""
+        """Hold the collaborators a fire needs: the agent, the channel, the task store, the enqueuer, the formatter."""
         self._assistant = assistant
-        self._bot = bot
+        self._sender = sender
         self._tasks = FireStore(database)
         self._scheduling = scheduling
         self._format_answer = format_answer
@@ -68,7 +68,7 @@ class ScheduleRunner:
                 result = await self._assistant.reply(
                     conversation_id=task.conversation_id, text=f"{SCHEDULED_PREFIX} {task.instruction}"
                 )
-                await self._bot.send_message(chat_id=task.conversation_id, text=self._format_answer(result))
+                await self._sender.send(chat_id=task.conversation_id, text=self._format_answer(result))
                 if task.kind is ScheduleKind.ONCE:
                     await self._tasks.mark_done(public_id=public_id)
             finally:
