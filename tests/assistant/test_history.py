@@ -332,6 +332,26 @@ async def test_reply_runs_the_whole_loop_before_the_transcript_is_touched() -> N
     assert [t.id for t in hist.turns] == [1, 2, 3]  # cutting payloads was enough; no turn was dropped
 
 
+async def test_a_turn_reduced_before_its_write_lands_still_reaches_mongo_whole() -> None:
+    """The archive is the record of what happened; an in-memory cut must never reach it.
+
+    The write is fire-and-forget and `flush()` awaits it only after the reply, so a long run can
+    compact a turn before its own write task has run. Mongo must still get the tool call and its dump.
+    """
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_narrated_tool_turn(hist, "t1")
+
+    hist.turns[0].keep_only_text()  # the cut happens before the pending write is awaited
+    await hist.flush()
+
+    stored = col.docs[(1, 1)]["messages"]
+    assert [b["type"] for b in stored[0]["content"]] == ["text", "tool_use"]
+    assert stored[1]["content"][0]["content"] == "fresh dump"
+    assert _kinds(hist) == ["text", "text"]  # ...while the context itself did lose the payload
+
+
 async def test_compaction_clears_the_stale_size_so_the_context_footer_cannot_lie() -> None:
     """The recorded size describes the pre-cut transcript; left standing it reads as 187% full."""
     col = _FakeCollection()

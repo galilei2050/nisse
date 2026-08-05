@@ -280,12 +280,20 @@ class MongoMessageHistory(MessageHistory):
         return self
 
     def __exit__(self, *args: object) -> None:
-        """Commit the open turn and fire its durable write (fire-and-forget; awaited in flush())."""
+        """Commit the open turn and fire its durable write (fire-and-forget; awaited in flush()).
+
+        The messages are dumped HERE, not inside the task: the write is fire-and-forget and `flush()`
+        only awaits it after the reply, by which point `compact()` may have reduced this very turn in
+        memory. Handing the task a snapshot is what makes "Mongo keeps every turn whole" true by
+        construction instead of by the scheduler happening to run the write first.
+        """
         turn = self._current_turn
         self._current_turn = None
         if turn and turn.messages:
             self._turns.append(turn)
-            self._writes.append(asyncio.create_task(self._write_turn(turn)))
+            written = [_dump_message(message) for message in turn.messages]
+            task = self._write_turn(turn.id, written, has_text=_has_text(turn))
+            self._writes.append(asyncio.create_task(task))
 
     @property
     def _turn(self) -> Turn:
@@ -489,17 +497,17 @@ class MongoMessageHistory(MessageHistory):
             {"$addToSet": {"message_ids": {"$each": message_ids}}},
         )
 
-    async def _write_turn(self, turn: Turn) -> None:
-        """Insert one turn document, once. A pure tool turn is written already soft-deleted."""
+    async def _write_turn(self, turn_id: int, messages: list[MessageParam], *, has_text: bool) -> None:
+        """Insert one turn document, once, as it happened. A pure tool turn is written soft-deleted."""
         now = datetime.now()
-        deleted_at = None if _has_text(turn) else now
+        deleted_at = None if has_text else now
         await self._collection.update_one(
-            {"conversation_id": self._conversation_id, "turn_id": turn.id},
+            {"conversation_id": self._conversation_id, "turn_id": turn_id},
             {
                 "$set": {
                     "conversation_id": self._conversation_id,
-                    "turn_id": turn.id,
-                    "messages": [_dump_message(m) for m in turn.messages],
+                    "turn_id": turn_id,
+                    "messages": messages,
                     "updated_at": now,
                     "deleted_at": deleted_at,
                 },

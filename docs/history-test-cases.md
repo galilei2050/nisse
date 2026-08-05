@@ -40,6 +40,10 @@ Write the expected Mongo end-state **before** running; then compare.
 - **The size counter is cleared by a cut** (`_last_input_tokens = 0`), because it described the
   transcript as it was before. Otherwise `context_status()` reports a fullness that no longer exists
   and the agent reads it as an instruction to prune.
+- **Mongo holds the turn as it happened, always.** Compaction edits the in-memory transcript only, and
+  the durable write is handed a snapshot taken when the turn completed — so a turn stripped in memory
+  before its own fire-and-forget write lands still reaches Mongo whole. Nothing but `deleted_at` and
+  `message_ids` ever changes on a stored turn.
 - **Turns leave through one door.** `_forget()` is the only thing that removes a turn from the active
   transcript — compaction and the agent's `prune_transcript` (`delete_turns`) both go through it, so
   every removal is soft-deleted on `flush()` the same way and carries a `ForgetReason` in the log.
