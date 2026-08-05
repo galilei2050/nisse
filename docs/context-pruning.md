@@ -161,11 +161,18 @@ soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` kee
 turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
 
 **Where it fires matters as much as when.** Trimming runs **once per reply** (`trim()`, called from
-`Conversation.reply`), never inside the agent loop — baski reports usage after every API call, and
-dropping a turn there moves the head of the message list, so the cached prefix stops matching and the
-whole transcript is re-written at the 1.25x write rate instead of read back at 0.1x. Measured on
-production traces (dated snapshot, Aug 2026): 22 of 27 full-prefix breaks followed an over-budget
-call, and the rewrites they caused were ~13% of the period's API spend.
+`Conversation.reply` after the answer is delivered), never inside the agent loop. baski reports usage
+after every API call, and dropping a turn there costs twice over:
+
+- *Quality* — it cuts context out from under a reply that is still being composed. Observed in
+  production traces (dated snapshot, Aug 2026): single replies whose transcript went 56 → 47 → 15
+  and 60 → 48 → 41 → 35 messages while the model was answering.
+- *Money* — it moves the head of the message list, so the cached prefix stops matching and the whole
+  transcript is re-written at the 1.25x write rate instead of read back at 0.1x. 22 of 27 full-prefix
+  breaks followed an over-budget call; the rewrites were ~13% of the period's API spend.
+
+Trimming after the answer keeps the reply whole and reacts to the freshest measurement — the run that
+just finished — instead of the previous one's.
 
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the

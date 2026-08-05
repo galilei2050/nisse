@@ -25,18 +25,21 @@ class Conversation:
         self._lock = asyncio.Lock()
 
     async def reply(self, *, text: str, media: Media | None = None, on_event: Listener = noop) -> AgentExecuteResult:
-        """Run one reply over the reused agent: reset the scratchpad, size the window, append, drive the loop.
+        """Run one reply over the reused agent: reset the scratchpad, append the message, drive the loop.
 
         `media` is a photo/PDF the user attached (None for a text/voice turn) — added as its own user
         message, with the caption text as a second one. `short_term` is a per-reply scratchpad, cleared
         each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
-        the one agent's history at once. The reply boundary is also the only point where the context
-        window is allowed to shrink (`trim`) — inside the loop it would break the prompt cache.
+        the one agent's history at once.
+
+        The window shrinks only here, after the answer is delivered (`trim`): this reply keeps every
+        turn it started with, and the transcript the loop sees is append-only, so the cached prefix
+        holds. Trimming inside the loop cuts context out from under a reply mid-thought AND rewrites
+        the whole cache on every remaining turn.
         """
         async with self._lock:
             self._short_term.clear()
             self._agent.on_event = on_event
-            self._history.trim()
             with self._history:
                 if media is not None:
                     if media.media_type is MediaType.PDF:
@@ -47,6 +50,7 @@ class Conversation:
                     self._history.add_user_text(text)
             result = await self._agent.execute()
             self._history.drop_tool_turns()
+            self._history.trim()
         return result
 
     async def flush(self) -> None:

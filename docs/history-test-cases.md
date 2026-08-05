@@ -27,8 +27,9 @@ Write the expected Mongo end-state **before** running; then compare.
   writes, then soft-deletes turns dropped by `trim()`/`delete_messages` — so trimming is durable
   and dropped turns don't resurrect on the next `load()`.
 - **The window moves only between replies.** `truncate()` (called by the loop after every API call)
-  just records the context size; `trim()` does the dropping, once per reply. A turn dropped mid-run
-  would move the head of the message list and invalidate the whole cached prefix.
+  just records the context size; `trim()` does the dropping, once per reply, after the answer is
+  delivered. A turn dropped mid-run would both shrink the context a reply is still composing against
+  and move the head of the message list, invalidating the whole cached prefix.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
 - **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —

@@ -307,10 +307,11 @@ class MongoMessageHistory(MessageHistory):
         self._last_input_tokens = effective_input_tokens(usage)
 
     def trim(self) -> None:
-        """Drop the oldest turns when the last reply left the context near the budget.
+        """Drop the oldest turns when the reply that just finished left the context near the budget.
 
-        Called once per reply, before the loop starts, so the prefix only ever moves between replies —
-        within a run the transcript is append-only and stays cacheable.
+        Called once per reply, after the answer is delivered: the reply keeps every turn it started
+        with, and the prefix only ever moves between replies, so the transcript the loop sees is
+        append-only and stays cacheable.
         """
         if self._last_input_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
             return
