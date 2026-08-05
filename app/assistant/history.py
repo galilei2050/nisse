@@ -53,17 +53,44 @@ TURNS_COLLECTION = "conversation_turns"  # public: the curator reads this collec
 # persisted like any other turn, so anything reading the transcript back as "what the owner said"
 # must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
 JUDGE_RETRY_PREFIX = "[Completeness check]"
-_MAX_TOKENS = 32_000  # context budget: truncate() trims oldest turns as effective input nears this
-_TRUNCATE_THRESHOLD = 0.9
-_TRUNCATE_PERCENTAGE = 0.3
+_MAX_TOKENS = 32_000  # the denominator of the [Context: N% used] footer
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
+_PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # past this, a turn is sent as text alone
 
 
 @dataclass
 class MongoTurn(Turn):
     """A transcript turn that also carries its UTC send-time, used to render the recency marker."""
 
+    # baski ships no `py.typed`, so `Turn` reaches mypy as `Any` and the inherited field has no type
+    # it can resolve — every `self.messages` here then fails with "Cannot determine type". Restating
+    # the same declaration gives this class one concrete type back.
+    messages: list[MessageParam] = field(default_factory=list)
     created_at: datetime.datetime = field(kw_only=True)
+
+    def rendered(self) -> list[MessageParam]:
+        """This turn as the API should receive it while it is still fresh: everything but thinking."""
+        return [_strip_thinking(message) for message in self.messages]
+
+    def said(self) -> list[MessageParam]:
+        """Just what was said in this turn — the owner's message, the agent's answer.
+
+        Left out: the `tool_use` calls, their `tool_result` payloads, attached images/PDFs, thinking.
+        A message that carried none of the words is left out whole. Nothing is modified: this is a
+        view over the turn, so the turn itself and its Mongo document stay complete.
+        """
+        spoken: list[MessageParam] = []
+        for message in self.messages:
+            content = message["content"]
+            if isinstance(content, str):
+                spoken.append(message)
+                continue
+            blocks = list(content)
+            texts = [b for b in blocks if _is_text_block(b)]
+            if not texts:
+                continue
+            spoken.append(message if len(texts) == len(blocks) else MessageParam(role=message["role"], content=texts))
+        return spoken
 
 
 def _turn_marker(turn_id: int, at: datetime.datetime, prev_at: datetime.datetime | None) -> str:
@@ -191,7 +218,8 @@ class MongoMessageHistory(MessageHistory):
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies. Call
     `load()` before the first reply to restore the active transcript. During a reply each completed
     turn is written fire-and-forget (`__exit__`); `flush()` awaits those writes after the answer is
-    sent. `drop_tool_turns()` removes pure tool turns from the active transcript between replies.
+    sent. The transcript only ever grows: what the model sees narrows with age in `format_for_api`,
+    and a turn leaves for good only when the agent deletes it (`delete_turns`).
     """
 
     def __init__(self, *, database: AsyncDatabase, conversation_id: int) -> None:
@@ -275,14 +303,30 @@ class MongoMessageHistory(MessageHistory):
         )
 
     def format_for_api(self) -> list[MessageParam]:
-        """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
+        """Render the transcript with [Turn N] markers; cache breakpoint on the last turn.
+
+        Past `_PAYLOAD_RETENTION` a turn is sent as its words alone (`said`): the tool calls, their
+        results and the attachments were consumed by the answer that used them, and they are most of
+        what the transcript weighs — 45% of the live context when measured, against 16% for the
+        conversation itself. Before that they all go, because a follow-up reaches into them ("show me
+        the second one you found"), and 85% of the owner's messages arrive within the hour.
+
+        A turn whose whole content was tool machinery renders as nothing — marker included.
+
+        This is a view, not an edit. The turn and its Mongo document keep everything; widen the window
+        and it is all sent again.
+        """
         result: list[MessageParam] = []
         prev_at: datetime.datetime | None = None
+        cutoff = datetime.now() - _PAYLOAD_RETENTION
         for turn in self._turns:
             at = datetime.as_utc(turn.created_at)
+            messages = turn.rendered() if at > cutoff else turn.said()
+            if not messages:
+                continue
             marker = _turn_marker(turn.id, at, prev_at)
             result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=marker)]))
-            result.extend(_strip_thinking(m) for m in turn.messages)
+            result.extend(messages)
             prev_at = at
 
         if result:
@@ -298,26 +342,27 @@ class MongoMessageHistory(MessageHistory):
         return not self._turns and input_tokens > self.max_tokens // 2
 
     def truncate(self, usage: Usage) -> None:
-        """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
-        context_tokens = effective_input_tokens(usage)
-        self._last_input_tokens = context_tokens
-        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
-            return
-        count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
-        dropped, self._turns = self._turns[:count], self._turns[count:]
-        self._dropped.update(turn.id for turn in dropped)
-        logger.info(
-            "Truncated message history",
-            extra={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
-        )
+        """Record this call's context size, for the `[Context: N% used]` footer. Nothing is dropped.
+
+        baski calls this after every API call of the loop. Dropping a turn here would move the head of
+        the message list mid-run: the cached prefix stops matching and the whole transcript is
+        re-written at 1.25x on every remaining turn instead of read back at 0.1x — and the reply loses
+        context it is still composing against. What the model sees shrinks by age, in `format_for_api`;
+        what the transcript HOLDS only changes when the agent deletes a turn on purpose.
+        """
+        self._last_input_tokens = effective_input_tokens(usage)
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
-        """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
+        """Remove whole turns by id — the agent's `prune_transcript`, and the only way a turn leaves.
+
+        `flush()` soft-deletes them in Mongo, so they stay readable there and never come back on
+        `load()`.
+        """
         ids = set(turn_ids)
-        original = len(self._turns)
+        before = len(self._turns)
         self._turns = [turn for turn in self._turns if turn.id not in ids]
-        removed = original - len(self._turns)
         self._dropped.update(ids)
+        removed = before - len(self._turns)
         logger.info("Turns deleted by agent", extra={"turnIds": sorted(ids), "turnsRemoved": removed})
         return removed
 
@@ -365,14 +410,6 @@ class MongoMessageHistory(MessageHistory):
                 {"conversation_id": self._conversation_id, "turn_id": {"$in": list(dropped)}, "deleted_at": None},
                 {"$set": {"deleted_at": now, "updated_at": now}},
             )
-
-    def drop_tool_turns(self) -> None:
-        """Drop pure tool turns from the active transcript so the next reply's context stays lean.
-
-        Their Mongo docs were already written soft-deleted (see `_write_turn`), so this is an
-        in-memory prune only — no extra write, and the full turn stays recoverable in Mongo.
-        """
-        self._turns = [turn for turn in self._turns if _has_text(turn)]
 
     async def link_messages(self, message_ids: list[int]) -> None:
         """Attach the Telegram messages that delivered the newest turn's answer to that turn.

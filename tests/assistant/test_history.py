@@ -2,8 +2,9 @@
 
 The fake collection models only the operations MongoMessageHistory uses. Turns are driven through
 the real context manager so `__exit__` fires the fire-and-forget write; `flush()` awaits it. The
-load-bearing test is `test_truncate_persists`: a turn dropped from context by `truncate()` must end
-up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud Run cold start).
+load-bearing test is `test_compaction_persists_so_dropped_turns_do_not_resurrect`: a turn dropped
+by `compact()` must end up soft-deleted in Mongo, or it resurrects on the next `load()` (every Cloud
+Run cold start).
 """
 
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from baski.agents.tools.delete_messages import DeleteMessagesTool
 
 from app.assistant.history import MongoMessageHistory
 
-_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → triggers truncate
+_BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → what compact() reads as over budget
 
 
 class _FakeCursor:
@@ -170,8 +171,153 @@ async def test_each_turn_written_exactly_once() -> None:
     assert len(col.inserted_ids) == 3  # each turn inserted exactly once
 
 
-async def test_truncate_persists_so_dropped_turns_do_not_resurrect() -> None:
-    """The load-bearing case: a turn dropped by truncate() is soft-deleted in Mongo, not resurrected."""
+async def test_reported_usage_never_moves_the_transcript() -> None:
+    """The loop reports its context size after every call; none of that may drop a turn.
+
+    A turn leaving mid-run moves the head of the message list, so the cached prefix stops matching and
+    the whole transcript is re-written on every remaining turn — and the reply loses context it is
+    still composing against.
+    """
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "1")
+    _add_answer(hist, "2")
+    _add_answer(hist, "3")
+
+    for _ in range(3):  # three over-budget calls inside one run
+        hist.truncate(_BIG_USAGE)
+
+    assert [t.id for t in hist.turns] == [1, 2, 3]
+
+
+def _seed_old_search(col: _FakeCollection, turn_id: int, tool_id: str, said: str) -> None:
+    """A narrated search from hours ago: the agent's words, its call, and the dump that came back."""
+    col.docs[(1, turn_id)] = {
+        "conversation_id": 1,
+        "turn_id": turn_id,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=3),
+        "deleted_at": None,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": said},
+                    {"type": "tool_use", "id": tool_id, "name": "google_search", "input": {"q": "x"}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "huge dump"}]},
+        ],
+    }
+
+
+def _seed_old_photo(col: _FakeCollection, turn_id: int) -> None:
+    """A photo the owner sent hours ago, with its caption."""
+    col.docs[(1, turn_id)] = {
+        "conversation_id": 1,
+        "turn_id": turn_id,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=2),
+        "deleted_at": None,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}},
+                    {"type": "text", "text": "что на чеке?"},
+                ],
+            }
+        ],
+    }
+
+
+def _add_narrated_tool_turn(hist: MongoMessageHistory, tool_id: str) -> None:
+    """A tool round the model narrated — text plus the call, which is what Opus actually produces."""
+    with hist:
+        hist.add_assistant(
+            [
+                {"type": "text", "text": "сейчас гляну"},
+                {"type": "tool_use", "id": tool_id, "name": "google_search", "input": {}},
+            ]
+        )
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": tool_id, "content": "fresh dump"}])
+
+
+def _kinds(hist: MongoMessageHistory) -> list[str]:
+    """Every block type the API would receive, in order."""
+    return [
+        b["type"] for m in hist.format_for_api() if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict)
+    ]
+
+
+async def test_an_old_turn_is_sent_as_its_words_alone() -> None:
+    """Past the window the API stops seeing the calls, dumps and attachments — the words stay."""
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    _seed_old_search(col, 2, "t2", "уточню ещё раз")
+    _seed_old_photo(col, 3)
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "и что там?")
+    _add_narrated_tool_turn(hist, "fresh")
+
+    sent = hist.format_for_api()
+    texts = [b["text"] for m in sent if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] == "text"]
+    payloads = [b for m in sent if isinstance(m["content"], list) for b in m["content"] if isinstance(b, dict) and b["type"] in ("tool_use", "tool_result")]
+
+    assert "сейчас поищу" in texts and "уточню ещё раз" in texts and "что на чеке?" in texts
+    assert "image" not in _kinds(hist)  # the hours-old attachment is not sent
+    assert [b.get("id") or b.get("tool_use_id") for b in payloads] == ["fresh", "fresh"]  # only this reply's pair
+
+
+async def test_a_fresh_turn_is_sent_whole_so_a_follow_up_can_reach_its_output() -> None:
+    """"Show me the second one you found" needs the dump of the exchange it follows."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "поищи автосервисы")
+    _add_narrated_tool_turn(hist, "fresh")
+
+    kinds = _kinds(hist)
+
+    assert "tool_use" in kinds and "tool_result" in kinds
+
+
+async def test_rendering_leaves_the_transcript_and_mongo_untouched() -> None:
+    """Hiding is a view. Ask for the same transcript twice and nothing has been lost in between."""
+    col = _FakeCollection()
+    _seed_old_search(col, 1, "t1", "сейчас поищу")
+    hist = _history(col)
+    await hist.load()
+
+    hist.format_for_api()
+
+    assert [len(t.messages) for t in hist.turns] == [2]  # the turn still holds both messages
+    assert len(col.docs[(1, 1)]["messages"][0]["content"]) == 2  # ...text AND the call
+    assert col.docs[(1, 1)]["messages"][1]["content"][0]["content"] == "huge dump"
+    assert "tool_use" not in _kinds(hist)  # ...while the API still doesn't see them
+
+
+async def test_an_old_turn_that_was_only_machinery_is_sent_as_nothing() -> None:
+    """No words, nothing to say: an old pure tool round costs not even its `[Turn N]` marker."""
+    col = _FakeCollection()
+    col.docs[(1, 1)] = {
+        "conversation_id": 1,
+        "turn_id": 1,
+        "created_at": dt.datetime.now() - dt.timedelta(hours=3),
+        "deleted_at": None,
+        "messages": [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "dump"}]},
+        ],
+    }
+    hist = _history(col)
+    await hist.load()
+
+    assert hist.format_for_api() == []
+
+
+async def test_delete_turns_persists_and_keeps_the_deleted_turn_readable() -> None:
+    """The load-bearing case: what the agent deletes is soft-deleted in Mongo, never resurrected."""
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -181,33 +327,15 @@ async def test_truncate_persists_so_dropped_turns_do_not_resurrect() -> None:
     await hist.flush()
     assert _active_ids(col) == [1, 2, 3]
 
-    hist.truncate(_BIG_USAGE)  # over budget → drops the oldest turn (id 1) from context
-    await hist.flush()
-    assert _active_ids(col) == [2, 3]  # turn 1 soft-deleted in Mongo
-    assert col.docs[(1, 1)]["messages"]  # ...but content intact — recoverable
-
-    cold = _history(col)  # simulate a Cloud Run cold start
-    await cold.load()
-    assert [t.id for t in cold.turns] == [2, 3]  # turn 1 does NOT come back
-
-
-async def test_delete_turns_persists() -> None:
-    """delete_turns (the agent's delete_messages tool) is made durable on flush()."""
-    col = _FakeCollection()
-    hist = _history(col)
-    await hist.load()
-    _add_user(hist, "1")
-    _add_answer(hist, "2")
-    _add_answer(hist, "3")
-    await hist.flush()
-
     removed = await hist.delete_turns([2])
     assert removed == 1
     await hist.flush()
+    assert _active_ids(col) == [1, 3]
+    assert col.docs[(1, 2)]["messages"]  # content intact — recoverable
 
-    cold = _history(col)
+    cold = _history(col)  # simulate a Cloud Run cold start
     await cold.load()
-    assert [t.id for t in cold.turns] == [1, 3]
+    assert [t.id for t in cold.turns] == [1, 3]  # turn 2 does NOT come back
 
 
 async def test_prune_transcript_keep_last_drops_older_turns_durably() -> None:
@@ -261,7 +389,12 @@ async def test_turn_marker_handles_naive_created_at_from_mongo() -> None:
 
 
 async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
-    """A pure tool turn is written already soft-deleted and dropped from context, yet kept in full."""
+    """A pure tool turn is written already soft-deleted: this session still uses it, a later one won't.
+
+    It stays in the live transcript, because a follow-up in the next few minutes may reach into its
+    output. The soft-delete is what keeps it from being restored hours later, when only the words are
+    still worth sending.
+    """
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
@@ -269,12 +402,11 @@ async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
     _add_tool_turn(hist)
     _add_answer(hist, "answer")
     await hist.flush()
-    hist.drop_tool_turns()
 
     assert _active_ids(col) == [1, 3]
     assert col.docs[(1, 2)]["deleted_at"] is not None  # tool turn soft-deleted
     assert col.docs[(1, 2)]["messages"]  # but recoverable
-    assert [t.id for t in hist.turns] == [1, 3]  # dropped from the active transcript
+    assert [t.id for t in hist.turns] == [1, 2, 3]  # and still usable while this process lives
 
     cold = _history(col)
     await cold.load()

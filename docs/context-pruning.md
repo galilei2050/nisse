@@ -23,7 +23,7 @@ the Anthropic `count_tokens` API (reconstruction 42,869 vs. actual `cache_read` 
 at ≈1.3 chars/token, so Russian history is ~3× heavier than a naive char count suggests.)
 
 ### Why history accumulates
-- `drop_tool_turns()` only removes turns with **no text**. Any turn carrying assistant text is kept
+- the pure-tool-turn cut only removes turns with **no text**. Any turn carrying assistant text is kept
   forever. So all conversational back-and-forth (incl. disposable chatter) piles up.
 - `truncate()` exists and is token-based, but its threshold sat **above any context the conversation
   actually reached** (the owner notices bloat first), so it never fired. No deterministic mechanism
@@ -153,12 +153,33 @@ protection and RAG-recall — real value at scale, but over-engineered for one o
 The **real, observed** problem is the DISPOSABLE class accumulating across sessions: tool-less text the
 current code keeps forever. That wants **deterministic dropping**, no summarization, no topic model.
 
-**Decision — deterministic budget:** lower the `_MAX_TOKENS` budget in `history.py` (it was set far
-above any reached context, so it never fired) until the **existing** `truncate()` actually bites —
-when effective input nears the budget it drops the oldest turns. `truncate()` is already token-based
-(counts the whole cached prefix via `effective_input_tokens`), already operates on **all** turns, and
-already soft-deletes to Mongo (recoverable → not destructive); `drop_tool_turns()` keeps removing
-pure-tool turns each reply. (Current budget value: see `_MAX_TOKENS` in the code.)
+**Decision — narrow the view, don't destroy the record.** Dropping the oldest turns by age answered the
+wrong question. Measured on the owner's transcript (dated snapshot, Aug 2026): of everything already
+pushed out of context, **42% was base64 images/PDFs, 30% tool results, 6% reasoning, 5% tool arguments
+— and only 16% was actual conversation text**; of what was still IN context, 45% was tool payloads.
+The budget was being spent on consumed payloads while the conversation itself was evicted, leaving the
+assistant an 11-minute memory of a six-week relationship (8 turns of 2,280).
+
+So the split moved to `format_for_api`: past `_PAYLOAD_RETENTION` a turn is sent as its **words alone**
+— no calls, results, attachments or thinking. That is a *view*. The turn objects and their Mongo
+documents keep everything, so the window can be widened at any time and it all comes back, and no
+process ever destroys what it merely stopped sending.
+
+The window exists for follow-ups: "show me the second one you found" reaches into the output of the
+exchange it follows. 63% of the owner's messages arrive within 5 minutes of the previous one and 85%
+within an hour (1,007 gaps, June-August 2026), so an hour covers that case.
+
+**Nothing shrinks the transcript automatically any more.** `truncate()` records the size for the
+`[Context: N% used]` footer and nothing else; a turn leaves only when the agent deletes it on purpose
+(`prune_transcript`). Dropping a turn *during* the loop, which is what the old budget-driven trimming
+did, cost twice over — in production traces (dated snapshot, Aug 2026), single replies whose
+transcript went 56 → 47 → 15 and 60 → 48 → 41 → 35 messages while the model was answering, and cache
+rewrites worth ~13% of API spend over Aug 1-5, 2026 (22 of 27 full-prefix breaks followed an
+over-budget call).
+
+The open question this leaves is the ceiling: with only the view narrowing, the text of a very long
+conversation keeps accumulating. Text is the cheap part (16% of the bulk), and `_MAX_TOKENS` no longer
+gates anything — if that changes, raise it deliberately rather than reviving automatic eviction.
 
 **Decision — cheap manual lever:** `prune_transcript` takes a `keep_last=N` param (baski
 `DeleteMessagesTool`) — "keep only the last N turns" in one call instead of enumerating ids — for the
@@ -191,7 +212,7 @@ appears. For DISPOSABLE turns it saves nothing, which is correct.
 ## 7. Code touch-points
 | File | What |
 |---|---|
-| `app/assistant/history.py` | `_MAX_TOKENS` is the context budget that drives `truncate()`; lowered so it actually fires. |
+| `app/assistant/history.py` | `format_for_api` sends a turn whole or, past `_PAYLOAD_RETENTION`, as `MongoTurn.said()`; `truncate()` only records the size; `delete_turns` is the only way a turn leaves. |
 | baski `DeleteMessagesTool` (`delete_messages.py`) | `keep_last=N` — keep only the last N turns, drop the rest in one call (`turn_ids` still supported). |
 | `tests/assistant/test_history.py` | covers `keep_last` durability and budget-driven truncation. |
 

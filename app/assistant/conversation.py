@@ -43,9 +43,7 @@ class Conversation:
                         self._history.add_photo(data=media.data, media_type=media.media_type)
                 if text:
                     self._history.add_user_text(text)
-            result = await self._agent.execute()
-            self._history.drop_tool_turns()
-        return result
+            return await self._agent.execute()
 
     async def flush(self) -> None:
         """Await the reply's durable history writes. Called after the answer is sent to the user.
