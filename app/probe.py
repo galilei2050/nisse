@@ -145,6 +145,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
             await_trace=True,

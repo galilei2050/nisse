@@ -1,7 +1,7 @@
 """Manual curator run — one maintenance pass, outside Cloud Scheduler, printing what it did.
 
 The nightly pass is the hardest thing in this codebase to observe: it runs while the owner sleeps
-and its product is a set of edits spread across four stores. This driver runs the real pass against
+and its product is a set of edits spread across five stores. This driver runs the real pass against
 the real database and then prints the three things worth checking:
 
   1. EVIDENCE — the digest and the classification the curator was given.
@@ -85,6 +85,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),
             schedule_endpoint="http://localhost/schedule/fire",
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             bot=cast("Bot", bot),
             questions=PendingQuestions(),  # the curator has no ask_user; CoreDeps is one shape for every caller

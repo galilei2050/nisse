@@ -1,9 +1,10 @@
 """Living prompts — per-conversation prompt fragments the bot maintains, keyed by type.
 
 Unlike `memories` (discrete facts, recalled on demand by the agent), a prompt here is a single
-document injected into the system prompt every turn. `core_memory` is the first type: the small,
-always-on block of standing behaviour rules + canonical owner identity + current focus. One document
-per `(conversation_id, prompt_type)`, overwritten in place.
+document read on every turn by whoever it instructs. `core_memory` — standing behaviour rules,
+canonical owner identity, current focus — goes into the assistant's system prompt; `judge_rules` goes
+to the model that grades the assistant's answers (`app/assistant/judge.py`), never into a reply. One
+document per `(conversation_id, prompt_type)`, overwritten in place.
 
 The document has no second copy, so every overwrite first appends the block it replaces to
 `revisions` — the only place a rewritten set of standing rules survives, and the only way the owner

@@ -36,6 +36,7 @@ class CoreDeps:
     bucket_name: str
     scheduler: Scheduler
     schedule_endpoint: str
+    judge_project: str  # GCP project the Gemini judges run in; every judge is built per agent, not shared
     tools: "ToolRegistry"  # the process-wide name→factory tool catalog (app/tools)
     bot: Bot  # transport for tools that talk to the owner directly (ask_user); the probe fakes one
     # Where `ask_user` parks a question and where the chat router looks for one to answer — the two

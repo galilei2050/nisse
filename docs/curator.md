@@ -1,8 +1,9 @@
 # The curator — nightly self-maintenance
 
-One agent pass, once a night, off the request path. It reads a day of conversation plus the owner's
-emoji reactions, works out what the owner was *doing* in each message, and edits the four stores that
-decide how the assistant behaves tomorrow: core memory, long-term memories, lists, and sub-agents.
+One agent pass, once a night, off the request path — or on demand, when the owner sends `/curate`. It
+reads a day of conversation plus the owner's emoji reactions, works out what the owner was *doing* in
+each message, and edits the five stores that decide how the assistant behaves tomorrow: core memory,
+long-term memories, lists, the judge's added rules, and sub-agents.
 
 The assistant's model is frozen — it cannot get smarter. What it can do is start tomorrow from a
 better store. That is the whole ceiling of this feature, and worth stating plainly: the curator makes

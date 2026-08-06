@@ -42,7 +42,7 @@ app/
 
   chat/             Telegram I/O — the ONLY aiogram Router
     router.py       `ChatRouter` (holds assistant + transcriber + speaker + the `questions` registry;
-                    `.build(saved=, reactions=)` assembles the aiogram Router). Text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
+                    `.build(saved=, curate=, reactions=)` assembles the aiogram Router). Text/voice/audio/photo/PDF handler → transcribe voice+audio-file / attach photo+PDF (Media) →
                     Assistant.reply(on_event=TelegramProgress) → answer. Photos → JPEG image block;
                     documents → image or application/pdf block if the model reads it (else declined); >20MB declined
                     (voice in → also voices the reply back via Speaker; best-effort, never blocks the text answer).
@@ -50,11 +50,8 @@ app/
                     and the saved.py viewer commands — both BEFORE the catch-all, which would
                     otherwise swallow a command into an agent turn (aiogram tries handlers in order).
     saved.py        READ-ONLY VIEWER over what the agent saved: `/lists` · `/memory` · `/core` ·
-                    `/schedules` · `/help`. Also holds the bot's whole command menu — every name
-                    (`ChatCommand`) and description (`BOT_COMMANDS`), `/curate` included even though
-                    `curate.py` handles it — and publishes it on router startup (`set_my_commands`,
-                    retried then degraded to a warning — a cosmetic menu must never abort boot). Names
-                    in one place, handlers with their behaviour, so the two can't drift. Reads the four stores
+                    `/schedules` · `/help` (names from `commands.py`; `/help` prints the same
+                    BOT_COMMANDS the menu publishes, so the two can't drift). Reads the four stores
                     directly: no model call, no tokens, verbatim content (the agent's own summary is
                     what the owner couldn't audit). Per Telegram's guidance: one specific command per
                     store rather than `/show <what>`, and drill-down EDITS the message in place
@@ -105,14 +102,25 @@ app/
                     exposes every message it sent (the live one plus each extra a split answer took),
                     which the router hands to `Assistant.link_messages` — a reaction can land on any
                     of them.
-    format.py       compose_answer/verdict/footer/NO_ANSWER (non-streamed reply: a fired task, the curator's
-                    report) + LLM markdown → Telegram MarkdownV2 via telegramify-markdown; size-split; plain
-                    fallback. A composed answer ends the way a live one does — the final judge verdict, then
-                    the cost line — so a reply that arrived without a stream is still auditable
+    format.py       compose_answer/verdict_line/footer/NO_ANSWER (non-streamed reply: a fired task, the
+                    curator's report) + LLM markdown → Telegram MarkdownV2 via telegramify-markdown;
+                    size-split; plain fallback. A composed answer ends the way a live one does — the final
+                    judge verdict, then the cost line — so a reply that arrived without a stream is still
+                    auditable. `verdict_line` is the ONE wording of a verdict: `progress.py` renders the same
+                    call live, since a report and a reply disagreeing on the mark is the mixed signal the
+                    verdict exists to remove
+    commands.py     ChatCommand + BOT_COMMANDS + `publish_commands` — every published name and description,
+                    and the startup hook that publishes them (retried, then degraded to a warning: a
+                    cosmetic menu must never abort boot). Handlers stay with their behaviour; the names
+                    live together because "every published name resolves to exactly one handler" belongs
+                    to whoever assembles the router — an unhandled name falls through to the catch-all and
+                    is answered as a paid agent turn
     curate.py       `/curate` — runs the maintenance pass over this chat now (same `Curator` the nightly
-                    `POST /curate` drives). Owns its `BotCommand`, which `saved.py` publishes in the one
-                    menu. Acknowledges first: the pass blocks for minutes, inside the inbound Cloud Task's
-                    30-min deadline. Nothing serialises it against the nightly pass
+                    `POST /curate` drives). Acknowledges first, then blocks for minutes, inside the inbound
+                    Cloud Task's 30-min deadline. One pass per chat at a time (an in-process set; the
+                    service is `max_instances=1`): two passes would read-modify-write the same prompt
+                    documents, so the later write would drop the earlier one's line on two Opus bills.
+                    Nothing serialises it against the nightly pass
     sender.py       MarkdownSender — the send path for a message composed OFF the reply path (the
                     curator's report, a fired task's answer): convert → size-split → send as
                     MarkdownV2, retrying a rejected chunk as plain text. Those two callers used a bare

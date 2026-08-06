@@ -36,7 +36,8 @@ created_at, updated_at  (from NisseDbModel)
 ```
 
 - Unique compound index `(conversation_id, prompt_type)` — one row per type per chat; upsert by it.
-- `PromptType(StrEnum)`: `CORE_MEMORY = "core_memory"` for now. New types add an enum member.
+- `PromptType(StrEnum)`: `CORE_MEMORY = "core_memory"` (this doc) and `JUDGE_RULES = "judge_rules"`
+  (the lines the curator adds to the completeness rubric — `docs/curator.md`). New types add a member.
 - `PromptStore(database, conversation_id=…)` — mirrors `MemoryStore`: scoped per chat so prompts
   never cross conversations. Surface: `get(prompt_type) -> str | None`, `set(prompt_type, content)`
   (upsert). No soft-delete needed — a type is overwritten, not versioned.

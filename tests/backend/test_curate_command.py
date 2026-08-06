@@ -10,10 +10,11 @@ from typing import Any, cast
 
 from aiogram import Bot
 
+from app.chat.commands import BOT_COMMANDS, ChatCommand
 from app.chat.curate import CurateCommand
 from app.chat.reactions import ReactionRecorder
 from app.chat.router import ChatRouter
-from app.chat.saved import BOT_COMMANDS, ChatCommand, SavedViewer
+from app.chat.saved import SavedViewer
 from tests.backend.test_ask import CHAT_ID, _FakeAssistant, _message, questions
 from tests.backend.test_reactions import _FakeDatabase
 
@@ -33,7 +34,7 @@ class _FakeBot:
 
 
 class _FakeCurator:
-    """Records the pass it was asked for; running one needs a live model and four live stores."""
+    """Records the pass it was asked for; running one needs a live model and five live stores."""
 
     def __init__(self) -> None:
         self.curated: list[int] = []
@@ -80,5 +81,6 @@ async def test_the_owner_is_told_it_started_before_the_pass_blocks_for_minutes()
 
 def test_the_command_is_in_the_published_menu() -> None:
     """The handler lives in another module than the menu entry; a command Telegram offers but nothing
-    handles falls through to the catch-all and is answered — expensively — as a chat message."""
+    handles falls through to the catch-all and is answered — expensively — as a chat message.
+    """
     assert any(command.command == ChatCommand.CURATE for command in BOT_COMMANDS)

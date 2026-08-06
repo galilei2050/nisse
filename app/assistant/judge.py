@@ -15,6 +15,9 @@ would sit stale until the process restarts.
 import logging
 
 from baski.agents import GeminiJudge, Judge, Verdict
+from baski.agents.judge import JudgeUnavailableError  # not re-exported by the package
+from google.auth.exceptions import GoogleAuthError
+from pymongo.errors import PyMongoError
 
 from app.assistant.judge_prompt import NISSE_JUDGE_PROMPT
 from app.prompts import PromptStore, PromptType
@@ -45,12 +48,20 @@ class CuratedJudge(Judge):
 
         `GeminiJudge` takes its instructions at construction, and building one opens a Vertex client —
         so the rubric text is the cache key rather than rebuilding per grade.
+
+        Reading the rules and building that client both happen on the reply path now, where the loop
+        treats only `JudgeUnavailableError` as "grade it anyway" (`baski.agents.Agent._grade`). A Mongo
+        failover or an ADC token failure would otherwise escape `execute` and cost the owner a finished
+        Opus answer — over optional extra lines the grade can run without.
         """
-        instructions = await self.rubric()
-        if self._judge is None or instructions != self._graded_by:
-            logger.info("Judge rubric loaded", extra={"chars": len(instructions), "rebuilt": self._judge is not None})
-            self._judge = GeminiJudge(project=self._project, instructions=instructions)
-            self._graded_by = instructions
+        try:
+            instructions = await self.rubric()
+            if self._judge is None or instructions != self._graded_by:
+                self._judge = GeminiJudge(project=self._project, instructions=instructions)
+                self._graded_by = instructions
+                logger.info("Judge rubric loaded", extra={"chars": len(instructions)})
+        except (PyMongoError, GoogleAuthError) as exc:
+            raise JudgeUnavailableError(f"judge rubric unavailable: {exc}") from exc
         return self._judge
 
     async def rubric(self) -> str:
@@ -58,4 +69,8 @@ class CuratedJudge(Judge):
         added = await self._store.get(PromptType.JUDGE_RULES)
         if not added:
             return NISSE_JUDGE_PROMPT
-        return f"{NISSE_JUDGE_PROMPT}\n\nADDITIONAL RULES — send an answer back when:\n{added}"
+        # Each line is already a whole instruction ("Send back an answer that…" — the shape
+        # `update_judge_rules` asks the curator for), so the heading names them and stops.
+        return (
+            f"{NISSE_JUDGE_PROMPT}\n\nADDITIONAL GROUNDS FOR A REDO, added from answers this owner rejected:\n{added}"
+        )

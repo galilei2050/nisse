@@ -10,7 +10,7 @@ from typing import cast
 
 from app.assistant.judge import CuratedJudge
 from app.assistant.judge_prompt import NISSE_JUDGE_PROMPT
-from app.prompts import JudgeRulesTool, PromptStore, PromptType
+from app.prompts import CoreMemoryTool, JudgeRulesTool, PromptStore, PromptType
 
 CONVERSATION = 42
 
@@ -51,7 +51,8 @@ async def test_a_rule_that_stopped_catching_anything_is_removed_by_a_fragment() 
 
 async def test_an_over_cap_edit_is_refused_and_writes_nothing() -> None:
     """Every line here makes redos more likely, so the cap is a real refusal — and the refusal must
-    not half-apply the edit, or the block would drift with no record of what did land."""
+    not half-apply the edit, or the block would drift with no record of what did land.
+    """
     store = _StoredPrompts({PromptType.JUDGE_RULES: "Верни ответ без цены."})
 
     result = await _tool(store).execute(add=["x" * 2000])
@@ -61,9 +62,10 @@ async def test_an_over_cap_edit_is_refused_and_writes_nothing() -> None:
 
 
 async def test_re_sending_a_line_says_it_changed_nothing_rather_than_reporting_success() -> None:
-    """Observed in a live pass: the tool injects the current block every turn, so the curator re-sent
-    the rule it had just written, read `updated` back, took the "already present" note as proof the
-    rule pre-existed, and told the owner it had changed nothing — while the store held its edit."""
+    """The tool injects the current block every turn, so a rule the curator wrote a moment ago reads
+    back as one that was always there. Unless a repeat save answers distinctly, the pass reports "the
+    store already said this, nothing changed" while the store holds its own edit — seen in a live run.
+    """
     store = _StoredPrompts()
     tool = _tool(store)
 
@@ -95,7 +97,32 @@ async def test_the_added_rules_reach_the_rubric_without_displacing_the_base_one(
 
 async def test_an_unedited_conversation_grades_on_the_base_rubric_alone() -> None:
     """No stored rules must mean no appended heading either — an empty 'ADDITIONAL RULES' section
-    invites the judge to invent what belongs under it."""
+    invites the judge to invent what belongs under it.
+    """
     judge = CuratedJudge(cast("PromptStore", _StoredPrompts()), project="nisse2050")
 
     assert await judge.rubric() == NISSE_JUDGE_PROMPT
+
+
+async def test_core_memory_and_the_judge_rules_never_write_over_each_other() -> None:
+    """The two tools are one class apart — four class attributes tell them apart. A `prompt_type`
+    slip would send standing behaviour rules into the judge's rubric and blank `/core`, with the same
+    "updated" answer either way.
+    """
+    store = _StoredPrompts({PromptType.JUDGE_RULES: "Верни ответ без цены."})
+
+    await CoreMemoryTool(cast("PromptStore", store)).execute(add=["BEHAVIOUR\n- отвечай по-русски"])
+
+    assert store.content[PromptType.CORE_MEMORY] == "BEHAVIOUR\n- отвечай по-русски"
+    assert store.content[PromptType.JUDGE_RULES] == "Верни ответ без цены."
+
+
+async def test_a_removal_that_matches_nothing_names_the_block_it_searched() -> None:
+    """Both tools share the removal path. Told a judge rule is "not in core memory", the curator goes
+    looking in the wrong store — and its report tells the owner about a store it never touched.
+    """
+    store = _StoredPrompts({PromptType.JUDGE_RULES: "Верни ответ без цены."})
+
+    result = await _tool(store).execute(remove=["правило, которого нет"])
+
+    assert "not in judge rules" in result

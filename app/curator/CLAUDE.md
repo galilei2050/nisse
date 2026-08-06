@@ -1,7 +1,8 @@
 # curator/ — the nightly self-maintenance pass
 
-One agent run per night, off the request path, that edits what the assistant knows: core memory,
-memories, lists, sub-agents. Design, research grounding, and verified behaviour: `docs/curator.md`.
+One agent run per night — or on demand via `/curate` — that edits what the assistant knows: core
+memory, memories, lists, judge rules, sub-agents. Design, research grounding, and verified behaviour:
+`docs/curator.md`.
 
 ## Shape
 

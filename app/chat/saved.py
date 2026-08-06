@@ -24,14 +24,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import NamedTuple
 
-from aiogram import Bot, Router
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import BotCommand, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from baski.pattern import retry
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.chat.commands import BOT_COMMANDS, ChatCommand
 from app.chat.format import MAX_MESSAGE_LENGTH, split_message
 from app.lists import ItemList, ListStore
 from app.memory import MemoryStore
@@ -45,37 +45,6 @@ logger = logging.getLogger(__name__)
 _PAGE_SIZE = 8  # entries per index page — meant to stay on one phone screen
 _LABEL_LIMIT = 40  # button caption length that should stay one line on a phone
 
-
-class ChatCommand(StrEnum):
-    """Every command the bot publishes, viewer or not.
-
-    One source for both the published menu and the handler filters: a name spelled in only one of the
-    two would be offered by Telegram's autocomplete, match no handler, and fall through to the
-    catch-all — i.e. a paid agent turn for `/lists`. `CURATE` is handled in `chat/curate.py` (it runs
-    the maintenance pass rather than showing a store) and named here, because the menu is the bot's,
-    not this module's. (Distinct from `SavedKind`, which is a callback payload: only the two stores
-    that have an index view are valid there.)
-    """
-
-    LISTS = "lists"
-    MEMORY = "memory"
-    CORE = "core"
-    SCHEDULES = "schedules"
-    CURATE = "curate"
-    HELP = "help"
-
-
-# The whole published menu — `/` autocomplete, the menu button and `/help` all read this one list.
-# Each command's handler is registered by the module that owns the behaviour; only the names and the
-# descriptions live together, so the menu and the handlers cannot drift apart.
-BOT_COMMANDS = [
-    BotCommand(command=ChatCommand.LISTS, description="📋 Списки"),
-    BotCommand(command=ChatCommand.MEMORY, description="🧠 Заметки — что бот запомнил"),
-    BotCommand(command=ChatCommand.CORE, description="⭐ Постоянная память"),
-    BotCommand(command=ChatCommand.SCHEDULES, description="⏰ Напоминания и рутины"),
-    BotCommand(command=ChatCommand.CURATE, description="🌙 Разобрать день сейчас"),
-    BotCommand(command=ChatCommand.HELP, description="❓ Что я умею"),
-]
 
 _HELP_INTRO = "Пиши текстом или голосом, шли фото и PDF — отвечу. Посмотреть, что я сохранил:"
 # The nightly pass edits the same stores these commands show, so the owner needs to know it exists —
@@ -255,19 +224,6 @@ class SavedViewer:
         router.message.register(self.show_schedules, Command(ChatCommand.SCHEDULES))
         router.message.register(self.show_help, Command(ChatCommand.HELP))
         router.callback_query.register(self.tap, SavedCallback.filter())
-        router.startup.register(self._publish_commands)
-
-    async def _publish_commands(self, bot: Bot) -> None:
-        """Publish the command menu — `/` autocomplete and the chat's menu button read it.
-
-        Cosmetic, so a Telegram outage must not take the bot down with it: in webhook mode startup
-        runs inside the FastAPI lifespan, and raising here would leave Cloud Run without a ready
-        revision over a menu that nobody needs to get an answer.
-        """
-        try:
-            await retry(bot.set_my_commands, exceptions=(TelegramAPIError,), commands=BOT_COMMANDS)
-        except TelegramAPIError as exc:
-            logger.warning("Command menu not published; the commands still work", extra={"error": str(exc)})
 
     async def show_help(self, message: Message) -> None:
         """`/help` — the command list, built from BOT_COMMANDS so it can never drift from the menu."""

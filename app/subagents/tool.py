@@ -2,14 +2,11 @@
 
 from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
 from baski.agents.tool import Tool
-from baski.env import get_env
 from baski.server.logger import log_context
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
 from app.subagents.store import SubagentConfig
-
-_JUDGE_PROJECT = str(get_env("GOOGLE_CLOUD_PROJECT"))  # read at import — fail-fast if the secret is missing
 
 
 class SubagentTool(Tool):
@@ -112,4 +109,4 @@ class SubagentTool(Tool):
 
     def _judge(self) -> Judge:
         """The child's own completeness judge, graded against its config's rubric."""
-        return GeminiJudge(instructions=self._config.judge_prompt, project=_JUDGE_PROJECT)
+        return GeminiJudge(instructions=self._config.judge_prompt, project=self._deps.judge_project)

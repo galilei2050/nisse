@@ -116,6 +116,7 @@ class NisseBot(TelegramServer):
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             bot=self.bot,  # lets transport tools (ask_user) message the owner directly
             questions=PendingQuestions(),

@@ -46,6 +46,12 @@ _CORE_EMPTY = (
 # core memory's budget is room for the handful of rules the owner actually keeps hitting.
 _JUDGE_BUDGET = 1500  # characters
 
+# The registry name the judge-rubric editor is built under. A constant because the sub-agent write
+# guard refuses it by name (`app/subagents/tools.py`): "curator-only" is not enforced by absence from
+# MAIN_TOOLS alone — the main agent delegates to sub-agents, whose tool_names resolve any registered
+# name — so the two places that must agree on the spelling share it.
+JUDGE_RULES_TOOL_NAME = "judge_rules"
+
 _JUDGE_HEADER = (
     "JUDGE RULES — the lines the nightly curator added to the assistant's completeness rubric, from "
     "answers the owner rejected. This is what the judge grades replies against, on top of the base "
@@ -62,8 +68,12 @@ class _RemoveOutcome(NamedTuple):
     notes: list[str]
 
 
-def _remove_lines(lines: list[str], terms: list[str]) -> _RemoveOutcome:
-    """Drop lines matched by each term (exact line or unique fragment); report ambiguous/missing terms."""
+def _remove_lines(lines: list[str], terms: list[str], *, label: str) -> _RemoveOutcome:
+    """Drop lines matched by each term (exact line or unique fragment); report ambiguous/missing terms.
+
+    `label` names the block back to the model: this runs for every prompt the bot maintains, and a
+    miss reported against the wrong store is a curator told its judge rule is absent from core memory.
+    """
     candidates = [ln for ln in lines if ln.strip()]
     drop: set[str] = set()
     notes: list[str] = []
@@ -74,7 +84,7 @@ def _remove_lines(lines: list[str], terms: list[str]) -> _RemoveOutcome:
         elif len(hits) > 1:
             notes.append(f"ambiguous (matches several — be more specific): {term}")
         else:
-            notes.append(f"not in core memory: {term}")
+            notes.append(f"not in {label}: {term}")
     return _RemoveOutcome([ln for ln in lines if ln not in drop], notes)
 
 
@@ -98,7 +108,6 @@ def _add_lines(lines: list[str], items: list[str]) -> _AddOutcome:
         lines.append(item)
         present.add(item.strip().lower())
     return _AddOutcome(lines, skipped)
-    return lines
 
 
 class _PromptLinesTool(Tool):
@@ -148,10 +157,10 @@ class _PromptLinesTool(Tool):
         lines = stored.split("\n")
         notes: list[str] = []
         if remove:
-            lines, notes = _remove_lines(lines, remove)  # NamedTuple unpacks to (kept, notes)
+            lines, notes = _remove_lines(lines, remove, label=self.label.lower())
         skipped: list[str] = []
         if add:
-            lines, skipped = _add_lines(lines, add)  # NamedTuple unpacks to (lines, skipped)
+            lines, skipped = _add_lines(lines, add)
         if skipped:
             notes.append(f"already there, not added again: {'; '.join(skipped)}")
         updated = "\n".join(lines).strip("\n")
@@ -250,4 +259,4 @@ def judge_rules_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
 def register_tools(registrar: ToolRegistrar) -> None:
     """Register both prompt editors under the names their agents' tool specs reference."""
     registrar.register("core_memory", core_memory_tools)
-    registrar.register("judge_rules", judge_rules_tools)
+    registrar.register(JUDGE_RULES_TOOL_NAME, judge_rules_tools)

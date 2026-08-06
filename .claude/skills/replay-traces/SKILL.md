@@ -8,7 +8,10 @@ description: Re-grade recorded nisse traces through the CURRENT judge to measure
 The judge (`baski.agents.GeminiJudge`, gemini-flash) grades whether a reply FINISHED the ask and
 whether it was HONEST rather than flattering. Its rubric is nisse's own — `NISSE_JUDGE_PROMPT` in
 `app/assistant/judge_prompt.py`, passed as `instructions=`; every harness here loads that same
-constant, so they measure what prod runs. See `docs/judge_test_cases.md` for the root miscalibration
+constant. That is the BASE half of what prod grades by: the curator appends per-conversation lines
+(`judge_rules`, see `docs/curator.md`), which these harnesses deliberately leave out — they measure
+the calibrated, deploy-versioned rubric, not one chat's accumulated additions. See
+`docs/judge_test_cases.md` for the root miscalibration
 and the per-case catalog. This skill re-grades known cases so a fix in one direction doesn't silently
 regress the other.
 
