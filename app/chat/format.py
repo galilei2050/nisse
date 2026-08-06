@@ -17,7 +17,15 @@ import re
 import telegramify_markdown
 from baski.agents import AgentExecuteResult
 
-__all__ = ["NO_ANSWER", "compose_answer", "footer", "split_message", "strip_markdown_v2", "to_markdown_v2"]
+__all__ = [
+    "NO_ANSWER",
+    "compose_answer",
+    "footer",
+    "split_message",
+    "strip_markdown_v2",
+    "to_markdown_v2",
+    "verdict",
+]
 
 NO_ANSWER = "I couldn't produce a response — please try rephrasing."
 
@@ -32,15 +40,27 @@ def footer(result: AgentExecuteResult) -> str:
     return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
 
 
+def verdict(result: AgentExecuteResult) -> str:
+    """The final completeness verdict, worded and marked as the live path words it; "" if unjudged.
+
+    Shown for the same reason it is shown live: the owner cannot re-derive whether the answer was
+    checked, so an answer that arrives without its verdict is one they have to audit themselves.
+    """
+    if not result.judge_verdicts:
+        return ""
+    final = result.judge_verdicts[-1]
+    return "\n\n**⚖️ ✅ готово**" if final.finished else f"\n\n**⚖️ 🔄 {final.feedback}**"
+
+
 def compose_answer(result: AgentExecuteResult) -> str:
-    """The user-facing reply text for the non-streamed path (scheduling): answer + cost footer, or fallback.
+    """The reply text for the non-streamed paths (a fired task, a curator report): answer + verdict + footer.
 
     The interactive chat path renders the chronological stream itself (`TelegramProgress.finish`); this
-    flat form is for callers without a live message (e.g. the scheduling runner).
+    flat form is for callers without a live message.
     """
     if not result.response:
         return NO_ANSWER
-    return result.response + footer(result)
+    return result.response + verdict(result) + footer(result)
 
 
 # Telegram's per-message limit, counted in UTF-16 code units.

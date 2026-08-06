@@ -1,4 +1,6 @@
-from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
+from baski.agents import AgentExecuteResult, Verdict
+
+from app.chat.format import compose_answer, split_message, strip_markdown_v2, to_markdown_v2
 
 
 def test_empty_passthrough():
@@ -53,3 +55,41 @@ def test_strip_roundtrips_to_plain():
 
 def test_strip_keeps_snake_case():
     assert strip_markdown_v2("my_variable_name") == "my_variable_name"
+
+
+# ── compose_answer: what a reply carries when there is no live message to stream into ──
+
+
+def _result(*, finished: bool, feedback: str = "") -> AgentExecuteResult:
+    return AgentExecuteResult(
+        trace_id="t",
+        response="Готово.",
+        total_input_tokens=100,
+        total_output_tokens=10,
+        turn_count=1,
+        tool_call_count=0,
+        total_cost=0.1234,
+        context_tokens=8000,
+        judge_verdicts=[Verdict(finished=finished, missing=[], feedback=feedback)],
+    )
+
+
+def test_a_composed_answer_carries_the_verdict_and_the_cost():
+    """The live path shows both beside the answer; a scheduled reply or a curator report reaches the
+    owner with no stream behind it, and without these they cannot tell a checked answer from an
+    unchecked one."""
+    text = compose_answer(_result(finished=True))
+    assert "⚖️ ✅ готово" in text
+    assert "$0.1234" in text
+
+
+def test_an_unfinished_verdict_carries_what_the_judge_asked_for():
+    text = compose_answer(_result(finished=False, feedback="Назови источники."))
+    assert "⚖️ 🔄 Назови источники." in text
+
+
+def test_an_ungraded_run_gets_no_verdict_line():
+    """The judge fails open, so a Vertex outage leaves no verdict — inventing a ✅ there would tell
+    the owner the answer was checked when nothing checked it."""
+    result = _result(finished=True).model_copy(update={"judge_verdicts": []})
+    assert "⚖️" not in compose_answer(result)

@@ -20,10 +20,11 @@ one write path per store, not a parallel curator-only one that could drift from 
 
 import logging
 import secrets
+from collections.abc import Callable
 from typing import NamedTuple
 
 from aiogram.exceptions import TelegramAPIError
-from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, ToolSet
+from baski.agents import Agent, AgentConfig, AgentExecuteResult, GeminiJudge, InMemoryMessageHistory, ToolSet
 from baski.env import get_env
 from baski.primitives import datetime
 from baski.server.logger import log_context
@@ -41,17 +42,30 @@ logger = logging.getLogger(__name__)
 _JUDGE_PROJECT = str(get_env("GOOGLE_CLOUD_PROJECT"))  # read at import — fail-fast if the secret is missing
 
 CURATOR_MODEL = "claude-opus-5"  # runs once a night on high-stakes edits; a cheap miss here is expensive
-CURATOR_TOOLS = ["memory", "lists", "core_memory", "subagents"]  # its whole surface — no web, no ask_user
+# Its whole surface — no web, no ask_user. `judge_rules` and `subagents` are here and deliberately not
+# in MAIN_TOOLS: both decide how the assistant behaves for every later reply, so only the attributed,
+# reported nightly pass writes them.
+CURATOR_TOOLS = ["memory", "lists", "core_memory", "judge_rules", "subagents"]
 _CONTEXT_TOKENS = 120_000  # a day of transcript plus the stores it reads back
 _MAX_TURNS = 40
 _WINDOW = datetime.timedelta(days=1)
 
 
+# How a finished review becomes the message the owner reads. Taken as a dependency, not imported:
+# `app.chat` drives this pass from `/curate`, so importing the chat layer back would cycle.
+ReportFormatter = Callable[[AgentExecuteResult], str]
+
+
 class ReviewOutcome(NamedTuple):
-    """What one review produced: the owner-facing report and what the pass cost."""
+    """What one review produced: the agent's report, and the run behind it (None if it died mid-pass)."""
 
     report: str
-    cost: float
+    result: AgentExecuteResult | None
+
+    @property
+    def cost(self) -> float:
+        """What the pass cost the owner; zero when the review died before the agent returned."""
+        return self.result.total_cost if self.result else 0.0
 
 
 # Reported when the review dies mid-pass. The tools commit their edits as they run, so a failure can
@@ -65,10 +79,11 @@ _CRASH_REPORT = "⚠️ Проход упал на середине. Сколь�
 class Curator:
     """Runs one maintenance pass over one conversation. Lifecycle: long-lived, one per bot."""
 
-    def __init__(self, deps: CoreDeps, *, sender: MessageSender) -> None:
-        """Hold the shared clients and the channel the report goes out on."""
+    def __init__(self, deps: CoreDeps, *, sender: MessageSender, format_report: ReportFormatter) -> None:
+        """Hold the shared clients, the channel the report goes out on, and how the report is rendered."""
         self._deps = deps
         self._sender = sender
+        self._format_report = format_report
         self._runs = CuratorRunStore(deps.database)
         self._evidence = EvidenceCollector(deps.database)
         self._classifier = MessageClassifier(deps.anthropic)
@@ -92,7 +107,7 @@ class Curator:
 
             classification = await self._classifier.classify(evidence)
             # Stands until the review returns; settling in `finally` reports whichever survived.
-            outcome = ReviewOutcome(report=_CRASH_REPORT.format(run_id=run_id), cost=0.0)
+            outcome = ReviewOutcome(report=_CRASH_REPORT.format(run_id=run_id), result=None)
             try:
                 outcome = await self._review(
                     conversation_id=conversation_id, run_id=run_id, evidence=evidence, classification=classification
@@ -124,7 +139,7 @@ class Curator:
                 cost=outcome.cost,
             )
         )
-        await self._send_report(conversation_id=conversation_id, run=run)
+        await self._send_report(conversation_id=conversation_id, run=run, outcome=outcome)
         return run
 
     async def _review(
@@ -146,7 +161,7 @@ class Curator:
             result = await agent.execute()
         if result.response is None:
             raise RuntimeError(f"curator produced no report (trace {result.trace_id})")
-        return ReviewOutcome(report=result.response, cost=result.total_cost)
+        return ReviewOutcome(report=result.response, result=result)
 
     def _agent_config(self, conversation_id: int) -> AgentConfig:
         """The curator's own agent: its prompt, its four stores, a fresh history, its own judge.
@@ -191,15 +206,18 @@ class Curator:
             )
         )
 
-    async def _send_report(self, *, conversation_id: int, run: CuratorRun) -> None:
-        """Message the owner what the pass did.
+    async def _send_report(self, *, conversation_id: int, run: CuratorRun, outcome: ReviewOutcome) -> None:
+        """Message the owner what the pass did — the report as a reply is rendered: verdict and cost included.
+
+        A crashed pass has no result to render, so it sends the bare crash notice.
 
         Degrades on a transport failure only: the edits are durable and in the run record, so a
         Telegram outage must not undo a good pass.
         """
         header = f"🌙 Ночная уборка · изменений: {run.changes} · разобрано сообщений: {run.owner_messages}"
+        body = self._format_report(outcome.result) if outcome.result else outcome.report
         try:
-            await self._sender.send(chat_id=conversation_id, text=f"{header}\n\n{run.report}")
+            await self._sender.send(chat_id=conversation_id, text=f"{header}\n\n{body}")
         except TelegramAPIError:
             logger.warning("Curator report not delivered; changes stand and are in the run record", exc_info=True)
 

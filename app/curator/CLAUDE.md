@@ -20,20 +20,28 @@ memories, lists, sub-agents. Design, research grounding, and verified behaviour:
   list) + `CURATOR_JUDGE_PROMPT` + `REVIEW_BRIEF`. **This file is the feature**; the rest is
   plumbing that delivers evidence and records what changed.
 - `curator.py` — `Curator.curate()`: collect → classify → run the agent inside
-  `acting_as(CURATOR, run_id=…)` → count the revisions → record the run → message the owner.
+  `acting_as(CURATOR, run_id=…)` → count the revisions → record the run → message the owner. The
+  report is rendered by an injected `format_report` (`chat.format.compose_answer`, supplied in
+  `backend.py`) so it ends with the judge's verdict and the cost like any other reply; a domain
+  module importing the chat layer would cycle, since `app.chat` drives `/curate`.
   `Curator.ensure_indexes` covers `curator_runs` only: `revisions` is written by every actor, so its
   index is created at startup in `backend.py`.
 - `store.py` — `CuratorRun` + `CuratorRunStore` (`curator_runs`): why the night's work happened and
   what it told the owner. An idle pass is recorded too — "ran and found nothing" must not look like
   "never ran".
 - `router.py` — `POST /curate`. Empty body (what Cloud Scheduler sends) = every active conversation;
-  `{"conversation_id": N}` = one chat.
+  `{"conversation_id": N}` = one chat. The owner's on-demand entry is the `/curate` command
+  (`app/chat/curate.py`), which drives the same `Curator` object over one chat.
 
 ## Design facts
 
 - **Same tools as the live assistant**, built from the shared registry (`CURATOR_TOOLS`): one write
   path per store, not a parallel curator-only one that could drift. No web tools, no `ask_user` —
-  the owner is asleep.
+  the owner is asleep. `judge_rules` and `subagents` are curator-only (off `MAIN_TOOLS`).
+- **It edits the assistant's judge, not its own.** `update_judge_rules` appends to the rubric the
+  assistant's replies are graded by — the lever for a rule the answering model keeps reading and
+  ignoring, where another wording of the same core-memory line changes nothing. Its OWN rubric
+  (`CURATOR_JUDGE_PROMPT`) stays in code: an agent that can relax its own grader has no grader.
 - **Its own judge**, never the assistant's. The completeness rubric grades how fully an answer served
   a request and would push a maintenance pass toward more edits on thinner evidence.
 - **Opus, not a cheap model.** It runs once a night on the records that shape every future reply; a

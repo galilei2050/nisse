@@ -50,10 +50,11 @@ app/
                     and the saved.py viewer commands — both BEFORE the catch-all, which would
                     otherwise swallow a command into an agent turn (aiogram tries handlers in order).
     saved.py        READ-ONLY VIEWER over what the agent saved: `/lists` · `/memory` · `/core` ·
-                    `/schedules` · `/help`. Owns the command names (`SavedCommand`), the menu it
-                    publishes itself on router startup (`set_my_commands`, retried then degraded to a
-                    warning — a cosmetic menu must never abort boot), and the handlers — so the
-                    published menu and the handled commands can't drift. Reads the four stores
+                    `/schedules` · `/help`. Also holds the bot's whole command menu — every name
+                    (`ChatCommand`) and description (`BOT_COMMANDS`), `/curate` included even though
+                    `curate.py` handles it — and publishes it on router startup (`set_my_commands`,
+                    retried then degraded to a warning — a cosmetic menu must never abort boot). Names
+                    in one place, handlers with their behaviour, so the two can't drift. Reads the four stores
                     directly: no model call, no tokens, verbatim content (the agent's own summary is
                     what the owner couldn't audit). Per Telegram's guidance: one specific command per
                     store rather than `/show <what>`, and drill-down EDITS the message in place
@@ -104,8 +105,14 @@ app/
                     exposes every message it sent (the live one plus each extra a split answer took),
                     which the router hands to `Assistant.link_messages` — a reaction can land on any
                     of them.
-    format.py       compose_answer/footer/NO_ANSWER (non-streamed reply, e.g. scheduling) + LLM markdown
-                    → Telegram MarkdownV2 via telegramify-markdown; size-split; plain fallback
+    format.py       compose_answer/verdict/footer/NO_ANSWER (non-streamed reply: a fired task, the curator's
+                    report) + LLM markdown → Telegram MarkdownV2 via telegramify-markdown; size-split; plain
+                    fallback. A composed answer ends the way a live one does — the final judge verdict, then
+                    the cost line — so a reply that arrived without a stream is still auditable
+    curate.py       `/curate` — runs the maintenance pass over this chat now (same `Curator` the nightly
+                    `POST /curate` drives). Owns its `BotCommand`, which `saved.py` publishes in the one
+                    menu. Acknowledges first: the pass blocks for minutes, inside the inbound Cloud Task's
+                    30-min deadline. Nothing serialises it against the nightly pass
     sender.py       MarkdownSender — the send path for a message composed OFF the reply path (the
                     curator's report, a fired task's answer): convert → size-split → send as
                     MarkdownV2, retrying a rejected chunk as plain text. Those two callers used a bare
@@ -125,7 +132,13 @@ app/
                     `MAIN_MODEL = claude-opus-5`; sub-agents pick their own in agents.yml)
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply (lock-serialized)
     history.py      MongoMessageHistory — transcript in Mongo `conversation_turns`, one doc per turn (soft-deleted when pruned); turns are `MongoTurn` (baski `Turn` + `created_at`); format_for_api strips thinking blocks from settled turns (Opus 4.5+ bills replayed thinking), marks the prompt-cache breakpoint on the last turn (baski `mark_cached`), and stamps each `[Turn N]` marker with the turn's absolute UTC send-time on the first turn and after a >1h gap (`_turn_marker`) so the model can judge recency — absolute (never relative) to stay byte-stable in the cached prefix, normalized via baski `as_utc`; the volatile `[Context: N% used]` footer rides after the breakpoint via `context_status()`; `truncate()` only RECORDS each call's size (via baski `effective_input_tokens`, incl. the cached prefix — raw `input_tokens` is shrunk by caching), and nothing drops a turn: **the transcript only grows, and what NARROWS is the view of it.** Past `_PAYLOAD_RETENTION` a turn is rendered as its words alone (`MongoTurn.said()` — no `tool_use`, `tool_result`, attachments or thinking; those were 45% of the live context when measured, against 16% for the conversation itself), and a turn whose whole content was tool machinery renders as nothing, marker included. Before that it goes whole (`MongoTurn.rendered()`), because a follow-up reaches into the output of the exchange it follows ("show me the second one you found") and 85% of the owner's messages arrive within the hour. That split is a VIEW: the turn and its Mongo document keep everything, so widening the window sends it all again, and nothing here can lose anything. **A turn leaves for good only when the agent deletes it** — `delete_turns` (its `prune_transcript`), soft-deleted on `flush()`; `deleted_at` and `message_ids` stay the only fields that ever change on a stored turn. `add_photo`/`add_document` append a user image/PDF message the model reads natively; its base64 block is persisted like any other, so the image survives a reload and is sent for as long as the window holds it. `link_messages` stamps the Telegram message ids the answer was delivered in onto the newest turn (called by the chat router AFTER `flush()` — it deliberately does not upsert, so it can't create a turn doc missing its audit fields); `TurnLookup` is the reverse read, message → turn, used by the reaction recorder
-    judge_prompt.py NISSE_JUDGE_PROMPT — the rubric handed to the judge as `instructions=`. Grades two
+    judge.py        CuratedJudge — the judge each conversation is graded by: `NISSE_JUDGE_PROMPT` (code)
+                    plus that chat's `judge_rules` document (Mongo, written by the curator). Re-read on
+                    every grade — the conversation's agent is built once and cached, so a build-time read
+                    would sit stale until restart — and the `GeminiJudge` behind it is rebuilt only when
+                    the text actually changes. Built per conversation in `conversations.py`, which is why
+                    `CoreDeps` no longer carries a process-wide judge
+    judge_prompt.py NISSE_JUDGE_PROMPT — the BASE rubric handed to the judge as `instructions=`. Grades two
                     axes: COMPLETENESS (did the reply deliver the ask) and HONESTY (flattery in place of
                     an assessment · a verdict on a one-sided account · a conclusion put in the owner's
                     mouth · a whole brief dumped into one `retrieval` call). Warmth/emoji and argued
@@ -157,9 +170,18 @@ app/
                     is still undecided (owner's call) — the curator reads the emoji plus the
                     conversation around it, and no polarity table is hardcoded.
 
-  prompts/          living system-prompt fragments the bot maintains, per conversation, by type
+  prompts/          living prompt fragments the bot maintains, per conversation, by type
     store.py        Prompt + PromptType(StrEnum) + PromptStore (Mongo `prompts`, one doc per (conversation_id, prompt_type), overwritten in place)
-    tools.py        update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity + current focus); injected into the system EVERY turn via the tool's async system_prompt(); edited like a list (add/remove whole lines in one call, mirrors list_edit + shared match_unique) so the agent touches only named lines and never rewrites the block wholesale, size-capped so it stays lean
+    tools.py        `_PromptLinesTool` — one line-wise editor (add/remove whole lines in one call, mirrors
+                    list_edit + shared match_unique, size-capped, current block injected via the async
+                    system_prompt()), and the two blocks that use it:
+                    · update_core_memory — the always-on CORE MEMORY block (behaviour rules + owner identity
+                      + current focus), injected into the assistant's system prompt EVERY turn
+                    · update_judge_rules — the lines appended to the completeness rubric (CURATOR-ONLY, off
+                      MAIN_TOOLS). Read by `assistant/judge.py`, not injected into any reply. The base rubric
+                      stays in code so a deploy still ships rubric changes and a bad added line is one line
+                      to drop; the cap is tighter (1500) because a sprawling rubric grades worse
+                    Neither is rewritten wholesale — that silently dropped rules
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
     store.py        ScheduledTask + ScheduleStore (scoped, for tools) + FireStore (runner, by id: claim/reschedule/mark_done)
@@ -227,10 +249,13 @@ app/
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
 `tools`, `shared`. The
-LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`), wired here via `CoreDeps.judge`
-→ `AgentConfig.judge` — not a local `app/judge/`. baski owns the MECHANISM (the Gemini call, the `Verdict`
-schema); nisse owns the POLICY — every construction site passes `instructions=NISSE_JUDGE_PROMPT`
-(`assistant/judge_prompt.py`), so grading rules are changed here, never by editing the library's default.
+LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
+owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
+passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.
+The main agent's judge is `assistant/judge.py`'s `CuratedJudge`, built per conversation in
+`conversations.py`: base rubric (`NISSE_JUDGE_PROMPT`) + that chat's curator-maintained `judge_rules`.
+Sub-agents each build a `GeminiJudge` on their config's own `judge_prompt`; the curator builds one on
+`CURATOR_JUDGE_PROMPT`.
 
 `Tool.system_prompt()` (baski) is **async and re-read every turn** (symmetric with `user_message()`);
 the agent reassembles its system prompt each turn, so a tool can inject live content — `prompts/`
@@ -299,7 +324,8 @@ Both: runtime-editable capability lives in **Mongo, never in code**. Detail in `
 ## Dependency wiring — a process-wide tool registry (`app/tools/`)
 
 `CoreDeps` (`shared/deps.py`) holds the clients + services built once in `backend.py` (http,
-anthropic, database, playwright, bucket, scheduler, schedule_endpoint, judge, `bot`, `questions`)
+anthropic, database, playwright, bucket, scheduler, schedule_endpoint, `bot`, `questions`; NOT the
+judge — half its rubric is per-conversation, so it is built per conversation)
 **plus the tool `registry`** — a `ToolRegistry` (name→factory) built at startup by
 `build_tool_registry()`. `bot` is the aiogram client for the rare tool that messages the owner
 directly (`ask_user`) — required, since the probe fakes one rather than going without. `questions` is
@@ -467,10 +493,16 @@ and scored to catch regressions). Judge input = what `TraceCollector` records.
 
 ## Self-maintenance (nightly curator) — SHIPPED
 
-One background agent, nightly only (Cloud Scheduler → `/curate` at 04:00 PT); no per-turn reflection.
-It reviews the day's exchanges plus the owner's reactions, labels what each owner message was doing,
-and maintains **core memory**, **memories**, **lists**, and **sub-agent configs** — through the same
-tools the live assistant uses. Learned-skill specs are still unbuilt (they wait on `skills/`).
+One background agent, nightly (Cloud Scheduler → `/curate` at 04:00 PT) or on demand (the `/curate`
+command); no per-turn reflection. It reviews the day's exchanges plus the owner's reactions, labels
+what each owner message was doing, and maintains **core memory**, **memories**, **lists**, the
+**judge's added rules**, and **sub-agent configs** — through the same tools the live assistant uses.
+The last two are its alone (off `MAIN_TOOLS`). Learned-skill specs are still unbuilt (wait on `skills/`).
+
+The five stores are three different levers and the curator is told which is which: core memory
+INSTRUCTS the assistant, judge rules REFUSE its finished answer, a sub-agent's prompt governs the
+delegated work. A complaint the core block already covered is evidence the instruction lever is spent,
+not that it needs rewording — that one goes to the judge (`docs/curator.md`).
 
 Every content-losing mutation appends to `revisions` with the text it replaced, attributed to the
 run (`app/shared/revisions.py`) — runtime-editable state lives in **Mongo, never in code**. The pass

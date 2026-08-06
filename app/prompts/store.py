@@ -26,6 +26,7 @@ class PromptType(StrEnum):
     """Which prompt a row holds. Extensible — a new kind is a new member, no schema change."""
 
     CORE_MEMORY = "core_memory"  # always-on block: behaviour rules + owner identity + current focus
+    JUDGE_RULES = "judge_rules"  # lines appended to the completeness rubric the judge grades replies by
 
 
 class Prompt(NisseDbModel):

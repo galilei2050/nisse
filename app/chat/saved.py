@@ -46,28 +46,35 @@ _PAGE_SIZE = 8  # entries per index page — meant to stay on one phone screen
 _LABEL_LIMIT = 40  # button caption length that should stay one line on a phone
 
 
-class SavedCommand(StrEnum):
-    """The bot's command names.
+class ChatCommand(StrEnum):
+    """Every command the bot publishes, viewer or not.
 
     One source for both the published menu and the handler filters: a name spelled in only one of the
     two would be offered by Telegram's autocomplete, match no handler, and fall through to the
-    catch-all — i.e. a paid agent turn for `/lists`. (Distinct from `SavedKind`, which is a callback
-    payload: only the two stores that have an index view are valid there.)
+    catch-all — i.e. a paid agent turn for `/lists`. `CURATE` is handled in `chat/curate.py` (it runs
+    the maintenance pass rather than showing a store) and named here, because the menu is the bot's,
+    not this module's. (Distinct from `SavedKind`, which is a callback payload: only the two stores
+    that have an index view are valid there.)
     """
 
     LISTS = "lists"
     MEMORY = "memory"
     CORE = "core"
     SCHEDULES = "schedules"
+    CURATE = "curate"
     HELP = "help"
 
 
+# The whole published menu — `/` autocomplete, the menu button and `/help` all read this one list.
+# Each command's handler is registered by the module that owns the behaviour; only the names and the
+# descriptions live together, so the menu and the handlers cannot drift apart.
 BOT_COMMANDS = [
-    BotCommand(command=SavedCommand.LISTS, description="📋 Списки"),
-    BotCommand(command=SavedCommand.MEMORY, description="🧠 Заметки — что бот запомнил"),
-    BotCommand(command=SavedCommand.CORE, description="⭐ Постоянная память"),
-    BotCommand(command=SavedCommand.SCHEDULES, description="⏰ Напоминания и рутины"),
-    BotCommand(command=SavedCommand.HELP, description="❓ Что я умею"),
+    BotCommand(command=ChatCommand.LISTS, description="📋 Списки"),
+    BotCommand(command=ChatCommand.MEMORY, description="🧠 Заметки — что бот запомнил"),
+    BotCommand(command=ChatCommand.CORE, description="⭐ Постоянная память"),
+    BotCommand(command=ChatCommand.SCHEDULES, description="⏰ Напоминания и рутины"),
+    BotCommand(command=ChatCommand.CURATE, description="🌙 Разобрать день сейчас"),
+    BotCommand(command=ChatCommand.HELP, description="❓ Что я умею"),
 ]
 
 _HELP_INTRO = "Пиши текстом или голосом, шли фото и PDF — отвечу. Посмотреть, что я сохранил:"
@@ -242,11 +249,11 @@ class SavedViewer:
         Must run BEFORE the catch-all message handler is registered: aiogram tries handlers in
         registration order, so a later catch-all would swallow the commands into an agent turn.
         """
-        router.message.register(self.show_lists, Command(SavedCommand.LISTS))
-        router.message.register(self.show_memory, Command(SavedCommand.MEMORY))
-        router.message.register(self.show_core, Command(SavedCommand.CORE))
-        router.message.register(self.show_schedules, Command(SavedCommand.SCHEDULES))
-        router.message.register(self.show_help, Command(SavedCommand.HELP))
+        router.message.register(self.show_lists, Command(ChatCommand.LISTS))
+        router.message.register(self.show_memory, Command(ChatCommand.MEMORY))
+        router.message.register(self.show_core, Command(ChatCommand.CORE))
+        router.message.register(self.show_schedules, Command(ChatCommand.SCHEDULES))
+        router.message.register(self.show_help, Command(ChatCommand.HELP))
         router.callback_query.register(self.tap, SavedCallback.filter())
         router.startup.register(self._publish_commands)
 

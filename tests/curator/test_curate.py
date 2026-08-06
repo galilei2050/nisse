@@ -13,8 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from baski.agents import AgentExecuteResult, Verdict
 from baski.primitives import datetime
 
+from app.chat.format import compose_answer
 from app.curator.classify import Classification, MessageClassifier
 from app.curator.curator import Curator, ReviewOutcome
 
@@ -86,7 +88,23 @@ def _turn(turn_id: int, owner: str, answer: str) -> dict:
 
 def _curator(database: _FakeDatabase, sender: _FakeSender) -> Curator:
     deps = SimpleNamespace(database=database, anthropic=SimpleNamespace())
-    return Curator(deps, sender=sender)  # type: ignore[arg-type]  # a fake stands in for CoreDeps
+    # The real formatter the backend supplies — what the owner receives is the thing under test here.
+    return Curator(deps, sender=sender, format_report=compose_answer)  # type: ignore[arg-type]  # fake CoreDeps
+
+
+def _result(report: str, *, cost: float, finished: bool = True) -> AgentExecuteResult:
+    """A finished review, as baski's loop returns it: the report, what it cost, and the judge's verdict."""
+    return AgentExecuteResult(
+        trace_id="trace-1",
+        response=report,
+        total_input_tokens=1000,
+        total_output_tokens=100,
+        turn_count=3,
+        tool_call_count=2,
+        total_cost=cost,
+        context_tokens=12_400,
+        judge_verdicts=[Verdict(finished=finished, missing=[], feedback="" if finished else "Назови, что изменила.")],
+    )
 
 
 @pytest.fixture
@@ -140,7 +158,7 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
     curator = _curator(_reviewed_day, sender)
 
     async def _ok(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
-        return ReviewOutcome(report="Убрала дубль в списке покупок.", cost=0.5)
+        return ReviewOutcome(report="Убрала дубль в списке покупок.", result=_result("Убрала дубль", cost=0.5))
 
     monkeypatch.setattr(Curator, "_review", _ok)
 
@@ -150,4 +168,48 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
     assert run.cost == 0.5
     (message,) = sender.sent
     assert "Проход упал" not in message
-    assert "Убрала дубль в списке покупок." in message
+    assert "Убрала дубль" in message
+
+
+async def test_the_report_carries_the_verdict_and_the_cost_like_any_other_reply(
+    _reviewed_day: _FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report the owner cannot price and cannot see was checked is one they have to audit by hand —
+    the same two things every interactive reply ends with."""
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
+
+    async def _ok(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
+        return ReviewOutcome(report="Поправила правило про валюту.", result=_result("Поправила правило", cost=0.6651))
+
+    monkeypatch.setattr(Curator, "_review", _ok)
+
+    await curator.curate(conversation_id=CONVERSATION)
+
+    (message,) = sender.sent
+    assert "⚖️" in message  # the judge graded the pass, and the owner is told so
+    assert "$0.6651" in message
+    assert "контекст 12.4k" in message
+
+
+async def test_a_crashed_pass_says_so_without_inventing_a_cost(
+    _reviewed_day: _FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass that died has no result to render — pricing or grading it would be reporting a run that
+    never finished."""
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
+        raise RuntimeError("judge unavailable")
+
+    monkeypatch.setattr(Curator, "_review", _boom)
+
+    with pytest.raises(RuntimeError, match="judge unavailable"):
+        await curator.curate(conversation_id=CONVERSATION)
+
+    (recorded,) = _reviewed_day["curator_runs"].inserted
+    assert recorded["cost"] == 0.0
+    (message,) = sender.sent
+    assert "⚖️" not in message
+    assert "$" not in message

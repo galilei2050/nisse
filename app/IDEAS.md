@@ -269,9 +269,10 @@ backlog. Not yet designed or decided; captured here so the ask isn't lost. Promo
   conversation around it, and the research says a 👍 alone is not evidence of quality anyway
   (`docs/curator.md`).
 - **React to message edits** — handle Telegram `edited_message` updates, not just fresh messages.
-- **Central command registry → auto-derived BotCommand menu** — `chat/saved.py` ships the viewer
-  commands and publishes its own menu from one `SavedCommand`/`BOT_COMMANDS` pair; the open half is a
-  registry every future command module registers into, instead of one list per module.
+- **Central command registry → auto-derived BotCommand menu** — `chat/saved.py` names every command
+  and publishes the menu from one `ChatCommand`/`BOT_COMMANDS` pair, while each module registers its
+  own handler (`/curate` in `chat/curate.py`); the open half is a registry a command module registers
+  its name AND handler into, so the menu is assembled rather than hand-listed.
 - **Knowledge-consolidation bot** — DONE: the nightly curator (`app/curator/`, `docs/curator.md`).
   It merges duplicates, corrects contradicted facts in place, drops stored junk, and promotes a
   repeated correction into a standing rule — reporting every change to the owner.
