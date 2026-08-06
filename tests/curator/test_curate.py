@@ -62,13 +62,13 @@ class _FakeDatabase(dict):
         return collection
 
 
-class _FakeBot:
-    """Collects what the owner would have received."""
+class _FakeSender:
+    """Collects what the owner would have received; rendering is `tests/chat/test_sender.py`."""
 
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send_message(self, *, chat_id: int, text: str) -> None:  # noqa: ARG002 — matches Bot.send_message
+    async def send(self, *, chat_id: int, text: str) -> None:  # noqa: ARG002 — matches MessageSender
         self.sent.append(text)
 
 
@@ -84,9 +84,9 @@ def _turn(turn_id: int, owner: str, answer: str) -> dict:
     }
 
 
-def _curator(database: _FakeDatabase, bot: _FakeBot) -> Curator:
+def _curator(database: _FakeDatabase, sender: _FakeSender) -> Curator:
     deps = SimpleNamespace(database=database, anthropic=SimpleNamespace())
-    return Curator(deps, bot=bot, split_message=lambda text: [text])  # type: ignore[arg-type]  # fakes stand in for CoreDeps/Bot
+    return Curator(deps, sender=sender)  # type: ignore[arg-type]  # a fake stands in for CoreDeps
 
 
 @pytest.fixture
@@ -112,8 +112,8 @@ async def test_a_crashed_pass_is_recorded_and_reported_before_the_error_escapes(
     """The edits are already committed when the review dies, so the owner must hear about it and the
     run must exist in the history — otherwise an overnight rewrite is indistinguishable from nothing
     having happened, and the error alone reaches only the logs."""
-    bot = _FakeBot()
-    curator = _curator(_reviewed_day, bot)
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
 
     async def _boom(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
         raise RuntimeError("judge unavailable")
@@ -126,7 +126,7 @@ async def test_a_crashed_pass_is_recorded_and_reported_before_the_error_escapes(
     (recorded,) = _reviewed_day["curator_runs"].inserted
     assert "Проход упал" in recorded["report"]
     assert recorded["run_id"] in recorded["report"]  # joins the owner's message to the trace in the logs
-    (message,) = bot.sent
+    (message,) = sender.sent
     assert "изменений: 0" in message  # the header carries the real count, so the body never claims one
     assert "Проход упал" in message
 
@@ -136,8 +136,8 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
 ) -> None:
     """The crash outcome is seeded before the review runs; if a success failed to overwrite it, every
     good night would tell the owner the pass had crashed."""
-    bot = _FakeBot()
-    curator = _curator(_reviewed_day, bot)
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
 
     async def _ok(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
         return ReviewOutcome(report="Убрала дубль в списке покупок.", cost=0.5)
@@ -148,6 +148,6 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
 
     assert run.report == "Убрала дубль в списке покупок."
     assert run.cost == 0.5
-    (message,) = bot.sent
+    (message,) = sender.sent
     assert "Проход упал" not in message
     assert "Убрала дубль в списке покупок." in message

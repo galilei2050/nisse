@@ -31,7 +31,7 @@ from pymongo import AsyncMongoClient
 
 from app.assistant import NISSE_JUDGE_PROMPT
 from app.chat.ask import PendingQuestions
-from app.chat.format import split_message
+from app.chat.sender import MarkdownSender
 from app.curator.classify import MessageClassifier
 from app.curator.curator import Curator
 from app.curator.evidence import EvidenceCollector
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 class _SilentBot:
     """Stands in for the Bot. The report is printed from the run record below, not from the send."""
 
-    async def send_message(self, *, chat_id: int, text: str) -> None:
+    async def send_message(self, *, chat_id: int, text: str, parse_mode: str | None) -> None:
         """Swallow the outbound message — off Telegram there is nobody to deliver it to."""
 
 
@@ -91,7 +91,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             bot=cast("Bot", bot),
             questions=PendingQuestions(),  # the curator has no ask_user; CoreDeps is one shape for every caller
         )
-        curator = Curator(deps, bot=cast("Bot", bot), split_message=split_message)
+        curator = Curator(deps, sender=MarkdownSender(cast("Bot", bot)))
         run = await curator.curate(conversation_id=conversation_id, window=window)
 
         changes = await RevisionLog(database, conversation_id=conversation_id).for_run(run.run_id)
