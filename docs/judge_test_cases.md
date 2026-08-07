@@ -11,12 +11,10 @@ their outputs** (`MongoMessageHistory.format_for_judge`) — plus the final answ
 Prompt: `NISSE_JUDGE_PROMPT` in `app/assistant/judge_prompt.py` — nisse's own rubric, handed to the
 library judge as `instructions=`; baski's built-in default is a fallback nisse doesn't use.
 
-**The transcript is the chat's OWN, and every case here assumes it.** baski's `MessageHistory` is a
-Protocol, so a history that does not write `format_for_judge` returns None and the judge reads the
-literal string `None` — grading each reply against an empty conversation while the harness below,
-which builds its transcript from the trace, still measures the rubric with one. The two disagree
-silently: every verdict in this catalog is what the rubric does WITH context, so read a production
-verdict against it only while the chat's own history implements that method.
+**Every case here assumes the judge sees the chat's own conversation** (`MongoMessageHistory.format_for_judge`)
+— the same shape the harness below rebuilds from a trace, down to argument order and the
+`[Completeness check]` turns both leave out. A rendering that drifts between the two makes every
+number in this catalog describe a rubric production is not running.
 
 ## The root miscalibration
 
