@@ -65,10 +65,10 @@ class ScheduleRunner:
                 await self._scheduling.enqueue_fire(public_id=public_id, fire_at=next_fire)
 
             try:
-                result = await self._assistant.reply(
+                reply = await self._assistant.reply(
                     conversation_id=task.conversation_id, text=f"{SCHEDULED_PREFIX} {task.instruction}"
                 )
-                await self._sender.send(chat_id=task.conversation_id, text=self._format_answer(result))
+                await self._sender.send(chat_id=task.conversation_id, text=self._format_answer(reply.result))
                 if task.kind is ScheduleKind.ONCE:
                     await self._tasks.mark_done(public_id=public_id)
             finally:

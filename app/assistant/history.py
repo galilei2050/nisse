@@ -233,6 +233,7 @@ class MongoMessageHistory(MessageHistory):
         self._next_turn_id = 0
         self._current_turn: Turn | None = None
         self._last_input_tokens = 0
+        self._incoming: list[str] = []  # what the owner said mid-reply, waiting for a turn (see `deliver`)
 
         # Durable write bookkeeping.
         self._writes: list[asyncio.Task[None]] = []  # in-flight fire-and-forget turn inserts
@@ -302,8 +303,46 @@ class MongoMessageHistory(MessageHistory):
             MessageParam(role="user", content=[DocumentBlockParam(type="document", source=source)])
         )
 
+    # --- What the owner says while the loop is already running ---
+
+    def deliver(self, text: str) -> None:
+        """Hold a message that arrived mid-reply; the loop picks it up on its next turn.
+
+        Appending it the moment it arrives would drop it INTO the turn the agent has open, between
+        its `tool_use` blocks and the results that must follow them — which the API rejects. So it
+        waits here for `format_for_api`: of the calls baski makes with no turn open, that is the one
+        that runs BEFORE the payload is assembled, so the message rides the very turn being built
+        instead of the one after it.
+        """
+        self._incoming.append(text)
+
+    @property
+    def has_incoming(self) -> bool:
+        """Whether a delivered message is still waiting for a turn to carry it to the model."""
+        return bool(self._incoming)
+
+    def commit_incoming(self) -> None:
+        """Move everything delivered mid-reply into the transcript as one ordinary user turn.
+
+        Called with no turn open — from `format_for_api` as the loop builds a turn, and from the top
+        of a reply for anything a failed run left behind. The assert is a tripwire: opening a turn
+        inside the agent's own would drop its assistant message and burn its id, in silence.
+        """
+        if self._current_turn is not None:  # impossible on today's call sites — tripwire
+            raise RuntimeError("commit_incoming ran inside an open turn")
+        if not self._incoming:
+            return
+        incoming, self._incoming = self._incoming, []
+        with self:
+            for text in incoming:
+                self.add_user_text(text)
+        logger.info("Owner messages joined the running reply", extra={"messages": len(incoming)})
+
     def format_for_api(self) -> list[MessageParam]:
         """Render the transcript with [Turn N] markers; cache breakpoint on the last turn.
+
+        Commits anything `deliver`ed first, so a message the owner sent while the agent was working
+        is part of the very turn being built rather than waiting for a whole new reply.
 
         Past `_PAYLOAD_RETENTION` a turn is sent as its words alone (`said`): the tool calls, their
         results and the attachments were consumed by the answer that used them, and they are most of
@@ -316,6 +355,7 @@ class MongoMessageHistory(MessageHistory):
         This is a view, not an edit. The turn and its Mongo document keep everything; widen the window
         and it is all sent again.
         """
+        self.commit_incoming()
         result: list[MessageParam] = []
         prev_at: datetime.datetime | None = None
         cutoff = datetime.now() - _PAYLOAD_RETENTION
@@ -411,16 +451,31 @@ class MongoMessageHistory(MessageHistory):
                 {"$set": {"deleted_at": now, "updated_at": now}},
             )
 
-    async def link_messages(self, message_ids: list[int]) -> None:
-        """Attach the Telegram messages that delivered the newest turn's answer to that turn.
+    @property
+    def last_turn_id(self) -> int:
+        """The id of the newest COMMITTED turn — read while the reply still holds the lock, to link against.
+
+        Not the turn counter: `__exit__` drops a turn that ended up with no messages but leaves the
+        counter advanced, and an id naming no document would make `link_messages` match nothing and
+        drop the ids in silence.
+        """
+        if not self._turns:  # a reply always commits at least its own answer turn — tripwire
+            raise RuntimeError("asked which turn to link against before any turn was committed")
+        return self._turns[-1].id
+
+    async def link_messages(self, *, turn_id: int, message_ids: list[int]) -> None:
+        """Attach the Telegram messages that delivered a turn's answer to that turn.
 
         The link is only knowable at send time, and it is what lets a later emoji reaction on one of
-        those messages be traced back to the turn it graded. Call it AFTER `flush()`: the turn insert
-        is fire-and-forget, and this update deliberately does not upsert — a document created here
-        would miss the insert's `$setOnInsert` audit fields.
+        those messages be traced back to the turn it graded. The turn is named by the caller rather
+        than taken as "the newest": this runs after the answer is sent, by when a reply that started
+        meanwhile can already have added turns of its own, and the ids would land on a turn that did
+        not produce them. Call it AFTER `flush()`: the turn insert is fire-and-forget, and this update
+        deliberately does not upsert — a document created here would miss the insert's `$setOnInsert`
+        audit fields.
         """
         await self._collection.update_one(
-            {"conversation_id": self._conversation_id, "turn_id": self._next_turn_id},
+            {"conversation_id": self._conversation_id, "turn_id": turn_id},
             {"$addToSet": {"message_ids": {"$each": message_ids}}},
         )
 

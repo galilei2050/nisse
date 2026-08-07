@@ -2,9 +2,10 @@
 
 import logging
 
-from baski.agents import AgentExecuteResult, Listener, noop
+from baski.agents import Listener, noop
 from baski.server.logger import log_context
 
+from app.assistant.conversation import Reply
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
 from app.prompts import PromptStore
@@ -75,29 +76,47 @@ class Assistant:
         await MemoryStore.ensure_indexes(self._deps.database)
         await PromptStore.ensure_indexes(self._deps.database)
 
-    async def run(
-        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
-    ) -> AgentExecuteResult:
-        """Drive the conversation's reused agent over the new message; return the raw result.
+    async def run(  # noqa: PLR0913 — one inbound message (chat, text, media) plus who watches it and may join
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
+    ) -> Reply:
+        """Drive the conversation's reused agent over the new message; return its `Reply`.
 
         Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
         the result into the user-facing string. `media` is a photo/PDF on the message (if any).
+        `joinable` opens this run to messages the owner sends while it works — see `Conversation.reply`;
+        off unless the caller is showing the owner this reply as it is written.
         """
         with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
             conversation = await self._conversations.get(conversation_id)
-            return await conversation.reply(text=text, media=media, on_event=on_event)
+            return await conversation.reply(text=text, joinable=joinable, media=media, on_event=on_event)
 
-    async def reply(
-        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
-    ) -> AgentExecuteResult:
-        """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
+    async def reply(  # noqa: PLR0913 — mirrors run(), which it is plus a no-answer diagnostic
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
+    ) -> Reply:
+        """Reply within the persistent conversation; the chat router's entry point.
 
-        Formatting (footer, judge note, fallback) is the Telegram layer's job — see
-        `chat/format.compose_answer`. `on_event` receives step events as the agent works (the chat
-        router passes a `TelegramProgress` listener for live progress).
+        Returns the `Reply` — the agent's raw result plus the turn its answer landed in, which the
+        router links its sent messages against. Formatting (footer, judge note, fallback) is the
+        Telegram layer's job — see `chat/format.compose_answer`. `on_event` receives step events as the
+        agent works (the chat router passes a `TelegramProgress` listener for live progress).
         """
-        result = await self.run(conversation_id=conversation_id, text=text, media=media, on_event=on_event)
+        reply = await self.run(
+            conversation_id=conversation_id, text=text, joinable=joinable, media=media, on_event=on_event
+        )
+        result = reply.result
         if not result.response:
             logger.warning(
                 "Agent produced no user-facing text; chat layer will send fallback",
@@ -109,18 +128,32 @@ class Assistant:
                     "outputTokens": result.total_output_tokens,
                 },
             )
-        return result
+        return reply
+
+    async def deliver(self, *, conversation_id: int, text: str) -> bool:
+        """Hand a message to that chat's reply already in flight; True once it is in.
+
+        False means nothing joinable is running — either no reply at all, or one the owner is not
+        watching (a scheduled task), so the caller starts a turn of its own.
+
+        What the owner types while the agent works belongs to the SAME request — it corrects, adds a
+        constraint, or answers something the agent was about to guess. A second reply for it instead
+        waits out the first on the chat's lock, then re-runs the whole loop on a second judge and
+        trace, answering the follow-up over a transcript that by then already holds the first answer.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        return conversation.deliver(text)
 
     async def flush(self, *, conversation_id: int) -> None:
         """Await the conversation's durable history writes — called after the answer is sent."""
         conversation = await self._conversations.get(conversation_id)
         await conversation.flush()
 
-    async def link_messages(self, *, conversation_id: int, message_ids: list[int]) -> None:
+    async def link_messages(self, *, conversation_id: int, turn_id: int, message_ids: list[int]) -> None:
         """Tie the Telegram messages that delivered the answer to the turn that produced it.
 
         Only knowable in the chat layer, only useful later: it is how a reaction on one of those
         messages resolves to a turn. Called after `flush()`, so the turn document already exists.
         """
         conversation = await self._conversations.get(conversation_id)
-        await conversation.link_messages(message_ids)
+        await conversation.link_messages(turn_id=turn_id, message_ids=message_ids)

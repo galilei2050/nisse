@@ -13,9 +13,10 @@ from typing import Any, cast
 import pytest
 from aiogram import Bot
 from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, User
-from baski.agents import AgentRefusalError
+from baski.agents import AgentExecuteResult, AgentRefusalError
 from baski.primitives import datetime
 
+from app.assistant import Reply
 from app.chat import ask
 from app.chat.ask import AskUserTool, PendingQuestions
 from app.chat.curate import CurateCommand
@@ -82,20 +83,32 @@ class _FakeBot:
 
 
 class _FakeAssistant:
-    """Refuses every turn — the cheapest reply path that still proves the turn was started."""
+    """Records what the router asked of it. Refuses by default — the cheapest path that proves a turn ran."""
 
-    def __init__(self) -> None:
-        self.replies = 0
+    def __init__(self, *, answer: Reply | None = None) -> None:
+        self.replies: list[dict[str, Any]] = []
+        self.delivered: list[dict[str, Any]] = []
+        self.linked: list[dict[str, Any]] = []
+        self.running = False  # no reply in flight, so a message starts a turn instead of joining one
+        self._answer = answer
 
-    async def reply(self, **kwargs: Any) -> None:
-        self.replies += 1
-        raise AgentRefusalError("not today")
+    async def reply(self, **kwargs: Any) -> Reply:
+        self.replies.append(kwargs)
+        if self._answer is None:
+            raise AgentRefusalError("not today")
+        return self._answer
+
+    async def deliver(self, **kwargs: Any) -> bool:
+        if not self.running:
+            return False
+        self.delivered.append(kwargs)
+        return True
 
     async def flush(self, **kwargs: Any) -> None:
         pass
 
     async def link_messages(self, **kwargs: Any) -> None:
-        pass
+        self.linked.append(kwargs)
 
 
 def _tool(bot: _FakeBot) -> AskUserTool:
@@ -209,7 +222,7 @@ async def test_a_typed_message_settles_the_question_instead_of_starting_a_turn()
 
     # Bounded: if the gate goes, the question is never settled and this waits out the real timeout.
     assert await asyncio.wait_for(task, timeout=1.0) == "The user answered: в 9 утра"
-    assert assistant.replies == 0  # the message WAS the answer, not a new request
+    assert assistant.replies == []  # the message WAS the answer, not a new request
 
 
 async def test_a_button_tap_reaches_the_parked_turn_through_the_router() -> None:
@@ -241,5 +254,45 @@ async def test_an_ordinary_message_still_starts_a_turn() -> None:
 
     await _router(assistant).propagate_event("message", _message("привет"), bot=cast("Bot", bot))
 
-    assert assistant.replies == 1
+    assert len(assistant.replies) == 1
     assert any("model declined" in text for text in bot.texts)  # the refusal reached the owner (MarkdownV2-escaped)
+    assert assistant.linked == []  # a run that raised produced no answer turn to hang message ids on
+
+
+async def test_a_message_sent_while_the_agent_works_joins_that_reply() -> None:
+    """It belongs to the request already running — it corrects it or adds to it. Starting a turn of
+    its own re-runs the whole loop on a second bill, and the owner is told so with a reaction, since
+    this message gets no reply and no progress message of its own."""
+    bot, assistant = _FakeBot(), _FakeAssistant()
+    assistant.running = True
+
+    message = _message("и в евро, не в долларах").as_(cast("Bot", bot))
+    await _router(assistant).propagate_event("message", message, bot=cast("Bot", bot))
+
+    assert assistant.replies == []
+    assert assistant.delivered == [{"conversation_id": CHAT_ID, "text": "и в евро, не в долларах"}]
+    assert "SetMessageReaction" in bot.methods
+
+
+async def test_the_router_opens_its_reply_to_mid_reply_messages_and_links_its_own_turn() -> None:
+    """Two things only the router can get wrong, both invisible in its output: a reply started with
+    `joinable=False` quietly turns the whole feature off, and message ids linked against any other
+    turn send a later reaction to the wrong exchange."""
+    bot = _FakeBot()
+    result = AgentExecuteResult(
+        trace_id="t",
+        response="ответ",
+        total_input_tokens=1,
+        total_output_tokens=1,
+        turn_count=1,
+        tool_call_count=0,
+        total_cost=0.01,
+        context_tokens=1,
+    )
+    assistant = _FakeAssistant(answer=Reply(result=result, turn_id=77))
+
+    await _router(assistant).propagate_event("message", _message("сколько стоит"), bot=cast("Bot", bot))
+
+    assert assistant.replies[0]["joinable"] is True
+    assert assistant.replies[0]["conversation_id"] == CHAT_ID
+    assert assistant.linked == [{"conversation_id": CHAT_ID, "turn_id": 77, "message_ids": [_FakeQuestion.message_id]}]

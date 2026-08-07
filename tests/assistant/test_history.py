@@ -68,7 +68,10 @@ class _FakeCollection:
             self.docs[key] = {**update.get("$setOnInsert", {}), **update["$set"]}
             self.inserted_ids.append(flt["turn_id"])
             return SimpleNamespace(modified_count=0)
-        doc.update(update["$set"])
+        for field, value in update.get("$addToSet", {}).items():
+            doc.setdefault(field, [])
+            doc[field] += [v for v in value["$each"] if v not in doc[field]]
+        doc.update(update.get("$set", {}))
         return SimpleNamespace(modified_count=1)
 
     async def update_many(self, flt: dict, update: dict) -> SimpleNamespace:
@@ -96,14 +99,19 @@ def _active_ids(collection: _FakeCollection) -> list[int]:
     return sorted(d["turn_id"] for d in collection.docs.values() if d["deleted_at"] is None)
 
 
+def _texts(messages: list[dict]) -> list[str]:
+    """Every text block in a rendered payload, in order — turn markers included."""
+    out: list[str] = []
+    for message in messages:
+        content = message["content"]
+        if isinstance(content, list):
+            out += [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    return out
+
+
 def _markers(hist: MongoMessageHistory) -> list[str]:
     """The `[Turn N …]` marker text rendered for each turn (one per turn, in order)."""
-    out: list[str] = []
-    for m in hist.format_for_api():
-        content = m["content"]
-        if isinstance(content, list):
-            out += [b["text"] for b in content if isinstance(b, dict) and str(b.get("text", "")).startswith("[Turn ")]
-    return out
+    return [text for text in _texts(hist.format_for_api()) if text.startswith("[Turn ")]
 
 
 def _seed_turn(col: _FakeCollection, turn_id: int, created_at: object, conversation_id: int = 1) -> None:
@@ -411,3 +419,73 @@ async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
     cold = _history(col)
     await cold.load()
     assert [t.id for t in cold.turns] == [1, 3]
+
+
+async def test_a_delivered_message_reaches_the_model_on_the_very_next_turn() -> None:
+    """What the owner types mid-reply must be in the payload the running loop builds next, not wait
+    for a whole new reply — that is the point of handing it to the history instead of starting one."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "сколько стоит")
+    _add_tool_turn(hist)  # the agent is mid-work: a tool round with its results already in
+
+    hist.deliver("в евро, не в долларах")
+
+    assert hist.has_incoming
+    assert "в евро, не в долларах" in _texts(hist.format_for_api())
+    assert not hist.has_incoming  # taken, so the turn after this one does not repeat it
+
+
+async def test_a_delivered_message_lands_as_its_own_turn_after_the_tool_results() -> None:
+    """Appending it into the turn the agent has open would put user text between its `tool_use`
+    blocks and the results that must follow them — a payload the API rejects outright."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "сколько стоит")
+    with hist:  # delivered while the agent's own turn is open — its tools are still running
+        hist.add_assistant([{"type": "tool_use", "id": "t1", "name": "x", "input": {}}])
+        hist.deliver("в евро")
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": "t1", "content": "payload"}])
+
+    payload = hist.format_for_api()
+    await hist.flush()
+
+    assert payload[-1]["role"] == "user"
+    assert [t.id for t in hist.turns] == [1, 2, 3]
+    assert col.docs[(1, 3)]["messages"] == [{"role": "user", "content": [{"type": "text", "text": "в евро"}]}]
+
+
+async def test_last_turn_id_names_a_committed_turn_not_the_counter() -> None:
+    """`__enter__` advances the turn counter even for a turn that ends empty and is dropped by
+    `__exit__`. An id naming no document makes `link_messages` — deliberately not an upsert — match
+    nothing and lose the ids in silence."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "вопрос")
+    _add_answer(hist, "ответ")
+    with hist:  # opened, nothing added: the counter moves, the transcript does not
+        pass
+
+    assert hist.last_turn_id == 2
+
+
+async def test_link_messages_stamps_the_turn_it_is_given_not_the_newest() -> None:
+    """The ids are linked after the answer is sent, by when another reply can already have added
+    turns. Taking "the newest" then hangs one answer's messages on a turn that never produced them,
+    and a reaction on that answer resolves to the wrong exchange."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "вопрос")
+    _add_answer(hist, "ответ")
+    answered = hist.last_turn_id
+    _add_user(hist, "следующий вопрос")  # the reply that started while the answer was still being sent
+    await hist.flush()
+
+    await hist.link_messages(turn_id=answered, message_ids=[1771])
+
+    assert col.docs[(1, 2)]["message_ids"] == [1771]
+    assert "message_ids" not in col.docs[(1, 3)]
