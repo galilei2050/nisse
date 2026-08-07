@@ -209,11 +209,11 @@ app/
                     Neither is rewritten wholesale — that silently dropped rules
 
   scheduling/       self-invocation: one-off reminders + recurring routines (webhook mode only)
-    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + FireStore (runner, by id: claim/reschedule/mark_done/due). `ScheduledTask.is_overdue` is what both readers use to stop calling a stranded task armed
-    tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list, an overdue one as `MISSED`, never `next <past date>`); agent gives UTC, asks owner's TZ
+    store.py        ScheduledTask + ScheduleStore (scoped, for tools) + FireStore (runner, by id: claim/reschedule/mark_done)
+    tools.py        remind · schedule_routine · cancel_schedule (injects active-schedule list); agent gives UTC, asks owner's TZ
     service.py      SchedulingService.enqueue_fire (reuses baski CloudTasksScheduler) + LoggingScheduler stand-in
-    runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send. **`sweep()` is the net under the queue**: a task is armed by ONE at-most-once Cloud Tasks message, and the next occurrence is only enqueued inside a successful fire, so a dispatch that never lands strands the row at a past `fire_at` forever — the owner's morning routine sat there 34 days. The sweep re-reads `FireStore.due` on Cloud Scheduler's clock, which the queue cannot lose: a stranded ROUTINE is moved to its next occurrence and NOT replayed (34 missed mornings must not arrive at midnight), a stranded ONE-SHOT is delivered however late, tagged with the moment it should have come. One attempt per one-shot, then it closes whatever happened: a failed fire releases its claim to PENDING, so an unclosed one returns to every later sweep, and the usual cause — a chat that no longer exists — bills a full agent run per retry. Batch capped at 10; the service holds one instance
-    router.py       POST /schedule/fire — Cloud Tasks worker; POST /schedule/sweep — Cloud Scheduler, every 15 min (both mounted via add_webhook_routes). Work runs inline: Cloud Run schedules CPU per request, so a background task can be frozen the moment the response returns
+    runner.py       ScheduleRunner.fire — CAS-claim → re-arm if recurring → Assistant.reply → send
+    router.py       POST /schedule/fire — Cloud Tasks worker (mounted via add_webhook_routes)
 
   search/           SerpApi search tools — 15 leaf tools over baski's SerpApiClient
     serp_tool.py    SerpTool base (params→request→render) + shared format_hits (token-lean Markdown)
