@@ -65,7 +65,7 @@ async def test_the_command_runs_the_pass_over_this_chat_and_never_reaches_the_ag
     )
 
     assert curator.curated == [CHAT_ID]
-    assert assistant.replies == 0  # the command was handled, not billed as a turn
+    assert assistant.replies == []  # the command was handled, not billed as a turn
 
 
 async def test_the_owner_is_told_it_started_before_the_pass_blocks_for_minutes() -> None:

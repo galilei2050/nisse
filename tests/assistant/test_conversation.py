@@ -23,22 +23,22 @@ _TURNS_PER_RUN = 2
 _COST_PER_RUN = 1.0
 
 
-def _result() -> AgentExecuteResult:
+def _result(response: str, cost: float) -> AgentExecuteResult:
     return AgentExecuteResult(
         trace_id="t",
-        response="готово",
+        response=response,
         total_input_tokens=10,
         total_output_tokens=5,
         turn_count=_TURNS_PER_RUN,
         tool_call_count=1,
-        total_cost=_COST_PER_RUN,
+        total_cost=cost,
         context_tokens=10,
         judge_verdicts=[Verdict(finished=True, missing=[], feedback="ok")],
     )
 
 
 class _FakeAgent:
-    """Builds a payload off the real history for each turn, like baski's loop, then answers."""
+    """Drives the history the way baski's loop does: a payload per turn, the answer committed as a turn."""
 
     def __init__(self, history: MongoMessageHistory) -> None:
         self._history = history
@@ -53,9 +53,11 @@ class _FakeAgent:
             if self.before_turn is not None:
                 await self.before_turn()
             self.payloads.append(self._history.format_for_api())
+        with self._history:  # baski commits the assistant's message inside the turn it just ran
+            self._history.add_assistant([{"type": "text", "text": f"ответ {self.runs}"}])
         if self.after_run is not None:
             await self.after_run()
-        return _result()
+        return _result(response=f"ответ {self.runs}", cost=_COST_PER_RUN * self.runs)
 
 
 def _conversation() -> tuple[Conversation, _FakeAgent, MongoMessageHistory]:
@@ -105,8 +107,8 @@ async def test_a_message_that_arrives_after_the_last_turn_still_gets_answered() 
 
     assert agent.runs == 2
     assert "и добавь налог" in _texts(cast("Any", agent.payloads[2]))  # first turn of the second run
-    assert reply.result.total_cost == 2.0  # both passes, under one answer the owner saw grow
-    assert len(reply.result.judge_verdicts) == 2
+    assert reply.result.response == "ответ 2"  # the pass that saw the late message is what the owner reads
+    assert reply.result.total_cost == 3.0  # 1.0 + 2.0 — both passes, under one answer the owner saw grow
 
 
 async def test_a_scheduled_run_does_not_take_the_owner_s_messages() -> None:
@@ -137,11 +139,12 @@ async def test_a_message_is_not_delivered_when_no_reply_is_running() -> None:
     assert agent.runs == 0
 
 
-async def test_the_answered_turn_is_the_one_the_reply_reports() -> None:
-    """The router links the sent Telegram messages against this id; taking the newest turn instead
-    stamps them on whatever a later reply has since added."""
-    conversation, _, history = _conversation()
+async def test_the_reply_reports_the_turn_its_answer_landed_in() -> None:
+    """The router links the sent Telegram messages against this id. The owner's question is turn 1 and
+    the answer turn 2 — reporting the question's id, or a counter that ran ahead of both, sends a
+    later reaction to the wrong exchange or to no turn at all."""
+    conversation, _, _ = _conversation()
 
     reply = await conversation.reply(joinable=True, text="вопрос")
 
-    assert reply.turn_id == history.last_turn_id
+    assert reply.turn_id == 2

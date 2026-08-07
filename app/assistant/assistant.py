@@ -131,7 +131,10 @@ class Assistant:
         return reply
 
     async def deliver(self, *, conversation_id: int, text: str) -> bool:
-        """Hand a message to that chat's reply already in flight; False if there is none.
+        """Hand a message to that chat's reply already in flight; True once it is in.
+
+        False means nothing joinable is running — either no reply at all, or one the owner is not
+        watching (a scheduled task), so the caller starts a turn of its own.
 
         What the owner types while the agent works belongs to the SAME request — it corrects, adds a
         constraint, or answers something the agent was about to guess. A second reply for it instead

@@ -444,15 +444,32 @@ async def test_a_delivered_message_lands_as_its_own_turn_after_the_tool_results(
     hist = _history(col)
     await hist.load()
     _add_user(hist, "сколько стоит")
-    _add_tool_turn(hist)
+    with hist:  # delivered while the agent's own turn is open — its tools are still running
+        hist.add_assistant([{"type": "tool_use", "id": "t1", "name": "x", "input": {}}])
+        hist.deliver("в евро")
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": "t1", "content": "payload"}])
 
-    hist.deliver("в евро")
     payload = hist.format_for_api()
     await hist.flush()
 
     assert payload[-1]["role"] == "user"
     assert [t.id for t in hist.turns] == [1, 2, 3]
     assert col.docs[(1, 3)]["messages"] == [{"role": "user", "content": [{"type": "text", "text": "в евро"}]}]
+
+
+async def test_last_turn_id_names_a_committed_turn_not_the_counter() -> None:
+    """`__enter__` advances the turn counter even for a turn that ends empty and is dropped by
+    `__exit__`. An id naming no document makes `link_messages` — deliberately not an upsert — match
+    nothing and lose the ids in silence."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "вопрос")
+    _add_answer(hist, "ответ")
+    with hist:  # opened, nothing added: the counter moves, the transcript does not
+        pass
+
+    assert hist.last_turn_id == 2
 
 
 async def test_link_messages_stamps_the_turn_it_is_given_not_the_newest() -> None:

@@ -21,23 +21,6 @@ class Reply(NamedTuple):
     turn_id: int
 
 
-def _continued(first: AgentExecuteResult, second: AgentExecuteResult) -> AgentExecuteResult:
-    """Two passes of the same reply as one result: the later answer, the spend and verdicts of both.
-
-    The owner saw a single growing message and is owed a single, true cost line under it.
-    """
-    return second.model_copy(
-        update={
-            "total_input_tokens": first.total_input_tokens + second.total_input_tokens,
-            "total_output_tokens": first.total_output_tokens + second.total_output_tokens,
-            "turn_count": first.turn_count + second.turn_count,
-            "tool_call_count": first.tool_call_count + second.tool_call_count,
-            "total_cost": first.total_cost + second.total_cost,
-            "judge_verdicts": [*first.judge_verdicts, *second.judge_verdicts],
-        }
-    )
-
-
 class Conversation:
     """One chat's long-lived agent (+ history, scratchpad) and the orchestration to run one reply.
 
@@ -68,13 +51,15 @@ class Conversation:
         nothing on screen, so a message folded into it would answer inside that task's message, under
         a bare 👀, with no reply of the owner's own in sight.
 
-        The loop runs again if a message was `deliver`ed too late for it — after its last turn was
+        The loop runs once more if a message was `deliver`ed too late for it — after its last turn was
         built, while it was writing the answer or being graded. Everything delivered before that is
         already in the transcript the loop is reading, so it is answered without a second pass.
         """
         async with self._lock:
             self._short_term.clear()
             self._agent.on_event = on_event
+            # Anything a failed run left undelivered goes in ahead of this message, in the order sent.
+            self._history.commit_incoming()
             with self._history:
                 if media is not None:
                     if media.media_type is MediaType.PDF:
@@ -86,8 +71,9 @@ class Conversation:
             self._running = joinable
             try:
                 result = await self._agent.execute()
-                while self._history.has_incoming:
-                    result = _continued(result, await self._agent.execute())
+                if self._history.has_incoming:  # arrived after the loop built its last turn
+                    spent, result = result.total_cost, await self._agent.execute()
+                    result.total_cost += spent  # one message on screen, one true cost line under it
             finally:
                 self._running = False
             return Reply(result=result, turn_id=self._history.last_turn_id)

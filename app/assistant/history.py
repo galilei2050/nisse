@@ -321,8 +321,15 @@ class MongoMessageHistory(MessageHistory):
         """Whether a delivered message is still waiting for a turn to carry it to the model."""
         return bool(self._incoming)
 
-    def _commit_incoming(self) -> None:
-        """Move everything delivered mid-reply into the transcript as one ordinary user turn."""
+    def commit_incoming(self) -> None:
+        """Move everything delivered mid-reply into the transcript as one ordinary user turn.
+
+        Called with no turn open — from `format_for_api` as the loop builds a turn, and from the top
+        of a reply for anything a failed run left behind. The assert is a tripwire: opening a turn
+        inside the agent's own would drop its assistant message and burn its id, in silence.
+        """
+        if self._current_turn is not None:  # impossible on today's call sites — tripwire
+            raise RuntimeError("commit_incoming ran inside an open turn")
         if not self._incoming:
             return
         incoming, self._incoming = self._incoming, []
@@ -348,7 +355,7 @@ class MongoMessageHistory(MessageHistory):
         This is a view, not an edit. The turn and its Mongo document keep everything; widen the window
         and it is all sent again.
         """
-        self._commit_incoming()
+        self.commit_incoming()
         result: list[MessageParam] = []
         prev_at: datetime.datetime | None = None
         cutoff = datetime.now() - _PAYLOAD_RETENTION
@@ -452,7 +459,9 @@ class MongoMessageHistory(MessageHistory):
         counter advanced, and an id naming no document would make `link_messages` match nothing and
         drop the ids in silence.
         """
-        return self._turns[-1].id if self._turns else 0
+        if not self._turns:  # a reply always commits at least its own answer turn — tripwire
+            raise RuntimeError("asked which turn to link against before any turn was committed")
+        return self._turns[-1].id
 
     async def link_messages(self, *, turn_id: int, message_ids: list[int]) -> None:
         """Attach the Telegram messages that delivered a turn's answer to that turn.

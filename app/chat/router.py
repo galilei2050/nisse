@@ -108,7 +108,10 @@ class ChatRouter:
         try:
             await message.react([ReactionTypeEmoji(emoji="👀")])
         except TelegramAPIError as exc:
-            logger.warning("Could not acknowledge a mid-reply message", extra={"error": str(exc)})
+            logger.warning(
+                "Could not acknowledge a mid-reply message",
+                extra={"error": str(exc), "conversationId": message.chat.id, "messageId": message.message_id},
+            )
 
     async def _run_turn(self, message: Message, bot: Bot, resolved: _Resolved) -> None:
         """Drive one agent turn behind a live progress message, rendering every failure the agent can raise."""
