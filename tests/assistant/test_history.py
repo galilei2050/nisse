@@ -9,12 +9,13 @@ Run cold start).
 
 from types import SimpleNamespace
 
-from anthropic.types import Usage
+import pytest
+from anthropic.types import ContentBlock, TextBlock, ThinkingBlock, ToolUseBlock, Usage
 from baski.primitives import datetime as dt
 
 from baski.agents.tools.delete_messages import DeleteMessagesTool
 
-from app.assistant.history import MongoMessageHistory
+from app.assistant.history import JUDGE_RETRY_PREFIX, MongoMessageHistory
 
 _BIG_USAGE = Usage(input_tokens=60_000, output_tokens=0)  # over 0.9 * 32_000 → what compact() reads as over budget
 
@@ -457,31 +458,118 @@ async def test_a_delivered_message_lands_as_its_own_turn_after_the_tool_results(
     assert col.docs[(1, 3)]["messages"] == [{"role": "user", "content": [{"type": "text", "text": "в евро"}]}]
 
 
-async def test_the_judge_reads_what_was_said_and_run_but_not_what_tools_returned() -> None:
-    """baski's history is a Protocol: a missing `format_for_judge` is not a construction error, it
-    returns None and reaches the judge as the string "None" — every answer graded against an empty
-    conversation. Tool output stays out on purpose: the judge grades completeness, not facts."""
+def _blocks(live: bool) -> list[ContentBlock]:
+    """The same turn in both shapes: SDK objects while the reply runs, dicts once Mongo has had it."""
+    args = {"to": "Лиссабон", "date": "2026-09-21"}
+    if not live:
+        return [
+            {"type": "thinking", "thinking": "private reasoning", "signature": "sig"},
+            {"type": "text", "text": "Смотрю цены."},
+            {"type": "tool_use", "id": "t1", "name": "google_flights", "input": args},
+        ]  # type: ignore[return-value]  # the JSON shape Mongo returns, not the SDK's models
+    return [
+        ThinkingBlock(type="thinking", thinking="private reasoning", signature="sig"),
+        TextBlock(type="text", text="Смотрю цены.", citations=None),
+        ToolUseBlock(type="tool_use", id="t1", name="google_flights", input=args),
+    ]
+
+
+@pytest.mark.parametrize("live", [False, True], ids=["stored-dicts", "live-sdk-blocks"])
+async def test_the_judge_reads_what_was_said_and_run_but_not_what_tools_returned(live: bool) -> None:
+    """Tool output stays out on purpose: the judge grades completeness, not facts. Thinking and the
+    attachment's bytes stay out too — but an attachment leaves a mark, because a caption-less photo
+    IS the ask and dropping it grades an answer against nothing.
+
+    Both block shapes are exercised: the transcript is rendered from the LIVE SDK objects baski hands
+    `add_assistant` during the reply — which is when grading happens — and from the plain dicts the
+    same turns come back as after Mongo.
+    """
     col = _FakeCollection()
     hist = _history(col)
     await hist.load()
     _add_user(hist, "сколько стоит билет")
     with hist:
-        hist.add_assistant(
-            [
-                {"type": "thinking", "thinking": "private reasoning", "signature": "sig"},
-                {"type": "text", "text": "Смотрю цены."},
-                {"type": "tool_use", "id": "t1", "name": "google_flights", "input": {"to": "Лиссабон"}},
-            ]
-        )
+        hist.add_photo(data="Ym9hcmRpbmc=", media_type="image/jpeg")
+    with hist:
+        hist.add_assistant(_blocks(live))
         hist.add_tool_results([{"type": "tool_result", "tool_use_id": "t1", "content": "€371, €394, €400"}])
     _add_answer(hist, "От €371.")
 
     assert hist.format_for_judge() == (
         "[user] сколько стоит билет\n"
+        "[user] <image>\n"
         "[assistant] Смотрю цены.\n"
-        '[tool] google_flights({"to": "Лиссабон"})\n'
+        '[tool] google_flights({"to": "Лиссабон", "date": "2026-09-21"})\n'
         "[assistant] От €371."
     )
+
+
+async def test_the_judge_is_not_handed_its_own_earlier_complaint_as_the_owner_s_words() -> None:
+    """baski feeds a failed verdict back as a USER turn, and it persists like any other. Read back as
+    something the owner said, it primes the next grade to redo an answer that already closed the gap
+    — measured in `docs/judge_test_cases.md` as 1/3 PASS with it against 3/3 without."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "сравни два отеля")
+    _add_answer(hist, "Первый дешевле.")
+    _add_user(hist, f"{JUDGE_RETRY_PREFIX} Your answer isn't finished. Не хватает второго отеля.")
+    _add_answer(hist, "Первый дешевле, второй ближе к центру.")
+
+    assert hist.format_for_judge() == (
+        "[user] сравни два отеля\n"
+        "[assistant] Первый дешевле.\n"
+        "[assistant] Первый дешевле, второй ближе к центру."
+    )
+
+
+async def test_a_long_tool_argument_is_cut_and_says_so() -> None:
+    """A sub-agent's brief is one long argument. Cut in silence it reads as the whole task, and the
+    judge grades delegated work against a request it only half saw."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    with hist:
+        hist.add_assistant([{"type": "tool_use", "id": "t1", "name": "researcher", "input": {"prompt": "и" * 400}}])
+
+    line = hist.format_for_judge()
+    assert line.startswith('[tool] researcher({"prompt": "иии')
+    assert line.endswith("…)")
+    assert len(line) == len("[tool] researcher(") + 200 + len("…)")
+
+
+async def test_a_message_stored_as_plain_text_still_reaches_the_judge() -> None:
+    """`StoredMessage.content` is `str | list[StoredBlock]` and `load()` feeds Mongo's documents in
+    without validating them. Skipping the string shape drops a whole message from the conversation —
+    the same blind grade as before, minus the "None" that made it findable. `said()` keeps it too."""
+    col = _FakeCollection()
+    col.docs[(1, 1)] = {
+        "conversation_id": 1,
+        "turn_id": 1,
+        "messages": [{"role": "user", "content": "забронируй столик"}],
+        "created_at": dt.datetime(2026, 6, 20, 9, 0),
+        "deleted_at": None,
+    }
+    hist = _history(col)
+    await hist.load()
+
+    assert hist.format_for_judge() == "[user] забронируй столик"
+
+
+async def test_an_empty_transcript_is_empty_and_not_a_stand_in_for_one() -> None:
+    """A sentinel where the conversation belongs is exactly how the judge came to read "None"."""
+    assert _history(_FakeCollection()).format_for_judge() == ""
+
+
+async def test_the_judge_still_sees_what_was_asked_a_day_ago() -> None:
+    """Unlike `format_for_api`, nothing here narrows with age: a judge that cannot see the question
+    cannot tell a finished answer from a partial one, however old the question is."""
+    col = _FakeCollection()
+    _seed_turn(col, 1, dt.datetime(2026, 6, 20, 9, 0))
+    hist = _history(col)
+    await hist.load()
+
+    assert hist.format_for_judge() == "[user] m1"
 
 
 async def test_last_turn_id_names_a_committed_turn_not_the_counter() -> None:

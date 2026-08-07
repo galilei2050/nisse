@@ -181,20 +181,30 @@ def _is_thinking_block(block: object) -> bool:
 
 
 def _judge_line(role: str, block: object) -> str | None:
-    """One line of the judge's transcript: what someone said, or which tool was called with what.
+    """One entry of the judge's transcript: what someone said, what they attached, or what was run.
 
-    None for everything else — thinking, tool results, attachments. Arguments are cut at
-    `_JUDGE_ARG_CHARS`: they are there to show WHAT was looked up, and a pasted document as an
-    argument would otherwise crowd out the conversation.
+    None for thinking and for tool results — the first is not conversation, the second is the fact
+    material the judge is deliberately kept away from.
     """
     kind = block_type(block)
     if kind == "text":
-        return f"[{role}] {block_field(block, 'text')}"
+        text = str(block_field(block, "text"))
+        # The judge's own feedback re-enters the loop as a user turn. Read back as the owner's words
+        # it primes the next grade to REDO an answer that already closed the gap it named.
+        return None if text.startswith(JUDGE_RETRY_PREFIX) else f"[{role}] {text}"
+    if kind in ("image", "document"):
+        # A caption-less photo or PDF IS the ask; dropped, the judge grades an answer to nothing.
+        return f"[{role}] <{kind}>"
     if kind != "tool_use":
         return None
     args = block_field(block, "input")
-    rendered = json.dumps(args, indent=None)[:_JUDGE_ARG_CHARS] if args else ""  # one line per call
-    return f"[tool] {block_field(block, 'name')}({rendered})"
+    # One line, keys in the order the model wrote them — the replay harness renders the same string,
+    # and a prod transcript shaped differently from the measured one makes its verdicts unreadable.
+    whole = json.dumps(args, indent=None, sort_keys=False) if args else ""
+    # A sub-agent's brief is one long argument, and cut silently it reads as the whole task — the
+    # judge would then grade delegated work against a request it only half saw.
+    cut = f"{whole[:_JUDGE_ARG_CHARS]}…" if len(whole) > _JUDGE_ARG_CHARS else whole
+    return f"[tool] {block_field(block, 'name')}({cut})"
 
 
 def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
@@ -398,18 +408,15 @@ class MongoMessageHistory(MessageHistory):
         and raw tool output both bloats the prompt and pulls it into fact-checking instead. Unlike
         `format_for_api` nothing narrows with age: this is text either way, and a judge that cannot
         see what the owner asked three turns ago cannot tell a finished answer from a partial one.
-
-        baski's `MessageHistory` is a Protocol, so a missing implementation is not a construction
-        error — it returns None, which reaches the judge as the string "None" and grades every answer
-        against an empty conversation.
         """
         lines: list[str] = []
         for turn in self._turns:
             for message in turn.messages:
-                content = message["content"]
-                if not isinstance(content, list):
+                role, content = message["role"], message["content"]
+                if isinstance(content, str):  # the shape `StoredMessage` allows and `said()` keeps
+                    lines.append(f"[{role}] {content}")
                     continue
-                lines += [line for block in content if (line := _judge_line(str(message["role"]), block))]
+                lines += [line for block in content if (line := _judge_line(role, block))]
         return "\n".join(lines)
 
     def context_status(self) -> MessageParam | None:
