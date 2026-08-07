@@ -604,3 +604,42 @@ async def test_link_messages_stamps_the_turn_it_is_given_not_the_newest() -> Non
 
     assert col.docs[(1, 2)]["message_ids"] == [1771]
     assert "message_ids" not in col.docs[(1, 3)]
+
+
+async def test_pruning_cannot_take_the_exchange_being_answered() -> None:
+    """The agent prunes mid-reply, and `_turns` is the one list both it and the judge read. Deleting
+    the running exchange made the model answer, forget it had, and deliver "the answer was fully
+    delivered" instead of the answer (prod 112991176, turns 373-375) — while the judge, equally
+    blind, passed it."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "старое")
+    _add_answer(hist, "старый ответ")
+    hist.protect_exchange()  # a new reply begins here — Conversation.reply calls this
+    _add_user(hist, "разбери это видео")
+    _add_answer(hist, "вот разбор")
+
+    removed = await hist.delete_turns([1, 2, 3, 4])
+
+    assert removed == 2  # only the two turns that predate the reply
+    assert [turn.id for turn in hist.turns] == [3, 4]
+    said = hist.format_for_judge()
+    assert "разбери это видео" in said  # the judge still sees what it is grading against
+    assert "вот разбор" in said
+
+
+async def test_pruning_still_takes_older_turns() -> None:
+    """The tool keeps its job: the model and the judge lose old context together, which is the point."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "старое")
+    _add_answer(hist, "старый ответ")
+    hist.protect_exchange()
+    _add_user(hist, "новое")
+
+    assert await hist.delete_turns([1, 2]) == 2
+    assert [turn.id for turn in hist.turns] == [3]
+    await hist.flush()
+    assert _active_ids(col) == [3]

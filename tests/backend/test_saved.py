@@ -208,26 +208,33 @@ def test_external_memory_shows_where_it_came_from() -> None:
     )
 
 
+def _armed_at() -> datetime.datetime:
+    """A moment still ahead of the clock the renderer reads — a fixed past date renders as missed."""
+    return datetime.now().replace(hour=7, minute=30, second=0, microsecond=0) + datetime.timedelta(days=30)
+
+
 def test_recurring_schedule_shows_period_and_utc() -> None:
+    fire_at = _armed_at()
     task = ScheduledTask(
         conversation_id=1,
         kind=ScheduleKind.RECURRING,
         instruction="Спроси про спорт",
-        fire_at=datetime.as_utc(datetime.datetime(2026, 8, 2, 7, 30)),
+        fire_at=fire_at,
         repeat_every_hours=24,
     )
-    assert _render_schedule(task) == "⏰ 02.08.2026 07:30 UTC · каждые 24 ч\nСпроси про спорт"
+    assert _render_schedule(task) == f"⏰ {fire_at:%d.%m.%Y} 07:30 UTC · каждые 24 ч\nСпроси про спорт"
 
 
 def test_one_off_reminder_shows_no_period() -> None:
     """A one-shot has no repeat_every_hours — rendering it as a period would print 'каждые None ч'."""
+    fire_at = _armed_at()
     task = ScheduledTask(
         conversation_id=1,
         kind=ScheduleKind.ONCE,
         instruction="Позвонить в банк",
-        fire_at=datetime.as_utc(datetime.datetime(2026, 8, 2, 7, 30)),
+        fire_at=fire_at,
     )
-    assert _render_schedule(task) == "⏰ 02.08.2026 07:30 UTC\nПозвонить в банк"
+    assert _render_schedule(task) == f"⏰ {fire_at:%d.%m.%Y} 07:30 UTC\nПозвонить в банк"
 
 
 def test_long_entry_is_cut_to_one_message_and_says_it_was_cut() -> None:

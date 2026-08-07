@@ -262,6 +262,7 @@ class MongoMessageHistory(MessageHistory):
         self._current_turn: Turn | None = None
         self._last_input_tokens = 0
         self._incoming: list[str] = []  # what the owner said mid-reply, waiting for a turn (see `deliver`)
+        self._protected_from: int | None = None  # first turn of the running exchange; None until a reply starts
 
         # Durable write bookkeeping.
         self._writes: list[asyncio.Task[None]] = []  # in-flight fire-and-forget turn inserts
@@ -438,13 +439,30 @@ class MongoMessageHistory(MessageHistory):
         """
         self._last_input_tokens = effective_input_tokens(usage)
 
+    def protect_exchange(self) -> None:
+        """Close the exchange starting now to `delete_turns` — call once the owner's message is in.
+
+        The agent prunes mid-reply, and `_turns` is the one list both it and the judge read: deleting
+        the running exchange made the model answer, forget it had, and deliver "the answer was fully
+        delivered" instead of the answer (conversation 112991176, turns 373-375). Older turns stay
+        prunable — losing those, the model and the judge lose them together, which is the point of
+        the tool.
+        """
+        self._protected_from = self._next_turn_id + 1  # `__enter__` increments before it stamps the id
+
     async def delete_turns(self, turn_ids: list[int]) -> int:
         """Remove whole turns by id — the agent's `prune_transcript`, and the only way a turn leaves.
+
+        Turns of the running exchange are refused (see `protect_exchange`); the count returned is
+        what actually went, so the agent is never told it pruned more than it did.
 
         `flush()` soft-deletes them in Mongo, so they stay readable there and never come back on
         `load()`.
         """
-        ids = set(turn_ids)
+        floor = self._protected_from
+        ids = {turn_id for turn_id in turn_ids if floor is None or turn_id < floor}
+        if refused := sorted(set(turn_ids) - ids):
+            logger.warning("Refused to prune the running exchange", extra={"turnIds": refused})
         before = len(self._turns)
         self._turns = [turn for turn in self._turns if turn.id not in ids]
         self._dropped.update(ids)
