@@ -180,6 +180,19 @@ class FireStore:
                 )
             raise
 
+    async def due(self, *, now: datetime.datetime, limit: int) -> list[ScheduledTask]:
+        """Occurrences still PENDING after their moment passed, oldest first — what the sweep repairs.
+
+        Capped: a long outage can strand many at once, and handling them all inside one request would
+        hold the single instance for minutes while the owner's own messages wait behind them.
+        """
+        cursor = (
+            self._collection.find({"status": ScheduleStatus.PENDING, "deleted_at": None, "fire_at": {"$lte": now}})
+            .sort("fire_at", 1)
+            .limit(limit)
+        )
+        return [ScheduledTask.model_validate(doc) async for doc in cursor]
+
     async def reschedule(self, *, public_id: str, fire_at: datetime.datetime) -> None:
         """Re-arm a recurring task for its next occurrence: RUNNING→PENDING with the new fire_at."""
         await self._collection.update_one(
