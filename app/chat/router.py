@@ -11,6 +11,8 @@ from aiogram.types import Audio, BufferedInputFile, Document, Message, PhotoSize
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.ask import PendingQuestions
+from app.chat.commands import register_menu
+from app.chat.curate import CurateCommand
 from app.chat.progress import TelegramProgress
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
@@ -64,15 +66,17 @@ class ChatRouter:
         self._speaker = speaker
         self._questions = questions
 
-    def build(self, *, saved: SavedViewer, reactions: ReactionRecorder) -> Router:
+    def build(self, *, saved: SavedViewer, curate: CurateCommand, reactions: ReactionRecorder) -> Router:
         """Assemble the aiogram router: every other handler first, then this class's catch-all.
 
-        Order is load-bearing for `saved` — aiogram tries handlers in registration order, so a
-        catch-all registered ahead of the commands would swallow `/lists` into a paid agent turn.
+        Order is load-bearing for the commands — aiogram tries handlers in registration order, so a
+        catch-all registered ahead of them would swallow `/lists` into a paid agent turn.
         """
         router = Router(name="chat")
+        register_menu(router)  # publishes every command below on startup — one menu, many owners
         self._questions.register(router)  # ask_user taps arrive as callback_query, not as messages
         saved.register(router)  # /lists /memory /core /schedules /help
+        curate.register(router)  # /curate — the maintenance pass, on demand
         reactions.register(router)  # message_reaction updates — a different observer, order irrelevant
         router.message.register(self.handle)
         return router

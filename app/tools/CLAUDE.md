@@ -23,8 +23,9 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
 
 - `search.register_tools` — every web tool, one explicit `register(...)` line each (no sweep list):
   the SerpApi leaves + `browse_website`.
-- `memory` / `lists` / `scheduling` / `prompts` — register `memory` / `lists` / `scheduling` /
-  `core_memory`.
+- `memory` / `lists` / `scheduling` — register `memory` / `lists` / `scheduling`.
+- `prompts.register_tools` — `core_memory` and `judge_rules` (the latter curator-only: it is refused
+  in a sub-agent's `tool_names`, see `app/subagents/tools.py`).
 - `subagents.register_tools` — the researcher-only `hypothesis_tree`.
 
 `wiring.build_tool_registry()` just calls these in turn; to add a tool, add its factory +
@@ -34,7 +35,7 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
 ## How it's used
 
 - Built once in `backend.py` (`build_tool_registry()`) and stored on `CoreDeps.tools`, so it rides
-  `deps` everywhere — like `judge`/`scheduler`. The probe builds its own the same way.
+  `deps` everywhere — like `scheduler`. The probe builds its own the same way.
 - **main Assistant**: `deps.tools.build(MAIN_TOOLS, deps, conversation_id)` (`Conversations._build`).
   `MAIN_TOOLS` lives in `app/assistant/conversations.py` (the Assistant owns its own spec).
 - **sub-agent**: `deps.tools.get(name)` per `config.tool_names` (`SubagentTool._resolve_tools`).

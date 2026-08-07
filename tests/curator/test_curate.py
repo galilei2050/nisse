@@ -13,10 +13,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from baski.agents import AgentExecuteResult, Verdict
 from baski.primitives import datetime
 
+from app.chat.format import compose_answer
 from app.curator.classify import Classification, MessageClassifier
-from app.curator.curator import Curator, ReviewOutcome
+from app.curator.curator import Curator
 
 CONVERSATION = 42
 AT = datetime.as_utc(datetime.datetime(2026, 8, 3, 9, 0))
@@ -86,7 +88,23 @@ def _turn(turn_id: int, owner: str, answer: str) -> dict:
 
 def _curator(database: _FakeDatabase, sender: _FakeSender) -> Curator:
     deps = SimpleNamespace(database=database, anthropic=SimpleNamespace())
-    return Curator(deps, sender=sender)  # type: ignore[arg-type]  # a fake stands in for CoreDeps
+    # The real formatter the backend supplies — what the owner receives is the thing under test here.
+    return Curator(deps, sender=sender, format_report=compose_answer)  # type: ignore[arg-type]  # fake CoreDeps
+
+
+def _result(report: str, *, cost: float) -> AgentExecuteResult:
+    """A finished review, as baski's loop returns it: the report, what it cost, and the judge's verdict."""
+    return AgentExecuteResult(
+        trace_id="trace-1",
+        response=report,
+        total_input_tokens=1000,
+        total_output_tokens=100,
+        turn_count=3,
+        tool_call_count=2,
+        total_cost=cost,
+        context_tokens=12_400,
+        judge_verdicts=[Verdict(finished=True, missing=[], feedback="")],
+    )
 
 
 @pytest.fixture
@@ -111,11 +129,12 @@ async def test_a_crashed_pass_is_recorded_and_reported_before_the_error_escapes(
 ) -> None:
     """The edits are already committed when the review dies, so the owner must hear about it and the
     run must exist in the history — otherwise an overnight rewrite is indistinguishable from nothing
-    having happened, and the error alone reaches only the logs."""
+    having happened, and the error alone reaches only the logs.
+    """
     sender = _FakeSender()
     curator = _curator(_reviewed_day, sender)
 
-    async def _boom(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
+    async def _boom(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
         raise RuntimeError("judge unavailable")
 
     monkeypatch.setattr(Curator, "_review", _boom)
@@ -135,12 +154,13 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
     _reviewed_day: _FakeDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The crash outcome is seeded before the review runs; if a success failed to overwrite it, every
-    good night would tell the owner the pass had crashed."""
+    good night would tell the owner the pass had crashed.
+    """
     sender = _FakeSender()
     curator = _curator(_reviewed_day, sender)
 
-    async def _ok(*_args: Any, **_kwargs: Any) -> ReviewOutcome:
-        return ReviewOutcome(report="Убрала дубль в списке покупок.", cost=0.5)
+    async def _ok(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
+        return _result("Убрала дубль в списке покупок.", cost=0.5)
 
     monkeypatch.setattr(Curator, "_review", _ok)
 
@@ -151,3 +171,49 @@ async def test_a_healthy_pass_reports_the_review_not_the_crash_text(
     (message,) = sender.sent
     assert "Проход упал" not in message
     assert "Убрала дубль в списке покупок." in message
+
+
+async def test_the_report_carries_the_verdict_and_the_cost_like_any_other_reply(
+    _reviewed_day: _FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report the owner cannot price and cannot see was checked is one they have to audit by hand —
+    the same two things every interactive reply ends with.
+    """
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
+
+    async def _ok(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
+        return _result("Поправила правило про валюту.", cost=0.6651)
+
+    monkeypatch.setattr(Curator, "_review", _ok)
+
+    await curator.curate(conversation_id=CONVERSATION)
+
+    (message,) = sender.sent
+    assert "⚖️ ✅ готово" in message  # graded and passed — an inverted branch would read 🔄 here
+    assert "$0.6651" in message
+    assert "контекст 12.4k" in message
+
+
+async def test_a_crashed_pass_says_so_without_inventing_a_cost(
+    _reviewed_day: _FakeDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass that died has no result to render — pricing or grading it would be reporting a run that
+    never finished.
+    """
+    sender = _FakeSender()
+    curator = _curator(_reviewed_day, sender)
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
+        raise RuntimeError("judge unavailable")
+
+    monkeypatch.setattr(Curator, "_review", _boom)
+
+    with pytest.raises(RuntimeError, match="judge unavailable"):
+        await curator.curate(conversation_id=CONVERSATION)
+
+    (recorded,) = _reviewed_day["curator_runs"].inserted
+    assert recorded["cost"] == 0.0
+    (message,) = sender.sent
+    assert "⚖️" not in message
+    assert "$" not in message

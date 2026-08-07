@@ -1,8 +1,9 @@
 # The curator — nightly self-maintenance
 
-One agent pass, once a night, off the request path. It reads a day of conversation plus the owner's
-emoji reactions, works out what the owner was *doing* in each message, and edits the four stores that
-decide how the assistant behaves tomorrow: core memory, long-term memories, lists, and sub-agents.
+One agent pass, once a night, off the request path — or on demand, when the owner sends `/curate`. It
+reads a day of conversation plus the owner's emoji reactions, works out what the owner was *doing* in
+each message, and edits the five stores that decide how the assistant behaves tomorrow: core memory,
+long-term memories, lists, the judge's added rules, and sub-agents.
 
 The assistant's model is frozen — it cannot get smarter. What it can do is start tomorrow from a
 better store. That is the whole ceiling of this feature, and worth stating plainly: the curator makes
@@ -77,9 +78,20 @@ triggers a change on its own:
 
 ## What the curator may change, and what it may never learn
 
-Its whole surface is four tool sets (`CURATOR_TOOLS`): `memory`, `lists`, `core_memory`, `subagents`.
-No web, no `ask_user` — the owner is asleep. It uses the **same tools as the live assistant**, so
-there is one write path per store rather than a parallel curator-only one that could drift.
+Its whole surface is five tool sets (`CURATOR_TOOLS`): `memory`, `lists`, `core_memory`,
+`judge_rules`, `subagents`. No web, no `ask_user` — the owner is asleep. It uses the **same tools as
+the live assistant**, so there is one write path per store rather than a parallel curator-only one
+that could drift. Two of the five are curator-only (absent from `MAIN_TOOLS`): `judge_rules` and
+`subagents` both decide how every later reply is produced or accepted, so only the attributed,
+reported nightly pass writes them.
+
+`judge_rules` is the lever for a failure that core memory cannot fix. When the owner has to repeat a
+complaint the core block already covers, rewording that instruction a third time changes nothing —
+the answering model read it and went ahead anyway. A line in the judge's rubric REFUSES the finished
+answer instead of asking for better behaviour, which is the same reasoning that put the honesty axis
+in the judge rather than the system prompt (`app/assistant/judge_prompt.py`). The base rubric stays
+in code, deploy-versioned and calibrated against `docs/judge_test_cases.md`; the curator's lines are
+appended to it and capped, so a bad one is a line to drop rather than a rubric to reconstruct.
 
 The "do NOT capture" list is adapted from hermes' background-review prompt, and it is the part most
 worth keeping intact: environment/setup failures, negative claims about capabilities ("search does
@@ -118,6 +130,12 @@ make revisions U=<conversation_id>         # the change history, oldest first
 In prod, Cloud Scheduler POSTs `/curate` nightly at 04:00 America/Los_Angeles
 (`infrastructure/services/curator_schedule.py`); an empty body means "every conversation with recent
 traffic". Retries are off: a retry would re-apply edits the first attempt already made.
+
+The owner can also run it from the chat: **`/curate`** (`app/chat/curate.py`) runs one pass over that
+chat and reports as usual — the same `Curator`, so nothing about the pass differs from the nightly
+one. It blocks for minutes while the agent works, which the inbound Cloud Task's 30-minute deadline
+covers; nothing serialises a manual pass against the nightly one, so running it at 04:00 would have
+two passes editing the same stores.
 
 ## Verified behaviour
 

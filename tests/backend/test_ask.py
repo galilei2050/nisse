@@ -18,6 +18,7 @@ from baski.primitives import datetime
 
 from app.chat import ask
 from app.chat.ask import AskUserTool, PendingQuestions
+from app.chat.curate import CurateCommand
 from app.chat.reactions import ReactionRecorder
 from app.chat.router import ChatRouter
 from app.chat.saved import SavedViewer
@@ -109,6 +110,7 @@ def _router(assistant: _FakeAssistant) -> Any:
         questions=questions,  # the tool under test parks on this same registry
     ).build(
         saved=SavedViewer(_FakeDatabase()),
+        curate=CurateCommand(cast("Any", None)),  # registered but never reached by these messages
         reactions=ReactionRecorder(_FakeDatabase(), turns=cast("Any", None)),
     )
 

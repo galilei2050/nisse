@@ -8,6 +8,8 @@ the curator that wrote it.
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.subagents.tools import ALLOWED_MODELS, SubagentSaveTool
 from app.tools.registry import ToolRegistry
 
@@ -49,6 +51,11 @@ def _fields(**overrides: object) -> dict:
 def _tool(store: _FakeStore) -> SubagentSaveTool:
     registry = ToolRegistry()
     registry.register("google_search", lambda _deps, _cid: [])
+    # The curator-only pair is registered for real, so a config naming one is refused BY THE FENCE.
+    # Leave them out and they are refused as unknown names instead — the same visible outcome, and
+    # the fence could be deleted with the test still green.
+    registry.register("subagents", lambda _deps, _cid: [])
+    registry.register("judge_rules", lambda _deps, _cid: [])
     deps = SimpleNamespace(tools=registry, database=None)
     return SubagentSaveTool(store, deps, conversation_id=CONVERSATION)  # type: ignore[arg-type]  # fake deps
 
@@ -61,14 +68,17 @@ async def test_an_unknown_tool_name_is_refused_before_it_can_break_the_next_buil
     assert store.saved == []  # refused, not saved-then-broken
 
 
-async def test_the_management_pair_may_not_be_handed_to_a_subagent() -> None:
-    """It is registered in the shared registry, so a sub-agent config could name it — and the main
-    agent delegates to sub-agents from ordinary chat. Absence from `MAIN_TOOLS` alone would leave
-    that route open, and this is the surface that decides which tools and prompts every agent runs."""
+@pytest.mark.parametrize("curator_only", ["subagents", "judge_rules"])
+async def test_a_curator_only_tool_may_not_be_handed_to_a_subagent(curator_only: str) -> None:
+    """Both are registered in the shared registry, so a sub-agent config could name either — and the
+    main agent delegates to sub-agents from ordinary chat. Absence from `MAIN_TOOLS` alone leaves that
+    route open. One decides which tools and prompts every agent runs; the other decides which answers
+    are accepted at all, so a chat-reachable write to it would let the assistant lower its own bar."""
     store = _FakeStore()
-    result = await _tool(store).execute(**_fields(name="helper", tool_names=["subagents"]))
+    result = await _tool(store).execute(**_fields(name="helper", tool_names=[curator_only]))
 
-    assert "subagents" in result
+    assert "may not be given to a sub-agent" in result  # the fence, not the unknown-name path
+    assert curator_only in result
     assert store.saved == []
 
 

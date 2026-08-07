@@ -11,6 +11,7 @@ from baski.primitives import datetime
 
 from app.chat.reactions import ReactionRecorder
 from app.chat.ask import PendingQuestions
+from app.chat.curate import CurateCommand
 from app.chat.router import ChatRouter
 from app.chat.saved import SavedViewer
 
@@ -79,7 +80,11 @@ def test_the_router_subscribes_to_reaction_updates() -> None:
         transcriber=SimpleNamespace(),
         speaker=SimpleNamespace(),
         questions=PendingQuestions(),
-    ).build(saved=SavedViewer(_FakeDatabase()), reactions=_recorder(_FakeDatabase()))
+    ).build(
+        saved=SavedViewer(_FakeDatabase()),
+        curate=CurateCommand(SimpleNamespace()),  # registered but not exercised by a reaction update
+        reactions=_recorder(_FakeDatabase()),
+    )
     assert "message_reaction" in router.resolve_used_update_types()
 
 

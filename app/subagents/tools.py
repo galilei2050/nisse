@@ -17,6 +17,7 @@ import logging
 from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
+from app.prompts import JUDGE_RULES_TOOL_NAME
 from app.shared import CoreDeps
 from app.subagents.store import SubagentConfig, SubagentStore
 from app.tools.registry import ToolRegistrar
@@ -31,6 +32,11 @@ ALLOWED_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001
 # main agent; refusing it in `tool_names` keeps it away from sub-agents, which the main agent CAN
 # reach. Both are needed — the registry resolves any registered name for a sub-agent config.
 MANAGEMENT_TOOL_NAME = "subagents"
+
+# Every tool only the nightly pass may hold. Each writes what the assistant does with EVERY later
+# reply — its roster, or the rubric its answers are accepted by — so neither may travel to a
+# sub-agent, which ordinary chat reaches by delegation.
+CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME)
 
 
 class SubagentListTool(Tool):
@@ -140,10 +146,11 @@ class SubagentSaveTool(Tool):
         """
         if config.model not in ALLOWED_MODELS:
             return f"Rejected: model '{config.model}' is not one of {', '.join(ALLOWED_MODELS)}."
-        if MANAGEMENT_TOOL_NAME in config.tool_names:
-            # Otherwise the curator could hand this write surface to a sub-agent, which the main
-            # agent delegates to from ordinary chat — routing around "curator-only" entirely.
-            return f"Rejected: '{MANAGEMENT_TOOL_NAME}' may not be given to a sub-agent."
+        curator_only = [name for name in CURATOR_ONLY_TOOLS if name in config.tool_names]
+        if curator_only:
+            # Otherwise the curator could hand one of these write surfaces to a sub-agent, which the
+            # main agent delegates to from ordinary chat — routing around "curator-only" entirely.
+            return f"Rejected: {curator_only} may not be given to a sub-agent."
         siblings = {existing.name for existing in await self._store.list()} | {config.name}
         unknown = [n for n in config.tool_names if self._deps.tools.get(n) is None and n not in siblings]
         if unknown:

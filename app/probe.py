@@ -22,14 +22,13 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 from anthropic import AsyncAnthropic
-from baski.agents import GeminiJudge
 from baski.agents.trace import TraceRecord
 from baski.clients.playwright_client import PlaywrightClient
 from baski.env import get_env
 from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
-from app.assistant import NISSE_JUDGE_PROMPT, Assistant
+from app.assistant import Assistant
 from app.chat.ask import PendingQuestions
 from app.scheduling import LoggingScheduler
 from app.shared import CoreDeps, block_type
@@ -146,7 +145,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
-            judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT),
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
             await_trace=True,

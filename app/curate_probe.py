@@ -1,7 +1,7 @@
 """Manual curator run — one maintenance pass, outside Cloud Scheduler, printing what it did.
 
 The nightly pass is the hardest thing in this codebase to observe: it runs while the owner sleeps
-and its product is a set of edits spread across four stores. This driver runs the real pass against
+and its product is a set of edits spread across five stores. This driver runs the real pass against
 the real database and then prints the three things worth checking:
 
   1. EVIDENCE — the digest and the classification the curator was given.
@@ -22,15 +22,14 @@ from typing import TYPE_CHECKING, cast
 
 import httpx
 from anthropic import AsyncAnthropic
-from baski.agents import GeminiJudge
 from baski.clients.playwright_client import PlaywrightClient
 from baski.env import get_env
 from baski.primitives import datetime
 from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
-from app.assistant import NISSE_JUDGE_PROMPT
 from app.chat.ask import PendingQuestions
+from app.chat.format import compose_answer
 from app.chat.sender import MarkdownSender
 from app.curator.classify import MessageClassifier
 from app.curator.curator import Curator
@@ -86,12 +85,12 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),
             schedule_endpoint="http://localhost/schedule/fire",
-            judge=GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT),
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             bot=cast("Bot", bot),
             questions=PendingQuestions(),  # the curator has no ask_user; CoreDeps is one shape for every caller
         )
-        curator = Curator(deps, sender=MarkdownSender(cast("Bot", bot)))
+        curator = Curator(deps, sender=MarkdownSender(cast("Bot", bot)), format_report=compose_answer)
         run = await curator.curate(conversation_id=conversation_id, window=window)
 
         changes = await RevisionLog(database, conversation_id=conversation_id).for_run(run.run_id)

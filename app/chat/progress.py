@@ -36,7 +36,7 @@ from baski.agents import (
     TurnStarted,
 )
 
-from app.chat.format import NO_ANSWER, footer, split_message, strip_markdown_v2, to_markdown_v2
+from app.chat.format import NO_ANSWER, footer, split_message, strip_markdown_v2, to_markdown_v2, verdict_line
 
 # Telegram rejects edits faster than ~1/sec per chat; match hermes' 0.5s cadence.
 _EDIT_INTERVAL_S = 0.5
@@ -191,8 +191,7 @@ class TelegramProgress:
         often carries content the rewrite drops), then the verdict line follows it in the stream.
         """
         self._commit_answer()  # the model's text came before this verdict — keep it, in order
-        line = f"⚖️ 🔄 {event.feedback}" if not event.finished else "⚖️ ✅ готово"
-        self._segments.append(_Seg("judge", [line]))
+        self._segments.append(_Seg("judge", [verdict_line(event)]))  # `_render_seg` supplies the bold
         return True
 
     def _commit_message(self, text: str) -> None:

@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 import httpx
 from aiogram import Router
 from anthropic import AsyncAnthropic
-from baski.agents import GeminiJudge
 from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import CloudTasksConfig, Scheduler
 from baski.env import get_env
@@ -24,9 +23,10 @@ from pymongo.asynchronous.database import AsyncDatabase
 
 from app import chat
 from app.access import AllowlistMiddleware
-from app.assistant import NISSE_JUDGE_PROMPT, Assistant
+from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
 from app.chat.ask import PendingQuestions
+from app.chat.curate import CurateCommand
 from app.chat.format import compose_answer
 from app.chat.reactions import ReactionRecorder
 from app.chat.saved import SavedViewer
@@ -55,6 +55,7 @@ class NisseBot(TelegramServer):
             questions=self.deps.questions,  # the same registry `ask_user` parks its questions on
         ).build(
             saved=SavedViewer(self._database),
+            curate=CurateCommand(self.curator),
             reactions=ReactionRecorder(self._database, turns=TurnLookup(self._database)),
         )
         router.startup.register(self._on_startup)
@@ -96,8 +97,8 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def curator(self) -> Curator:
-        """The nightly maintenance pass; Cloud Scheduler drives it through POST /curate."""
-        return Curator(self.deps, sender=self.sender)
+        """The maintenance pass — Cloud Scheduler drives it nightly (POST /curate), `/curate` on demand."""
+        return Curator(self.deps, sender=self.sender, format_report=compose_answer)
 
     @cached_property
     def assistant(self) -> Assistant:
@@ -115,16 +116,11 @@ class NisseBot(TelegramServer):
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
-            judge=self._judge,
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             bot=self.bot,  # lets transport tools (ask_user) message the owner directly
             questions=PendingQuestions(),
         )
-
-    @cached_property
-    def _judge(self) -> GeminiJudge:
-        """Cross-family completeness judge (Gemini/Vertex via ADC) — one shared client for the process."""
-        return GeminiJudge(project=str(get_env("GOOGLE_CLOUD_PROJECT")), instructions=NISSE_JUDGE_PROMPT)
 
     @cached_property
     def _http(self) -> httpx.AsyncClient:

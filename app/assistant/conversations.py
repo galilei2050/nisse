@@ -5,6 +5,8 @@ from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
+from app.assistant.judge import CuratedJudge
+from app.prompts import PromptStore
 from app.shared import CoreDeps
 from app.subagents import SubagentStore, SubagentTool
 
@@ -80,7 +82,11 @@ class Conversations:
             system_prompt=self._system_prompt,
             await_trace=self._deps.await_trace,
             local_traces_dir=self._deps.local_traces_dir,
-            judge=self._deps.judge,
+            # Per conversation, not process-wide: half its rubric is this chat's own `judge_rules`
+            # document, which the nightly curator maintains.
+            judge=CuratedJudge(
+                PromptStore(self._deps.database, conversation_id=conversation_id), project=self._deps.judge_project
+            ),
         )
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
 
