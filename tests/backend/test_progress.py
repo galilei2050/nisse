@@ -118,6 +118,28 @@ async def test_every_delivered_message_id_is_kept_when_the_answer_splits():
     assert bot.edits  # the first message was edited in place, not re-sent
 
 
+async def test_every_parallel_call_of_one_tool_gets_its_own_done_mark():
+    """A batch is emitted as all starts, then all finishes (baski `_execute_tools`). Keyed by name
+    alone, later starts overwrite earlier ones and the settled message shows most of the batch as
+    still running — a permanent record telling the owner work was left unfinished."""
+    bot = _FakeBot()
+    prog = TelegramProgress(bot=bot, chat_id=1)
+    queries = ["средний чек", "маржинальность", "тренды EV"]
+    await prog(TurnStarted(turn=1))
+    for query in queries:
+        await prog(ToolStarted(name="google_search", tool_input={"query": query}))
+    for ms in (1200, 2500, 3100):
+        await prog(ToolFinished(name="google_search", ok=True, duration_ms=ms))
+    await prog.finish(_result("Готово."))
+
+    final = bot.edits[-1]
+    assert final.count("✅") == len(queries)  # every call closed, not just the last one
+    assert "🔍" not in final  # none left rendered as in-flight
+    for query, seconds in zip(queries, ("1\\.2s", "2\\.5s", "3\\.1s"), strict=True):
+        line = next(ln for ln in final.splitlines() if query in ln)
+        assert seconds in line  # each line carries ITS call's duration, not the last one's
+
+
 async def test_finish_appends_cost_footer():
     bot = _FakeBot()
     final = await _drive(bot, TelegramProgress(bot=bot, chat_id=1))

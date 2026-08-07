@@ -18,6 +18,7 @@ flood limits.
 import contextlib
 import re
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import NamedTuple, assert_never
 
@@ -139,7 +140,10 @@ class TelegramProgress:
         self._chat_id = chat_id
         self._message_ids: list[int] = []  # every message sent here, in order; [0] is the live-edited one
         self._segments: list[_Seg] = []  # the chronological stream: process / text / judge blocks, in order
-        self._tool_loc: dict[str, tuple[int, int, str]] = {}  # tool name -> (segment idx, line idx, preview)
+        # Tool name -> the lines its still-running calls wrote, oldest first: (segment idx, line idx,
+        # preview). A queue, not one slot, because one turn routinely calls the same tool several
+        # times at once (nine `update_hypothesis` in a row happens) and each call owns its own line.
+        self._tool_loc: dict[str, deque[tuple[int, int, str]]] = defaultdict(deque)
         self._answer = ""  # the current turn's text, streamed in (live preview); committed into a segment
         self._think_idx = 0
         self._last_edit = 0.0
@@ -220,14 +224,19 @@ class TelegramProgress:
         icon, label = _label(name)
         seg = self._process()
         seg.lines.append(self._tool_line(icon, label, preview, suffix="" if preview else "…"))
-        self._tool_loc[name] = (len(self._segments) - 1, len(seg.lines) - 1, preview)
+        self._tool_loc[name].append((len(self._segments) - 1, len(seg.lines) - 1, preview))
 
     def _finish_tool(self, event: ToolFinished) -> None:
-        """Mark this tool's in-flight line done in place, keeping its label and argument preview."""
-        located = self._tool_loc.get(event.name)
-        if located is None:
+        """Mark the finished call's in-flight line done in place, keeping its label and argument preview.
+
+        Oldest line first: `ToolFinished` carries only the tool's name, but baski runs a batch through
+        `asyncio.gather` and emits one finish per result in the order the calls were started, so the
+        n-th finish of a name closes the n-th line that name opened.
+        """
+        pending = self._tool_loc.get(event.name)
+        if not pending:
             return
-        seg_idx, line_idx, preview = located
+        seg_idx, line_idx, preview = pending.popleft()
         _, label = _label(event.name)
         mark = "✅" if event.ok else "⚠️"
         suffix = f" ({event.duration_ms / 1000:.1f}s)"
