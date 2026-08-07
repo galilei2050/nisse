@@ -36,11 +36,11 @@ from anthropic.types.base64_image_source_param import Base64ImageSourceParam
 from anthropic.types.base64_pdf_source_param import Base64PDFSourceParam
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
-from baski.primitives import datetime
+from baski.primitives import datetime, json
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.shared.blocks import block_type
+from app.shared.blocks import block_field, block_type
 from app.shared.models import NisseDbModel
 from app.shared.mongo import ensure_index
 
@@ -56,6 +56,7 @@ JUDGE_RETRY_PREFIX = "[Completeness check]"
 _MAX_TOKENS = 32_000  # the denominator of the [Context: N% used] footer
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
 _PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # past this, a turn is sent as text alone
+_JUDGE_ARG_CHARS = 200  # how much of a tool call's arguments the judge's transcript shows
 
 
 @dataclass
@@ -177,6 +178,23 @@ def _is_text_block(block: object) -> bool:
 def _is_thinking_block(block: object) -> bool:
     """True for a thinking or redacted-thinking block (by its Anthropic `type` discriminator)."""
     return block_type(block) in ("thinking", "redacted_thinking")
+
+
+def _judge_line(role: str, block: object) -> str | None:
+    """One line of the judge's transcript: what someone said, or which tool was called with what.
+
+    None for everything else — thinking, tool results, attachments. Arguments are cut at
+    `_JUDGE_ARG_CHARS`: they are there to show WHAT was looked up, and a pasted document as an
+    argument would otherwise crowd out the conversation.
+    """
+    kind = block_type(block)
+    if kind == "text":
+        return f"[{role}] {block_field(block, 'text')}"
+    if kind != "tool_use":
+        return None
+    args = block_field(block, "input")
+    rendered = json.dumps(args, indent=None)[:_JUDGE_ARG_CHARS] if args else ""  # one line per call
+    return f"[tool] {block_field(block, 'name')}({rendered})"
 
 
 def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
@@ -372,6 +390,27 @@ class MongoMessageHistory(MessageHistory):
         if result:
             result[-1] = mark_cached(result[-1])
         return result
+
+    def format_for_judge(self) -> str:
+        """The conversation as the completeness judge reads it: what was said, and what was run.
+
+        Tool RESULTS are left out on purpose — the judge grades whether the reply finished the ask,
+        and raw tool output both bloats the prompt and pulls it into fact-checking instead. Unlike
+        `format_for_api` nothing narrows with age: this is text either way, and a judge that cannot
+        see what the owner asked three turns ago cannot tell a finished answer from a partial one.
+
+        baski's `MessageHistory` is a Protocol, so a missing implementation is not a construction
+        error — it returns None, which reaches the judge as the string "None" and grades every answer
+        against an empty conversation.
+        """
+        lines: list[str] = []
+        for turn in self._turns:
+            for message in turn.messages:
+                content = message["content"]
+                if not isinstance(content, list):
+                    continue
+                lines += [line for block in content if (line := _judge_line(str(message["role"]), block))]
+        return "\n".join(lines)
 
     def context_status(self) -> MessageParam | None:
         """The context-usage footer, rendered by the shared helper from this history's counters."""

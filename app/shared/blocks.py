@@ -21,11 +21,16 @@ class Media(NamedTuple):
     media_type: MediaType
 
 
-def block_type(block: object) -> str | None:
-    """A content block's Anthropic `type` discriminator.
+def block_field(block: object, name: str) -> object | None:
+    """One field of a content block, read the same way whichever shape the block is in.
 
-    Anthropic models content blocks as a discriminated union keyed on `type`; read that field
-    uniformly, whether the block is a live SDK object (attribute) or a dict deserialized from Mongo
-    or a trace (key).
+    A block is a live SDK object while the reply runs and a plain dict once it has been through Mongo
+    or a trace file, so every read has to work on both.
     """
-    return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+    return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
+
+
+def block_type(block: object) -> str | None:
+    """A content block's Anthropic `type` discriminator — the union's key."""
+    value = block_field(block, "type")
+    return value if isinstance(value, str) else None
