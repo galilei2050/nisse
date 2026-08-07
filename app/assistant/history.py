@@ -310,8 +310,9 @@ class MongoMessageHistory(MessageHistory):
 
         Appending it the moment it arrives would drop it INTO the turn the agent has open, between
         its `tool_use` blocks and the results that must follow them — which the API rejects. So it
-        waits here until `format_for_api`, the one point in a turn where baski asks this history for
-        anything with no turn open.
+        waits here for `format_for_api`: of the calls baski makes with no turn open, that is the one
+        that runs BEFORE the payload is assembled, so the message rides the very turn being built
+        instead of the one after it.
         """
         self._incoming.append(text)
 
@@ -445,8 +446,13 @@ class MongoMessageHistory(MessageHistory):
 
     @property
     def last_turn_id(self) -> int:
-        """The id of the newest turn — read while the reply still holds the lock, to link against."""
-        return self._next_turn_id
+        """The id of the newest COMMITTED turn — read while the reply still holds the lock, to link against.
+
+        Not the turn counter: `__exit__` drops a turn that ended up with no messages but leaves the
+        counter advanced, and an id naming no document would make `link_messages` match nothing and
+        drop the ids in silence.
+        """
+        return self._turns[-1].id if self._turns else 0
 
     async def link_messages(self, *, turn_id: int, message_ids: list[int]) -> None:
         """Attach the Telegram messages that delivered a turn's answer to that turn.

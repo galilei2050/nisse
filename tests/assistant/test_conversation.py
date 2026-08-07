@@ -19,27 +19,29 @@ from app.assistant.history import MongoMessageHistory
 from .test_history import _FakeCollection, _FakeDatabase, _texts
 
 
-def _result(cost: float = 1.0, response: str = "готово") -> AgentExecuteResult:
+_TURNS_PER_RUN = 2
+_COST_PER_RUN = 1.0
+
+
+def _result() -> AgentExecuteResult:
     return AgentExecuteResult(
         trace_id="t",
-        response=response,
+        response="готово",
         total_input_tokens=10,
         total_output_tokens=5,
-        turn_count=2,
+        turn_count=_TURNS_PER_RUN,
         tool_call_count=1,
-        total_cost=cost,
+        total_cost=_COST_PER_RUN,
         context_tokens=10,
         judge_verdicts=[Verdict(finished=True, missing=[], feedback="ok")],
     )
 
 
 class _FakeAgent:
-    """Builds `turns` payloads off the real history per run, like baski's loop, then answers."""
+    """Builds a payload off the real history for each turn, like baski's loop, then answers."""
 
-    def __init__(self, history: MongoMessageHistory, *, turns: int = 2) -> None:
+    def __init__(self, history: MongoMessageHistory) -> None:
         self._history = history
-        self._turns = turns
-        self.on_event: object = None
         self.runs = 0
         self.payloads: list[list[MessageParam]] = []
         self.before_turn: Callable[[], Awaitable[None]] | None = None
@@ -47,7 +49,7 @@ class _FakeAgent:
 
     async def execute(self) -> AgentExecuteResult:
         self.runs += 1
-        for _ in range(self._turns):
+        for _ in range(_TURNS_PER_RUN):
             if self.before_turn is not None:
                 await self.before_turn()
             self.payloads.append(self._history.format_for_api())
@@ -69,7 +71,8 @@ def _conversation() -> tuple[Conversation, _FakeAgent, MongoMessageHistory]:
 
 async def test_a_message_sent_mid_reply_is_answered_by_the_run_already_going() -> None:
     """The whole point: it reaches the model on the next turn of the SAME run. Starting a second run
-    would re-pay for a judge and a trace, and answer from a transcript the first run is still writing."""
+    would re-pay for a judge and a trace, and answer a second time over a transcript that by then
+    already holds the first answer."""
     conversation, agent, _ = _conversation()
     delivered: list[bool] = []
 
@@ -79,7 +82,7 @@ async def test_a_message_sent_mid_reply_is_answered_by_the_run_already_going() -
 
     agent.before_turn = owner_types
 
-    await conversation.reply(text="сколько стоит")
+    await conversation.reply(joinable=True, text="сколько стоит")
 
     assert delivered == [True]
     assert agent.runs == 1
@@ -98,12 +101,31 @@ async def test_a_message_that_arrives_after_the_last_turn_still_gets_answered() 
 
     agent.after_run = owner_types_late
 
-    reply = await conversation.reply(text="сколько стоит")
+    reply = await conversation.reply(joinable=True, text="сколько стоит")
 
     assert agent.runs == 2
     assert "и добавь налог" in _texts(cast("Any", agent.payloads[2]))  # first turn of the second run
     assert reply.result.total_cost == 2.0  # both passes, under one answer the owner saw grow
     assert len(reply.result.judge_verdicts) == 2
+
+
+async def test_a_scheduled_run_does_not_take_the_owner_s_messages() -> None:
+    """A fired task drives this same conversation with nothing on the owner's screen. Folded into it,
+    their message would be answered inside the task's own message, under a bare 👀 — so it is refused
+    and the router starts a visible turn for it instead."""
+    conversation, agent, _ = _conversation()
+    accepted: list[bool] = []
+
+    async def owner_types() -> None:
+        if len(agent.payloads) == 1:
+            accepted.append(conversation.deliver("а во сколько встреча?"))
+
+    agent.before_turn = owner_types
+
+    await conversation.reply(joinable=False, text="[Запланировано] утренний брифинг")
+
+    assert accepted == [False]
+    assert agent.runs == 1
 
 
 async def test_a_message_is_not_delivered_when_no_reply_is_running() -> None:
@@ -120,6 +142,6 @@ async def test_the_answered_turn_is_the_one_the_reply_reports() -> None:
     stamps them on whatever a later reply has since added."""
     conversation, _, history = _conversation()
 
-    reply = await conversation.reply(text="вопрос")
+    reply = await conversation.reply(joinable=True, text="вопрос")
 
     assert reply.turn_id == history.last_turn_id

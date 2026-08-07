@@ -52,15 +52,21 @@ class Conversation:
         self._history = history
         self._short_term = short_term
         self._lock = asyncio.Lock()
-        self._running = False  # the agent loop is driving; a message handed over now still gets read
+        # True while a JOINABLE loop is driving — `deliver` then hands a message to it.
+        self._running = False
 
-    async def reply(self, *, text: str, media: Media | None = None, on_event: Listener = noop) -> Reply:
+    async def reply(self, *, text: str, joinable: bool, media: Media | None = None, on_event: Listener = noop) -> Reply:
         """Run one reply over the reused agent: reset the scratchpad, append the message, drive the loop.
 
         `media` is a photo/PDF the user attached (None for a text/voice turn) — added as its own user
         message, with the caption text as a second one. `short_term` is a per-reply scratchpad, cleared
         each time; `on_event` is the fresh live-progress listener. Serialized so two replies never drive
         the one agent's history at once.
+
+        `joinable` says whether a message arriving mid-reply may join this run — true only for a reply
+        the owner is watching being written. A scheduled task drives this same conversation with
+        nothing on screen, so a message folded into it would answer inside that task's message, under
+        a bare 👀, with no reply of the owner's own in sight.
 
         The loop runs again if a message was `deliver`ed too late for it — after its last turn was
         built, while it was writing the answer or being graded. Everything delivered before that is
@@ -77,7 +83,7 @@ class Conversation:
                         self._history.add_photo(data=media.data, media_type=media.media_type)
                 if text:
                     self._history.add_user_text(text)
-            self._running = True
+            self._running = joinable
             try:
                 result = await self._agent.execute()
                 while self._history.has_incoming:

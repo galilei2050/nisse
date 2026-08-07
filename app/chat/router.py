@@ -22,8 +22,7 @@ from app.chat.transcribe import Transcriber
 from app.shared.blocks import Media, MediaType
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
-    from app.assistant import Assistant
-    from app.assistant.conversation import Reply
+    from app.assistant import Assistant, Reply
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +94,7 @@ class ChatRouter:
             return  # the text WAS the answer; a new turn would queue behind the parked turn's chat lock
         if answerable and await self._assistant.deliver(conversation_id=message.chat.id, text=resolved.text):
             await self._acknowledge(message)
-            return  # it joins the reply already running, on its next turn
+            return  # it joins the reply already running instead of starting a second one
         await self._run_turn(message, bot, resolved)
 
     @staticmethod
@@ -118,7 +117,11 @@ class ChatRouter:
         reply: Reply | None = None
         try:
             reply = await self._assistant.reply(
-                conversation_id=message.chat.id, text=resolved.text, media=resolved.media, on_event=progress
+                conversation_id=message.chat.id,
+                text=resolved.text,
+                joinable=True,  # the owner is watching this one being written, and adds to it as they read
+                media=resolved.media,
+                on_event=progress,
             )
             await progress.finish(reply.result)
             if message.voice and reply.result.response:  # voice in → voice out, alongside the text reply above
@@ -138,7 +141,7 @@ class ChatRouter:
             await self._assistant.flush(conversation_id=message.chat.id)
             # Then tie the sent messages to the turn that produced them — only now do both exist, and a
             # reaction arriving days later has no other way back to what it graded. A run that raised
-            # wrote no answer turn, so there is nothing its error notice could be a reaction to.
+            # sent an error notice rather than an answer — those message ids belong to no turn.
             if reply is not None:
                 await self._assistant.link_messages(
                     conversation_id=message.chat.id, turn_id=reply.turn_id, message_ids=progress.message_ids

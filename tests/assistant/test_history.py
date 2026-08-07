@@ -99,14 +99,19 @@ def _active_ids(collection: _FakeCollection) -> list[int]:
     return sorted(d["turn_id"] for d in collection.docs.values() if d["deleted_at"] is None)
 
 
+def _texts(messages: list[dict]) -> list[str]:
+    """Every text block in a rendered payload, in order — turn markers included."""
+    out: list[str] = []
+    for message in messages:
+        content = message["content"]
+        if isinstance(content, list):
+            out += [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    return out
+
+
 def _markers(hist: MongoMessageHistory) -> list[str]:
     """The `[Turn N …]` marker text rendered for each turn (one per turn, in order)."""
-    out: list[str] = []
-    for m in hist.format_for_api():
-        content = m["content"]
-        if isinstance(content, list):
-            out += [b["text"] for b in content if isinstance(b, dict) and str(b.get("text", "")).startswith("[Turn ")]
-    return out
+    return [text for text in _texts(hist.format_for_api()) if text.startswith("[Turn ")]
 
 
 def _seed_turn(col: _FakeCollection, turn_id: int, created_at: object, conversation_id: int = 1) -> None:
@@ -414,16 +419,6 @@ async def test_pure_tool_turn_written_soft_deleted_but_recoverable() -> None:
     cold = _history(col)
     await cold.load()
     assert [t.id for t in cold.turns] == [1, 3]
-
-
-def _texts(messages: list[dict]) -> list[str]:
-    """Every text block in a rendered payload, in order — turn markers included."""
-    out: list[str] = []
-    for message in messages:
-        content = message["content"]
-        if isinstance(content, list):
-            out += [b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"]
-    return out
 
 
 async def test_a_delivered_message_reaches_the_model_on_the_very_next_turn() -> None:

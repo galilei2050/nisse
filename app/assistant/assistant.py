@@ -76,29 +76,46 @@ class Assistant:
         await MemoryStore.ensure_indexes(self._deps.database)
         await PromptStore.ensure_indexes(self._deps.database)
 
-    async def run(
-        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
+    async def run(  # noqa: PLR0913 — one inbound message (chat, text, media) plus who watches it and may join
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
     ) -> Reply:
-        """Drive the conversation's reused agent over the new message; return the raw result.
+        """Drive the conversation's reused agent over the new message; return its `Reply`.
 
         Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
         the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
         the result into the user-facing string. `media` is a photo/PDF on the message (if any).
+        `joinable` opens this run to messages the owner sends while it works — see `Conversation.reply`;
+        off unless the caller is showing the owner this reply as it is written.
         """
         with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
             conversation = await self._conversations.get(conversation_id)
-            return await conversation.reply(text=text, media=media, on_event=on_event)
+            return await conversation.reply(text=text, joinable=joinable, media=media, on_event=on_event)
 
-    async def reply(
-        self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
+    async def reply(  # noqa: PLR0913 — mirrors run(), which it is plus a no-answer diagnostic
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
     ) -> Reply:
-        """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
+        """Reply within the persistent conversation; the chat router's entry point.
 
-        Formatting (footer, judge note, fallback) is the Telegram layer's job — see
-        `chat/format.compose_answer`. `on_event` receives step events as the agent works (the chat
-        router passes a `TelegramProgress` listener for live progress).
+        Returns the `Reply` — the agent's raw result plus the turn its answer landed in, which the
+        router links its sent messages against. Formatting (footer, judge note, fallback) is the
+        Telegram layer's job — see `chat/format.compose_answer`. `on_event` receives step events as the
+        agent works (the chat router passes a `TelegramProgress` listener for live progress).
         """
-        reply = await self.run(conversation_id=conversation_id, text=text, media=media, on_event=on_event)
+        reply = await self.run(
+            conversation_id=conversation_id, text=text, joinable=joinable, media=media, on_event=on_event
+        )
         result = reply.result
         if not result.response:
             logger.warning(
@@ -117,9 +134,9 @@ class Assistant:
         """Hand a message to that chat's reply already in flight; False if there is none.
 
         What the owner types while the agent works belongs to the SAME request — it corrects, adds a
-        constraint, or answers something the agent was about to guess. Starting a second reply for it
-        instead re-runs the loop from scratch, pays a second judge and trace, and leaves the two
-        answering in parallel from the same transcript.
+        constraint, or answers something the agent was about to guess. A second reply for it instead
+        waits out the first on the chat's lock, then re-runs the whole loop on a second judge and
+        trace, answering the follow-up over a transcript that by then already holds the first answer.
         """
         conversation = await self._conversations.get(conversation_id)
         return conversation.deliver(text)
