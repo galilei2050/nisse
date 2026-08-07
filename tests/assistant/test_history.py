@@ -616,7 +616,7 @@ async def test_pruning_cannot_take_the_exchange_being_answered() -> None:
     await hist.load()
     _add_user(hist, "старое")
     _add_answer(hist, "старый ответ")
-    hist.protect_exchange()  # a new reply begins here — Conversation.reply calls this
+    await hist.flush()  # the previous reply was delivered — from here a new exchange is being written
     _add_user(hist, "разбери это видео")
     _add_answer(hist, "вот разбор")
 
@@ -636,7 +636,7 @@ async def test_pruning_still_takes_older_turns() -> None:
     await hist.load()
     _add_user(hist, "старое")
     _add_answer(hist, "старый ответ")
-    hist.protect_exchange()
+    await hist.flush()
     _add_user(hist, "новое")
 
     assert await hist.delete_turns([1, 2]) == 2

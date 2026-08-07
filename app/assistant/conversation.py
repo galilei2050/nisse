@@ -58,7 +58,6 @@ class Conversation:
         async with self._lock:
             self._short_term.clear()
             self._agent.on_event = on_event
-            self._history.protect_exchange()  # the run may not prune the ask it is about to answer
             # Anything a failed run left undelivered goes in ahead of this message, in the order sent.
             self._history.commit_incoming()
             with self._history:
