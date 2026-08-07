@@ -2,9 +2,10 @@
 
 import logging
 
-from baski.agents import AgentExecuteResult, Listener, noop
+from baski.agents import Listener, noop
 from baski.server.logger import log_context
 
+from app.assistant.conversation import Reply
 from app.assistant.conversations import Conversations
 from app.memory import MemoryStore
 from app.prompts import PromptStore
@@ -77,7 +78,7 @@ class Assistant:
 
     async def run(
         self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
-    ) -> AgentExecuteResult:
+    ) -> Reply:
         """Drive the conversation's reused agent over the new message; return the raw result.
 
         Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
@@ -90,14 +91,15 @@ class Assistant:
 
     async def reply(
         self, *, conversation_id: int, text: str, media: Media | None = None, on_event: Listener = noop
-    ) -> AgentExecuteResult:
+    ) -> Reply:
         """Reply within the persistent conversation; the chat router's entry point. Returns the raw result.
 
         Formatting (footer, judge note, fallback) is the Telegram layer's job — see
         `chat/format.compose_answer`. `on_event` receives step events as the agent works (the chat
         router passes a `TelegramProgress` listener for live progress).
         """
-        result = await self.run(conversation_id=conversation_id, text=text, media=media, on_event=on_event)
+        reply = await self.run(conversation_id=conversation_id, text=text, media=media, on_event=on_event)
+        result = reply.result
         if not result.response:
             logger.warning(
                 "Agent produced no user-facing text; chat layer will send fallback",
@@ -109,18 +111,29 @@ class Assistant:
                     "outputTokens": result.total_output_tokens,
                 },
             )
-        return result
+        return reply
+
+    async def deliver(self, *, conversation_id: int, text: str) -> bool:
+        """Hand a message to that chat's reply already in flight; False if there is none.
+
+        What the owner types while the agent works belongs to the SAME request — it corrects, adds a
+        constraint, or answers something the agent was about to guess. Starting a second reply for it
+        instead re-runs the loop from scratch, pays a second judge and trace, and leaves the two
+        answering in parallel from the same transcript.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        return conversation.deliver(text)
 
     async def flush(self, *, conversation_id: int) -> None:
         """Await the conversation's durable history writes — called after the answer is sent."""
         conversation = await self._conversations.get(conversation_id)
         await conversation.flush()
 
-    async def link_messages(self, *, conversation_id: int, message_ids: list[int]) -> None:
+    async def link_messages(self, *, conversation_id: int, turn_id: int, message_ids: list[int]) -> None:
         """Tie the Telegram messages that delivered the answer to the turn that produced it.
 
         Only knowable in the chat layer, only useful later: it is how a reaction on one of those
         messages resolves to a turn. Called after `flush()`, so the turn document already exists.
         """
         conversation = await self._conversations.get(conversation_id)
-        await conversation.link_messages(message_ids)
+        await conversation.link_messages(turn_id=turn_id, message_ids=message_ids)

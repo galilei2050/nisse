@@ -86,10 +86,14 @@ class _FakeAssistant:
 
     def __init__(self) -> None:
         self.replies = 0
+        self.running = False  # no reply in flight, so a message starts a turn instead of joining one
 
     async def reply(self, **kwargs: Any) -> None:
         self.replies += 1
         raise AgentRefusalError("not today")
+
+    async def deliver(self, **kwargs: Any) -> bool:
+        return self.running
 
     async def flush(self, **kwargs: Any) -> None:
         pass
@@ -243,3 +247,17 @@ async def test_an_ordinary_message_still_starts_a_turn() -> None:
 
     assert assistant.replies == 1
     assert any("model declined" in text for text in bot.texts)  # the refusal reached the owner (MarkdownV2-escaped)
+
+
+async def test_a_message_sent_while_the_agent_works_joins_that_reply() -> None:
+    """It belongs to the request already running — it corrects it or adds to it. Starting a turn of
+    its own re-runs the whole loop on a second bill, and the owner is told so with a reaction, since
+    this message gets no reply and no progress message of its own."""
+    bot, assistant = _FakeBot(), _FakeAssistant()
+    assistant.running = True
+
+    message = _message("и в евро, не в долларах").as_(cast("Bot", bot))
+    await _router(assistant).propagate_event("message", message, bot=cast("Bot", bot))
+
+    assert assistant.replies == 0
+    assert "SetMessageReaction" in bot.methods

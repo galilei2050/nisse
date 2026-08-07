@@ -154,7 +154,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         )
         assistant = Assistant(deps=deps)
         await assistant.setup()
-        result = await assistant.run(conversation_id=user_id, text=message)
+        result = (await assistant.run(conversation_id=user_id, text=message)).result
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
 
     trace_path = traces_dir / f"{result.trace_id}.json"

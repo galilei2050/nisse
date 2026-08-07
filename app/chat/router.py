@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from aiogram import Bot, Router
 from aiogram.enums import ChatAction
-from aiogram.types import Audio, BufferedInputFile, Document, Message, PhotoSize, Voice
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import Audio, BufferedInputFile, Document, Message, PhotoSize, ReactionTypeEmoji, Voice
 from baski.agents import AgentBillingError, AgentProviderUnavailableError, AgentRefusalError
 
 from app.chat.ask import PendingQuestions
@@ -22,6 +23,7 @@ from app.shared.blocks import Media, MediaType
 
 if TYPE_CHECKING:  # injected at call time — importing it at runtime would cycle (chat → assistant → chat)
     from app.assistant import Assistant
+    from app.assistant.conversation import Reply
 
 logger = logging.getLogger(__name__)
 
@@ -91,19 +93,36 @@ class ChatRouter:
         answerable = resolved.media is None and bool(resolved.text.strip())
         if answerable and self._questions.answer(chat_id=message.chat.id, text=resolved.text):
             return  # the text WAS the answer; a new turn would queue behind the parked turn's chat lock
+        if answerable and await self._assistant.deliver(conversation_id=message.chat.id, text=resolved.text):
+            await self._acknowledge(message)
+            return  # it joins the reply already running, on its next turn
         await self._run_turn(message, bot, resolved)
+
+    @staticmethod
+    async def _acknowledge(message: Message) -> None:
+        """React 👀 to say the message was taken into the answer being written.
+
+        The owner gets no reply of their own for it and no second progress message, so without this
+        the chat looks like it swallowed what they typed. Best-effort: the message is already in the
+        loop, and a refused reaction must not turn that into an error.
+        """
+        try:
+            await message.react([ReactionTypeEmoji(emoji="👀")])
+        except TelegramAPIError as exc:
+            logger.warning("Could not acknowledge a mid-reply message", extra={"error": str(exc)})
 
     async def _run_turn(self, message: Message, bot: Bot, resolved: _Resolved) -> None:
         """Drive one agent turn behind a live progress message, rendering every failure the agent can raise."""
         await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
         progress = TelegramProgress(bot=bot, chat_id=message.chat.id)
+        reply: Reply | None = None
         try:
-            result = await self._assistant.reply(
+            reply = await self._assistant.reply(
                 conversation_id=message.chat.id, text=resolved.text, media=resolved.media, on_event=progress
             )
-            await progress.finish(result)
-            if message.voice and result.response:  # voice in → voice out, alongside the text reply above
-                await self._voice_reply(message, bot, result.response)
+            await progress.finish(reply.result)
+            if message.voice and reply.result.response:  # voice in → voice out, alongside the text reply above
+                await self._voice_reply(message, bot, reply.result.response)
         except AgentRefusalError:
             await progress.finish_text(_REFUSAL_REPLY)
         except AgentProviderUnavailableError:
@@ -117,9 +136,13 @@ class ChatRouter:
             # History writes were fired during the reply; await them now the answer is delivered (on
             # every path), so Mongo latency never blocked the user but no completed turn is lost.
             await self._assistant.flush(conversation_id=message.chat.id)
-            # Then tie the sent messages to that turn — only now do both exist, and a reaction arriving
-            # days later has no other way back to what it graded.
-            await self._assistant.link_messages(conversation_id=message.chat.id, message_ids=progress.message_ids)
+            # Then tie the sent messages to the turn that produced them — only now do both exist, and a
+            # reaction arriving days later has no other way back to what it graded. A run that raised
+            # wrote no answer turn, so there is nothing its error notice could be a reaction to.
+            if reply is not None:
+                await self._assistant.link_messages(
+                    conversation_id=message.chat.id, turn_id=reply.turn_id, message_ids=progress.message_ids
+                )
 
     async def _resolve(self, message: Message, bot: Bot) -> _Resolved | None:
         """Resolve any inbound message to text + optional media; None (after answering) if unsupported/empty."""
