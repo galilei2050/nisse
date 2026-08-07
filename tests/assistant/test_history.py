@@ -457,6 +457,33 @@ async def test_a_delivered_message_lands_as_its_own_turn_after_the_tool_results(
     assert col.docs[(1, 3)]["messages"] == [{"role": "user", "content": [{"type": "text", "text": "в евро"}]}]
 
 
+async def test_the_judge_reads_what_was_said_and_run_but_not_what_tools_returned() -> None:
+    """baski's history is a Protocol: a missing `format_for_judge` is not a construction error, it
+    returns None and reaches the judge as the string "None" — every answer graded against an empty
+    conversation. Tool output stays out on purpose: the judge grades completeness, not facts."""
+    col = _FakeCollection()
+    hist = _history(col)
+    await hist.load()
+    _add_user(hist, "сколько стоит билет")
+    with hist:
+        hist.add_assistant(
+            [
+                {"type": "thinking", "thinking": "private reasoning", "signature": "sig"},
+                {"type": "text", "text": "Смотрю цены."},
+                {"type": "tool_use", "id": "t1", "name": "google_flights", "input": {"to": "Лиссабон"}},
+            ]
+        )
+        hist.add_tool_results([{"type": "tool_result", "tool_use_id": "t1", "content": "€371, €394, €400"}])
+    _add_answer(hist, "От €371.")
+
+    assert hist.format_for_judge() == (
+        "[user] сколько стоит билет\n"
+        "[assistant] Смотрю цены.\n"
+        '[tool] google_flights({"to": "Лиссабон"})\n'
+        "[assistant] От €371."
+    )
+
+
 async def test_last_turn_id_names_a_committed_turn_not_the_counter() -> None:
     """`__enter__` advances the turn counter even for a turn that ends empty and is dropped by
     `__exit__`. An id naming no document makes `link_messages` — deliberately not an upsert — match
