@@ -20,9 +20,14 @@ MAIN_MODEL = "claude-opus-5"  # the main agent's model (sub-agents pick their ow
 # amazon/youtube) stay registered for sub-agents (e.g. retrieval) but off the always-on roster to keep
 # its per-turn schema lean. The researcher-only `hypothesis_tree` is deliberately absent.
 MAIN_TOOLS: list[str] = [
+    # Search stays — its hits are small. READING a page does not: `browse_website` returns up to
+    # 20k characters, and in the main loop those land in an Opus context and are billed as a cache
+    # write at 6.25 $/M. One measured answer about a city sales-tax rate cost $0.2854, of which
+    # $0.2203 (77%) was writing that one page into the window. The same question delegated to
+    # `retrieval` cost $0.0111 — the worker reads the page in ITS window and returns 173 characters.
+    # So the main agent may find pages, and must delegate to read them.
     "google_search",
     "google_ai_answer",
-    "browse_website",
     "memory",
     "lists",
     "scheduling",
