@@ -5,7 +5,7 @@
 # start (the built agent is cached per conversation). See app/subagents/CLAUDE.md.
 
 - name: retrieval
-  model: claude-sonnet-5
+  model: moonshotai/kimi-k2-thinking
   context_tokens: 180000
   max_turns: 8  # one self-contained sub-question — a few searches + browses, then answer. Forced synthesis on turn 8.
   # Full specialized-search roster: every SerpApi leaf that's off MAIN_TOOLS is reachable only by
