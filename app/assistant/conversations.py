@@ -3,6 +3,7 @@
 import asyncio
 
 from baski.agents import Agent, AgentConfig, ToolSet
+from baski.agents.pricing import MODEL_PRICING
 from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
 
 from app.assistant.conversation import Conversation
@@ -87,6 +88,7 @@ class Conversations:
             toolset=toolset,
             name="assistant",  # the owner-facing loop, as it appears in the `traces` spend breakdown
             model=MAIN_MODEL,
+            price=MODEL_PRICING[MAIN_MODEL],
             message_history=history,
             anthropic_client=self._deps.anthropic,
             database=self._deps.database,

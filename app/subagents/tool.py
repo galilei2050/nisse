@@ -1,6 +1,7 @@
 """SubagentTool — wraps one configured sub-agent as a delegating Tool (prompt in → result out)."""
 
 from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
+from baski.agents.pricing import MODEL_PRICING
 from baski.agents.tool import Tool
 from baski.server.logger import log_context
 from pydantic import BaseModel, Field
@@ -81,6 +82,7 @@ class SubagentTool(Tool):
             system_prompt=self._config.system_prompt,
             judge=self._judge(),
             model=self._config.model,
+            price=MODEL_PRICING[self._config.model],
             max_turns=self._config.max_turns,
             await_trace=self._deps.await_trace,
             local_traces_dir=self._deps.local_traces_dir,

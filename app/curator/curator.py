@@ -25,6 +25,7 @@ from collections.abc import Callable
 
 from aiogram.exceptions import TelegramAPIError
 from baski.agents import Agent, AgentConfig, AgentExecuteResult, GeminiJudge, InMemoryMessageHistory, ToolSet
+from baski.agents.pricing import MODEL_PRICING
 from baski.primitives import datetime
 from baski.server.logger import log_context
 from pymongo.asynchronous.database import AsyncDatabase
@@ -162,6 +163,7 @@ class Curator:
             toolset=toolset,
             name="curator",  # how this run is labelled in `traces`
             model=CURATOR_MODEL,
+            price=MODEL_PRICING[CURATOR_MODEL],
             message_history=InMemoryMessageHistory(max_tokens=_CONTEXT_TOKENS),
             anthropic_client=self._deps.anthropic,
             database=self._deps.database,
