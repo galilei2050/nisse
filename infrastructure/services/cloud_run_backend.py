@@ -19,6 +19,10 @@ anthropic_api_key_env = create_cloud_run_secret_env("ANTHROPIC_API_KEY", "backen
 mongodb_uri_env = create_cloud_run_secret_env("MONGODB_URI", "backend")
 serpapi_api_key_env = create_cloud_run_secret_env("SERPAPI_API_KEY", "backend")
 elevenlabs_api_key_env = create_cloud_run_secret_env("ELEVENLABS_API_KEY", "backend")
+# Vercel AI Gateway — an Anthropic-compatible endpoint over open-weight models, for sub-agents whose
+# work is cheap to check (docs/retrieval-on-a-gateway.md). The provider is in the name because the
+# gateway was chosen rather than given, and a second one must not have to argue over a shared word.
+vercel_ai_gateway_api_key_env = create_cloud_run_secret_env("VERCEL_AI_GATEWAY_API_KEY", "backend")
 
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(
@@ -35,6 +39,7 @@ backend = create_cloud_run_with_monitoring(
             mongodb_uri_env,
             serpapi_api_key_env,
             elevenlabs_api_key_env,
+            vercel_ai_gateway_api_key_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,
