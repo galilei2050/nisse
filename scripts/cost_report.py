@@ -16,6 +16,7 @@ number that took a month to catch the last time.
 
 import asyncio
 import datetime as dt
+import math
 import os
 import sys
 from collections import defaultdict
@@ -47,7 +48,10 @@ def _buckets(run: dict) -> dict[str, float]:
 
 
 def _percentile(values: list[float], share: float) -> float:
-    return sorted(values)[min(int(len(values) * share), len(values) - 1)]
+    """Nearest-rank percentile. `int(n * share)` lands one rank high and returns the single dearest
+    run as the p90 of every agent whose run count is a multiple of ten — and the tail is the number
+    the whole report is read for."""
+    return sorted(values)[max(math.ceil(len(values) * share) - 1, 0)]
 
 
 def report(measured: list[dict], days: int) -> None:
@@ -66,6 +70,11 @@ def report(measured: list[dict], days: int) -> None:
                 row[field] += tool[field]
 
     total = sum(per_bucket.values())
+    if not total:
+        # A run that dies on its first API call still writes a summary row, with every token count
+        # at zero. A window holding only those has nothing to take a share of.
+        print(f"{len(measured)} runs, none of which spent anything — every one failed before its first call.")
+        return
     print(f"${total:.2f} total · ${total / days:.2f}/day\n")
 
     print(f"WHO SPENT IT\n{'agent':16} {'runs':>5} {'own $':>8} {'share':>6} {'median':>8} {'p90':>8}")
@@ -96,8 +105,18 @@ def report(measured: list[dict], days: int) -> None:
 
 async def main(days: int) -> None:
     db = AsyncMongoClient(os.environ["MONGODB_URI"], tz_aware=True).get_default_database()
-    since = (dt.datetime.now(dt.UTC) - dt.timedelta(days=days)).isoformat()
-    rows = await db["traces"].find({"created_at": {"$gte": since}}).to_list(None)
+    since = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
+    # `created_at` is an ISO string carrying the WRITER's offset (`baski.primitives.datetime.now` is
+    # local time), so Cloud Run rows read `+00:00` and anything run from this machine `-07:00`.
+    # Comparing those as strings drops a day's worth of local runs off the head of every window, so
+    # Mongo only narrows the scan — by a whole day, wider than any offset — and the window is cut
+    # here, on parsed datetimes.
+    scan_from = (since - dt.timedelta(days=1)).isoformat()
+    rows = [
+        row
+        for row in await db["traces"].find({"created_at": {"$gte": scan_from}}).to_list(None)
+        if dt.datetime.fromisoformat(row["created_at"]) >= since
+    ]
 
     measured = [r for r in rows if "agent_name" in r]
     print(f"=== {db.name}: last {days} days ===")
