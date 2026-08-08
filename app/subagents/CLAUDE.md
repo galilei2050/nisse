@@ -46,7 +46,12 @@ conversation's first copy, and from then on the curator edits the document (`sub
 `CURATOR_TOOLS`), so the two diverge and the document is what runs. Measured 2026-08-08 on the owner's
 chat: the live `retrieval` prompt carried a whole effort-budget section absent from the file, and
 `researcher` a stop-early rule — 1367 vs 1218 chars and 2398 vs 1990. To read what an agent actually
-does, query `subagents`; `scratch/prompt_drift.py` prints the gap.
+does, query `subagents`.
+
+**Nothing is lost by living in the database.** Every write goes through `SubagentStore.save`, which
+records a revision holding the full text before and after — so the history of a prompt is
+`make revisions U=<id>`, not `git log`. That is why the prompts are not mirrored back into the file:
+the reason to keep them in git would be history, and history is already kept.
 
 **Therefore `make seed U=all` is a REVERT, not a rollout.** It upserts the file over every live
 document and silently discards everything the curator learned. Use it for a brand-new conversation
