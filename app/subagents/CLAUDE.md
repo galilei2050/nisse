@@ -41,12 +41,26 @@ it HAS siblings.**
 - A `tool_names` entry that is neither a registered tool nor a delegable sibling raises at build — a
   seed error, loud.
 
-Sub-agent definitions (name, description, prompts, model, tool_names, judge) live in **`agents.yml`** —
-the source of truth; **read it** for the current roster rather than trusting a list here. Seed them per
-conversation with **`make seed U=<id>`** (`scripts/seed_subagents.py`, upsert on (conversation_id,
-name)); **`make seed U=all`** re-seeds every conversation that already has configs — the rollout after
-an `agents.yml` change, so no live conversation is left on a stale config (a new required field like
-`max_turns` breaks reads until every doc is re-seeded). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
+**The live definition is the Mongo document, not `agents.yml`.** The file is a SEED — it plants a
+conversation's first copy, and from then on the curator edits the document (`subagent_save` is in
+`CURATOR_TOOLS`), so the two diverge and the document is what runs. Measured 2026-08-08 on the owner's
+chat: the live `retrieval` prompt carried a whole effort-budget section absent from the file, and
+`researcher` a stop-early rule — 1367 vs 1218 chars and 2398 vs 1990. To read what an agent actually
+does, query `subagents`.
+
+**Nothing is lost by living in the database.** Every write goes through `SubagentStore.save`, which
+records a revision holding the full text before and after — so the history of a prompt is
+`make revisions U=<id>`, not `git log`. That is why the prompts are not mirrored back into the file:
+the reason to keep them in git would be history, and history is already kept.
+
+**Therefore `make seed U=all` is a REVERT, not a rollout.** It upserts the file over every live
+document and silently discards everything the curator learned. Use it for a brand-new conversation
+(`make seed U=<id>`), or when a new REQUIRED field would otherwise break reads — and in that case
+expect to lose the curator's text unless it is carried into the file first. To change how a live agent
+behaves, edit the document (the curator's own path), not the file.
+
+Sub-agent definitions (name, description, prompts, model, tool_names, judge) are seeded from
+**`agents.yml`** (`scripts/seed_subagents.py`, upsert on (conversation_id, name)). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
 question, delegates each sub-question, synthesizes) over a `retrieval` worker (answers one
 self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
 Methodology behind the prompts: `docs/research-subagent.md`.

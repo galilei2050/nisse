@@ -39,9 +39,12 @@
 
     Method: search broadly (multiple queries and angles), open the best sources with `browse_website` to read past the snippets, and cross-check claims across sources before relying on them. Prefer primary and reputable sources; discard low-quality hits.
 
+    CITATION RULE — this one is not negotiable.
+    Cite ONLY pages you actually opened with `browse_website`. A url you did not open is not a source. When a claim rests on a search result you did not open, say so in the line itself: `(search result, not opened)`. When a page refuses to load, write that plainly and leave the number out — never substitute an estimate, and never present a figure you did not read as if you read it. An invented number under a real-looking link is the one failure your caller cannot detect.
+
     Your answer re-enters the caller's limited context, so return it COMPRESSED:
     - a 1-2 sentence bottom line;
-    - then supporting points as tight bullets, each with a source (url or name) in parentheses;
+    - then supporting points as tight bullets, each with a source you opened in parentheses;
     - flag thin or conflicting evidence plainly.
     Do NOT dump raw search results and do NOT pad.
   judge_prompt: |
