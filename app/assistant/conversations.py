@@ -1,5 +1,7 @@
 """Conversations — registry that builds each chat's agent once and reuses it."""
 
+import asyncio
+
 from baski.agents import Agent, AgentConfig, ToolSet
 from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
 
@@ -39,18 +41,27 @@ class Conversations:
         self._deps = deps
         self._system_prompt = system_prompt
         self._conversations: dict[int, Conversation] = {}
+        self._building = asyncio.Lock()
 
     async def get(self, conversation_id: int) -> Conversation:
         """The conversation's reused instance, built on first use.
 
-        Single-owner bot: a cold-start burst can't realistically race the first build, so the
-        plain get-or-create is enough — no creation lock. Once cached, every reply reuses it.
+        Built under a lock because `_build` awaits (it loads the transcript from Mongo): without one,
+        two updates for the same chat arriving before the first build finishes each get their OWN
+        Conversation — with its own reply lock, so replies stop being serialized, and its own history
+        minting turn ids from the same starting point. `_write_turn` upserts on
+        `(conversation_id, turn_id)`, so the second writer then REPLACES the first turn's messages and
+        the owner's message is gone from the transcript with nothing to show it ever arrived.
+        One instance is no protection: Cloud Run runs it at containerConcurrency 80, so the two
+        requests are concurrent inside one process. Once cached, every reply reuses the instance and
+        the lock is uncontended.
         """
-        conversation = self._conversations.get(conversation_id)
-        if conversation is None:
-            conversation = await self._build(conversation_id)
-            self._conversations[conversation_id] = conversation
-        return conversation
+        async with self._building:
+            conversation = self._conversations.get(conversation_id)
+            if conversation is None:
+                conversation = await self._build(conversation_id)
+                self._conversations[conversation_id] = conversation
+            return conversation
 
     async def _build(self, conversation_id: int) -> Conversation:
         """Assemble one chat's agent: the main tool spec from the registry + the loop-bound primitives.

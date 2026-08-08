@@ -63,6 +63,15 @@ class ScheduledTask(PublicIdModel):
             raise ValueError("repeat_every_hours must be omitted when kind is 'once'")
         return self
 
+    def is_overdue(self, now: datetime.datetime) -> bool:
+        """True when this occurrence's moment has passed and it still has not fired.
+
+        A task is armed by one queue message; a delivery that never lands leaves the row PENDING at a
+        past `fire_at` forever. Reading that as "armed" is how the owner's morning routine kept
+        showing "next 04.07" for 34 days after it last ran.
+        """
+        return self.status is ScheduleStatus.PENDING and self.fire_at < now
+
 
 class ScheduleStore:
     """Conversation-scoped CRUD over `scheduled_tasks`, for the agent's tools.

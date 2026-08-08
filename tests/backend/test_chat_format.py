@@ -20,6 +20,16 @@ def test_thematic_break_is_dropped():
     assert "para1" in out and "para2" in out
 
 
+def test_money_survives_conversion():
+    """Two dollar signs in one answer used to be read as a formula: both eaten as delimiters, the
+    amount returned as a code span, and the surrounding emphasis scrambled. The owner reads prices
+    and budgets off these replies and cannot tell a `$` was ever there."""
+    assert to_markdown_v2("around **$340–$345** today") == "around *$340–$345* today"
+    assert to_markdown_v2("**$21.6k** и **$18/SF**") == "*$21\\.6k* и *$18/SF*"
+    # A lone `$` was never at risk; it must stay untouched too.
+    assert "$500" in to_markdown_v2("Бюджет $500 млрд")
+
+
 def test_special_chars_escaped():
     assert to_markdown_v2("a.b!c") == "a\\.b\\!c"
 

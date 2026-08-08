@@ -13,6 +13,8 @@ dependencies = [
     "elevenlabs",
     "pymongo>=4.9",
     "telegramify-markdown>=1.1.5",
+    # telegramify's own parser, declared because app/chat/format.py turns off its math extension.
+    "pyromark",
 ]
 
 [dependency-groups]

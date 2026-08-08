@@ -29,6 +29,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from baski.primitives import datetime
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.chat.commands import BOT_COMMANDS, ChatCommand
@@ -148,9 +149,15 @@ def _render_memory(memory: Memory) -> str:
 
 
 def _render_schedule(task: ScheduledTask) -> str:
-    """One armed task: when it fires (UTC — the bot stores no local timezone) and how often."""
+    """One armed task: when it fires (UTC — the bot stores no local timezone) and how often.
+
+    A task whose moment has passed is shown as missed, not as armed: nothing re-delivers a lost
+    occurrence, so "⏰ 04.07" on a task that last ran in July is a promise the bot cannot keep.
+    """
     every = f" · каждые {task.repeat_every_hours} ч" if task.kind is ScheduleKind.RECURRING else ""
-    return f"⏰ {task.fire_at:%d.%m.%Y %H:%M} UTC{every}\n{task.instruction}"
+    when = f"{task.fire_at:%d.%m.%Y %H:%M} UTC"
+    head = f"⚠️ не сработало {when}" if task.is_overdue(datetime.now()) else f"⏰ {when}"
+    return f"{head}{every}\n{task.instruction}"
 
 
 @dataclass(frozen=True, slots=True)

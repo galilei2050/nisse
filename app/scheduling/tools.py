@@ -124,11 +124,15 @@ class CancelScheduleTool(Tool):
         tasks = await self._store.list()
         if not tasks:
             return None
+        now = datetime.now()
         lines = [_SCHEDULES_HEADER]
         for t in tasks:
             every = f" · every {t.repeat_every_hours}h" if t.repeat_every_hours else ""
             when = t.fire_at.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"- [{t.public_id}] {t.kind}{every} · next {when}Z — {t.instruction}")
+            # Saying "next <past date>" made the bot answer "yes, it's on" about a routine that had
+            # not run in a month. An occurrence that is late has not fired and is not going to.
+            due = f"MISSED — did not fire {when}Z" if t.is_overdue(now) else f"next {when}Z"
+            lines.append(f"- [{t.public_id}] {t.kind}{every} · {due} — {t.instruction}")
         return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])
 
 

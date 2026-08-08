@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from baski.primitives import datetime
 
 from app.scheduling.store import SCHEDULED_PREFIX, FireStore, ScheduleKind
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # break the assistant→scheduling→runner→assistant import cycle (type-only need)
     from baski.agents import AgentExecuteResult
@@ -55,7 +58,14 @@ class ScheduleRunner:
         """
         async with self._tasks.claim(public_id=public_id, fire_at=fire_at) as task:
             if task is None:
-                return  # duplicate delivery, cancelled, or already advanced — nothing to do
+                # Say so. A silent return here is why the owner's morning routine could not be
+                # diagnosed: a delivery that arrived and matched nothing looks exactly like a
+                # delivery that never arrived — both leave the row untouched. One line separates them.
+                logger.warning(
+                    "Fire matched no armed occurrence",
+                    extra={"publicId": public_id, "fireAt": fire_at.isoformat()},
+                )
+                return  # cancelled, already advanced, or a duplicate delivery
 
             if task.kind is ScheduleKind.RECURRING:
                 if task.repeat_every_hours is None:  # impossible per ScheduledTask's validator — tripwire

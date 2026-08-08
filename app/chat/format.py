@@ -14,8 +14,17 @@ converted entities.
 
 import re
 
+import pyromark
 import telegramify_markdown
+import telegramify_markdown.converter
 from baski.agents import AgentExecuteResult, Judged, Verdict
+
+# telegramify hardcodes math parsing into its options, so `$340 to $345` is read as an inline formula:
+# both dollar signs are eaten as delimiters and the amount comes back as a code span. The owner reads
+# prices and budgets off these replies. The library exposes no toggle — `latex_escape=False` only
+# skips LaTeX→unicode, not the parsing — so the bit is cleared here, once, at import. If the constant
+# ever disappears upstream, this raises on import rather than quietly resuming the corruption.
+telegramify_markdown.converter.STANDARD_OPTIONS &= ~pyromark.Options.ENABLE_MATH
 
 __all__ = [
     "NO_ANSWER",
