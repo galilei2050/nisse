@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 
 from app.search.serp_tool import SerpTool, format_hits
 
+# How much of ONE source a single read returns — a transcript here, a web page in `__init__.py`.
+# One number, because the question is the same either way: how much of one source is worth carrying
+# in a context budget that has to hold the conversation too.
+MAX_SOURCE_CHARS = 20_000
+
 
 class GoogleSearchTool(SerpTool):
     """Raw Google organic results — best when the owner wants source links or a specific site/page."""
@@ -332,10 +337,10 @@ class YouTubeTranscriptTool(SerpTool):
         return {"v": video_id, "language_code": language_code}
 
     def render(self, results: dict) -> str:  # noqa: ANON002 — SerpAPI JSON response, schema varies
-        """Join transcript segments into plain prose; cap at 20 000 chars."""
+        """Join transcript segments into plain prose, capped like any other single source."""
         segments = results.get("transcript") or []
         text = " ".join(s.get("snippet", "") for s in segments if s.get("snippet"))
-        return text[:20000]
+        return text[:MAX_SOURCE_CHARS]
 
 
 class GoogleJobsTool(SerpTool):

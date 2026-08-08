@@ -1,14 +1,17 @@
 """Where the money went: who spent it, on what, and which tool filled the context.
 
-Reads the `traces` summary alone — no trace bodies from GCS. Every number is recomputed from the
-stored token counts at each model's own price, so a run's cost is explainable rather than trusted.
+Reads the `traces` summary alone — no trace bodies from GCS. The per-agent, per-bucket and daily
+totals are recomputed from the stored token counts at each model's own price, so they are
+explainable rather than trusted. The dearest-answers list and the per-tool `$` column are the
+trace's own `cost` field — it covers what a run delegated to, which the recomputed buckets
+deliberately do not.
 
     make cost              # last 30 days
     make cost DAYS=7
 
-Runs recorded before the spend fields existed (`agent_name`, `tools`, the cache buckets) are counted
-and reported separately, never folded in: a total that mixes measured rows with assumed ones is the
-kind of number that took a month to catch the last time.
+Rows with no `agent_name` are runs recorded before the spend fields existed: counted and reported
+separately, never folded in, because a total mixing measured rows with assumed ones is the kind of
+number that took a month to catch the last time.
 """
 
 import asyncio
@@ -17,21 +20,29 @@ import os
 import sys
 from collections import defaultdict
 
-from baski.agents.pricing import MODEL_PRICING
+from anthropic.types import Usage
+from baski.agents.pricing import calculate_cost
 from pymongo import AsyncMongoClient
-
-_CACHE_WRITE = 1.25  # a written cache token costs this much of the base input price
-_CACHE_READ = 0.10  # a read one, this much — the 12.5x gap is why the buckets are stored apart
 
 
 def _buckets(run: dict) -> dict[str, float]:
-    """One run's spend split into the four things that are priced differently."""
-    price = MODEL_PRICING[run["model"]]
+    """One run's spend split into the four things that are priced differently.
+
+    Each bucket is priced by the same `calculate_cost` that charged the run — one bucket filled at a
+    time — rather than by rates restated here. The two rates differ 12.5x and are not fixed forever
+    (a 1-hour cache prices a write at 2x, not 1.25x), so a second copy of them would drift from what
+    the database actually holds, and the report would disagree with it with nothing to show why.
+    """
+    model = run["model"]
     return {
-        "fresh input": run["input_tokens"] / 1e6 * price["input"],
-        "cache write": run["cache_write_tokens"] / 1e6 * price["input"] * _CACHE_WRITE,
-        "cache read": run["cache_read_tokens"] / 1e6 * price["input"] * _CACHE_READ,
-        "output": run["output_tokens"] / 1e6 * price["output"],
+        "fresh input": calculate_cost(model, Usage(input_tokens=run["input_tokens"], output_tokens=0)),
+        "output": calculate_cost(model, Usage(input_tokens=0, output_tokens=run["output_tokens"])),
+        "cache write": calculate_cost(
+            model, Usage(input_tokens=0, output_tokens=0, cache_creation_input_tokens=run["cache_write_tokens"])
+        ),
+        "cache read": calculate_cost(
+            model, Usage(input_tokens=0, output_tokens=0, cache_read_input_tokens=run["cache_read_tokens"])
+        ),
     }
 
 
@@ -49,7 +60,7 @@ def report(measured: list[dict], days: int) -> None:
         per_agent[run["agent_name"]].append(sum(spend.values()))
         for name, amount in spend.items():
             per_bucket[name] += amount
-        for tool in run.get("tools", []):
+        for tool in run["tools"]:
             row = per_tool[tool["name"]]
             for field in ("calls", "errors", "cost", "output_chars"):
                 row[field] += tool[field]
@@ -76,7 +87,7 @@ def report(measured: list[dict], days: int) -> None:
             f"{int(row['output_chars']):19,}"
         )
 
-    delegated = {sub for run in measured for sub in run.get("sub_trace_ids", [])}
+    delegated = {sub for run in measured for sub in run["sub_trace_ids"]}
     roots = sorted((r for r in measured if r["_id"] not in delegated), key=lambda r: -r["cost"])
     print("\nDEAREST ANSWERS (the run and everything it delegated to)")
     for run in roots[:10]:
@@ -84,12 +95,11 @@ def report(measured: list[dict], days: int) -> None:
 
 
 async def main(days: int) -> None:
-    """Read the window from `traces` and hand the usable rows to the report."""
     db = AsyncMongoClient(os.environ["MONGODB_URI"], tz_aware=True).get_default_database()
     since = (dt.datetime.now(dt.UTC) - dt.timedelta(days=days)).isoformat()
     rows = await db["traces"].find({"created_at": {"$gte": since}}).to_list(None)
 
-    measured = [r for r in rows if "agent_name" in r and r["model"] in MODEL_PRICING]
+    measured = [r for r in rows if "agent_name" in r]
     print(f"=== {db.name}: last {days} days ===")
     print(f"{len(measured)} runs measured", end="")
     if older := len(rows) - len(measured):
@@ -100,4 +110,4 @@ async def main(days: int) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 30))
+    asyncio.run(main(int(sys.argv[1])))
