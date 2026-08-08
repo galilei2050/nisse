@@ -36,9 +36,16 @@ def _serp_leaf(cls: type[Tool]) -> Callable[[CoreDeps, int], list[Tool]]:
     return build
 
 
+# Longest page we let into a reply, matching the `youtube_transcript` cap in `tools.py` — one number
+# for "how much of one source is worth carrying". A page above it arrives cut, with a marker saying
+# so. Measured: 75 of 3185 tool results were over this, the largest 457 780 chars — 4x the main
+# agent's entire 32k-token budget in a single tool call.
+_MAX_PAGE_CHARS = 20_000
+
+
 def _browse(deps: CoreDeps, _conversation_id: int) -> list[Tool]:
     """The headless-browser page reader (baski) — conversation-agnostic."""
-    return [WebBrowseTool(playwright_client=deps.playwright)]
+    return [WebBrowseTool(playwright_client=deps.playwright, max_chars=_MAX_PAGE_CHARS)]
 
 
 def register_tools(registrar: ToolRegistrar) -> None:

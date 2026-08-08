@@ -85,6 +85,7 @@ class Conversations:
 
         config = AgentConfig(
             toolset=toolset,
+            name="assistant",  # the owner-facing loop, as it appears in the `traces` spend breakdown
             model=MAIN_MODEL,
             message_history=history,
             anthropic_client=self._deps.anthropic,

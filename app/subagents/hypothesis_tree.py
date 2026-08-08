@@ -14,6 +14,7 @@ after it. No Mongo, no conversation scope.
 
 from enum import StrEnum
 
+from anthropic.types import MessageParam, TextBlockParam
 from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
@@ -150,8 +151,21 @@ class UpdateHypothesisTool(Tool):
         return self._tree.update(node_id, status, finding)
 
     async def system_prompt(self) -> str:
-        """Inject the current tree every turn (once — this is the single injection point of the pair)."""
-        return f"{_HEADER}\n\n{self._tree.render()}"
+        """The methodology, which never changes — the tree itself rides `user_message` (see there)."""
+        return _HEADER
+
+    async def user_message(self) -> MessageParam:
+        """Inject the current tree every turn (once — this is the single injection point of the pair).
+
+        Here and not in `system_prompt` because the system block is the FIRST cached block: every edit
+        to the tree changed it, and the tools schema, the system prompt and the whole transcript
+        behind it were thrown away and re-written. Measured on production traces: a turn following
+        `update_hypothesis` read back 8% of its previous context against 97-100% after an ordinary
+        tool, and wrote 28.7k tokens against 2.5k. baski orders the volatile blocks after the cached
+        prefix (`Agent._build_messages`), so from here the tree reaches the model every turn exactly
+        as before — the list and memory indexes are injected the same way for the same reason.
+        """
+        return MessageParam(role="user", content=[TextBlockParam(type="text", text=self._tree.render())])
 
 
 def build_hypothesis_tree_tools() -> list[Tool]:

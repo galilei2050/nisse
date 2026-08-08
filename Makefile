@@ -82,6 +82,12 @@ seed:
 memories:
 	uv run python scripts/show_memories.py $(U)
 
+# Where the money went — by agent (main loop vs each sub-agent vs curator), by token bucket, by tool.
+# `make cost` for the last 30 days; `make cost DAYS=7` for a shorter window.
+.PHONY: cost
+cost:
+	uv run python scripts/cost_report.py $(DAYS)
+
 # Companion to probe: dump one conversation's `conversation_turns` (active + soft-deleted).
 # `make turns U=<conversation_id>`. See docs/history-test-cases.md.
 .PHONY: turns

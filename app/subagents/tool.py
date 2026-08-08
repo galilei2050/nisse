@@ -73,6 +73,7 @@ class SubagentTool(Tool):
                 toolset.add(tool)
         return AgentConfig(
             toolset=toolset,
+            name=self._config.name,  # `researcher`/`retrieval`/… — how this run is labelled in `traces`
             message_history=InMemoryMessageHistory(max_tokens=self._config.context_tokens),
             anthropic_client=self._deps.anthropic,
             database=self._deps.database,

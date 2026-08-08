@@ -160,6 +160,7 @@ class Curator:
             toolset.add(tool)
         return AgentConfig(
             toolset=toolset,
+            name="curator",  # the nightly maintenance pass, off the reply path
             model=CURATOR_MODEL,
             message_history=InMemoryMessageHistory(max_tokens=_CONTEXT_TOKENS),
             anthropic_client=self._deps.anthropic,
