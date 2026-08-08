@@ -20,8 +20,10 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 - `hypothesis_tree.py` — the researcher's living investigation record, edited **node-by-node** with
   two granular tools (`add_hypothesis` / `update_hypothesis`) over one shared `HypothesisTree`, not
   rewritten whole (mirrors the `list_edit`/core-memory idiom: touch one node, don't resend the tree,
-  can't drop a node). `update_hypothesis.system_prompt()` injects the whole tree every turn (single
-  injection point of the pair), same shape as core memory. **Ephemeral in-instance state** — a fresh
+  can't drop a node). `update_hypothesis.user_message()` injects the whole tree every turn (single
+  injection point of the pair) — the same slot the list and memory indexes use, and NOT
+  `system_prompt()`: live state in the first cached block costs the whole prefix on every edit.
+  **Ephemeral in-instance state** — a fresh
   shared tree per `SubagentTool.execute` run (one investigation), gone after it. No Mongo, no
   conversation scope. `build_hypothesis_tree_tools()` makes the shared tree + its two tools.
 

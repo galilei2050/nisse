@@ -200,31 +200,10 @@ A new engine touches **zero** client code. Existing typed helpers stay for other
 
 ### Wiring (nisse)
 
-`Conversations._build_web_tools` is the single selection point — the roster is exactly this
-list, nothing more:
-
-```python
-from app.search import (
-    AmazonProductTool, AmazonSearchTool, GoogleAiModeTool, GoogleEventsTool, GoogleJobsTool,
-    GoogleMapsSearchTool, GoogleNewsTool, GoogleSearchTool, YouTubeSearchTool, YouTubeTranscriptTool,
-)
-
-def _build_web_tools(self) -> list[Tool]:
-    serpapi = SerpApiClient(logger=self._deps.logger, http_client=self._deps.http)
-    return [
-        GoogleSearchTool(serpapi_client=serpapi),
-        GoogleAiModeTool(serpapi_client=serpapi),
-        GoogleMapsSearchTool(serpapi_client=serpapi),
-        GoogleNewsTool(serpapi_client=serpapi),
-        GoogleEventsTool(serpapi_client=serpapi),
-        AmazonSearchTool(serpapi_client=serpapi),
-        AmazonProductTool(serpapi_client=serpapi),
-        YouTubeSearchTool(serpapi_client=serpapi),
-        YouTubeTranscriptTool(serpapi_client=serpapi),
-        GoogleJobsTool(serpapi_client=serpapi),
-        WebBrowseTool(playwright_client=self._deps.playwright),
-    ]
-```
+Every web tool is registered by name in `app/search/__init__.py` (`register_tools`), and each agent
+names the ones it wants: `MAIN_TOOLS` in `app/assistant/conversations.py` for the assistant, a
+sub-agent's `tool_names` in `app/subagents/agents.yml`. Read those three for the current roster —
+the selection point named here (`Conversations._build_web_tools`) was replaced by the registry.
 
 ## APIs to implement
 

@@ -51,6 +51,8 @@ The bot is a **delegate** standing in for a personal assistant — design and ev
 
 Design notes and deeper docs live in `docs/`. Check there before implementing; filenames describe their topic. See `docs/CLAUDE.md` for what belongs in a doc.
 
+Two registers live at the root instead, because they are working lists the owner reads and acts on rather than design notes: `BUGS.md` (open defects) and `PRICING.md` (what the agent costs, measured, and the levers that would change it — read it before proposing any cost or model change).
+
 ## Commands
 
 - `make setup`       — venv + install deps

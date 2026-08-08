@@ -14,6 +14,7 @@ after it. No Mongo, no conversation scope.
 
 from enum import StrEnum
 
+from anthropic.types import MessageParam, TextBlockParam
 from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
@@ -22,6 +23,7 @@ _HEADER = (
     "(add_hypothesis: root question → branches → falsifiable leaves); set each leaf's verdict the moment "
     "its evidence is in (update_hypothesis)."
 )
+_TREE_HEADER = "HYPOTHESIS TREE — your investigation record as it stands:"
 _EMPTY = "(empty — start by adding the root question and its candidate branches with add_hypothesis.)"
 
 
@@ -150,8 +152,21 @@ class UpdateHypothesisTool(Tool):
         return self._tree.update(node_id, status, finding)
 
     async def system_prompt(self) -> str:
-        """Inject the current tree every turn (once — this is the single injection point of the pair)."""
-        return f"{_HEADER}\n\n{self._tree.render()}"
+        """The methodology, which never changes — the tree itself rides `user_message` (see there)."""
+        return _HEADER
+
+    async def user_message(self) -> MessageParam:
+        """Inject the current tree every turn (once — this is the single injection point of the pair).
+
+        Here and not in `system_prompt`: the system block is the FIRST cached block, so live state
+        there invalidates the tools schema, the system prompt and the whole transcript behind it on
+        every edit. baski puts the volatile blocks after the cached prefix (`Agent._build_messages`),
+        so the tree still reaches the model every turn — the list and memory indexes ride the same
+        slot for the same reason, and like them it carries its own title, since an unlabelled list
+        in the middle of a turn says nothing about what it is.
+        """
+        block = f"{_TREE_HEADER}\n{self._tree.render()}"
+        return MessageParam(role="user", content=[TextBlockParam(type="text", text=block)])
 
 
 def build_hypothesis_tree_tools() -> list[Tool]:

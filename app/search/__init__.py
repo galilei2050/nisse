@@ -7,6 +7,7 @@ from baski.agents.tools import WebBrowseTool
 from baski.clients.serpapi_client import SerpApiClient
 
 from app.search.tools import (
+    MAX_SOURCE_CHARS,
     AmazonProductTool,
     AmazonSearchTool,
     GoogleAiModeTool,
@@ -37,8 +38,13 @@ def _serp_leaf(cls: type[Tool]) -> Callable[[CoreDeps, int], list[Tool]]:
 
 
 def _browse(deps: CoreDeps, _conversation_id: int) -> list[Tool]:
-    """The headless-browser page reader (baski) — conversation-agnostic."""
-    return [WebBrowseTool(playwright_client=deps.playwright)]
+    """The headless-browser page reader (baski) — conversation-agnostic.
+
+    `max_chars` bounds ONE read, not the page: baski keeps the fetched page and serves the rest by
+    section name. Measured: 75 of 3185 tool results ran over this, the largest 457 780 characters —
+    more than 3x the main agent's whole 32k-token budget in a single tool result.
+    """
+    return [WebBrowseTool(playwright_client=deps.playwright, max_chars=MAX_SOURCE_CHARS)]
 
 
 def register_tools(registrar: ToolRegistrar) -> None:
