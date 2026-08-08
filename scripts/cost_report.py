@@ -11,11 +11,12 @@ deliberately do not.
 
 Rows with no `agent_name` are runs recorded before the spend fields existed: counted and reported
 separately, never folded in, because a total mixing measured rows with assumed ones is the kind of
-number that took a month to catch the last time.
+number that took a month to catch the last time. Runs older still — from before `created_at` became
+a date rather than a string — fall outside a date-typed window query entirely and are not counted at
+all; nothing could have broken them down either.
 """
 
 import asyncio
-import datetime as dt
 import math
 import os
 import sys
@@ -23,6 +24,7 @@ from collections import defaultdict
 
 from anthropic.types import Usage
 from baski.agents.pricing import calculate_cost
+from baski.primitives import datetime
 from pymongo import AsyncMongoClient
 
 
@@ -105,18 +107,8 @@ def report(measured: list[dict], days: int) -> None:
 
 async def main(days: int) -> None:
     db = AsyncMongoClient(os.environ["MONGODB_URI"], tz_aware=True).get_default_database()
-    since = dt.datetime.now(dt.UTC) - dt.timedelta(days=days)
-    # `created_at` is an ISO string carrying the WRITER's offset (`baski.primitives.datetime.now` is
-    # local time), so Cloud Run rows read `+00:00` and anything run from this machine `-07:00`.
-    # Comparing those as strings drops a day's worth of local runs off the head of every window, so
-    # Mongo only narrows the scan — by a whole day, wider than any offset — and the window is cut
-    # here, on parsed datetimes.
-    scan_from = (since - dt.timedelta(days=1)).isoformat()
-    rows = [
-        row
-        for row in await db["traces"].find({"created_at": {"$gte": scan_from}}).to_list(None)
-        if dt.datetime.fromisoformat(row["created_at"]) >= since
-    ]
+    since = datetime.now() - datetime.timedelta(days=days)
+    rows = await db["traces"].find({"created_at": {"$gte": since}}).to_list(None)
 
     measured = [r for r in rows if "agent_name" in r]
     print(f"=== {db.name}: last {days} days ===")
