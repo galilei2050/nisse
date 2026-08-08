@@ -26,7 +26,14 @@ logger = logging.getLogger(__name__)
 
 # A child agent's model is a cost and quality decision, not a free-text field: a typo'd id fails at
 # call time, and an expensive id silently multiplies the bill of every delegation.
-ALLOWED_MODELS = ("claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001")
+ALLOWED_MODELS = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+    # Open weights through the gateway (app/subagents/gateway.py). Priced there, and only ids listed
+    # in GATEWAY_PRICES are billable — an unlisted one would raise before the run spends anything.
+    "moonshotai/kimi-k2-thinking",
+)
 
 # The registry name this pair is registered under. Absence from `MAIN_TOOLS` keeps it away from the
 # main agent; refusing it in `tool_names` keeps it away from sub-agents, which the main agent CAN

@@ -1,12 +1,12 @@
 """SubagentTool — wraps one configured sub-agent as a delegating Tool (prompt in → result out)."""
 
 from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
-from baski.agents.pricing import MODEL_PRICING
 from baski.agents.tool import Tool
 from baski.server.logger import log_context
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
+from app.subagents.gateway import gateway_client, is_gateway_model, price_for
 from app.subagents.store import SubagentConfig
 
 
@@ -76,13 +76,14 @@ class SubagentTool(Tool):
             toolset=toolset,
             name=self._config.name,  # `researcher`/`retrieval`/… — how this run is labelled in `traces`
             message_history=InMemoryMessageHistory(max_tokens=self._config.context_tokens),
-            anthropic_client=self._deps.anthropic,
+            # An open model behind the gateway speaks the same API; only the client differs.
+            anthropic_client=gateway_client() if is_gateway_model(self._config.model) else self._deps.anthropic,
             database=self._deps.database,
             bucket_name=self._deps.bucket_name,
             system_prompt=self._config.system_prompt,
             judge=self._judge(),
             model=self._config.model,
-            price=MODEL_PRICING[self._config.model],
+            price=price_for(self._config.model),
             max_turns=self._config.max_turns,
             await_trace=self._deps.await_trace,
             local_traces_dir=self._deps.local_traces_dir,
