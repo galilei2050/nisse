@@ -38,13 +38,14 @@ Baseten, DeepInfra, Cerebras** (Anthropic-совместимость не под
 
 ## 2. Токен
 
-Имя переменной — **`AI_GATEWAY_API_KEY`** (собственное имя у Vercel). Три места:
+Имя переменной — **`VERCEL_AI_GATEWAY_API_KEY`**: провайдер назван в имени, потому что шлюз здесь
+выбран, а не предопределён, и следующий ключ рядом не должен спорить за общее слово. Три места:
 
 | где | как |
 |---|---|
 | локально | строка в `.env` |
-| прод | секрет в GCP Secret Manager **руками** (Pulumi здесь секретов не создаёт, только ссылается — `infrastructure/CLAUDE.md`), затем строка `create_cloud_run_secret_env("AI_GATEWAY_API_KEY", "backend")` в `infrastructure/services/cloud_run_backend.py` |
-| CI | `secrets.AI_GATEWAY_API_KEY` в `env:` нужных job'ов `.github/workflows/test-app.yml`, рядом с `ANTHROPIC_API_KEY` |
+| прод | секрет в GCP Secret Manager **руками** (Pulumi здесь секретов не создаёт, только ссылается — `infrastructure/CLAUDE.md`), затем строка `create_cloud_run_secret_env("VERCEL_AI_GATEWAY_API_KEY", "backend")` в `infrastructure/services/cloud_run_backend.py` |
+| CI | `secrets.VERCEL_AI_GATEWAY_API_KEY` в `env:` нужных job'ов `.github/workflows/test-app.yml`, рядом с `ANTHROPIC_API_KEY` |
 
 ## 3. Четыре препятствия в коде — что именно чинить
 
