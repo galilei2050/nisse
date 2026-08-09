@@ -72,37 +72,31 @@ class OpenedPages(Tool):
 
 
 class CitedJudge(Judge):
-    """The completeness judge, plus one verdict it cannot reach: was the source actually read.
+    """Grades one thing a model cannot: was the cited page actually opened.
 
-    Sits where the judge sits — at the loop's exit — so an answer citing a page the run never opened
-    is sent back for another turn instead of travelling upward with a note attached. A count handed
-    to the caller is not actionable: it names no claim and buys no fix. Here the worker still has its
-    tools and its budget, and one more turn on a cheap model is worth less than a source the owner
-    cannot check.
+    Sits on the jury beside the completeness judge, at the loop's exit — so an answer citing a page
+    the run never opened goes back for another turn instead of travelling upward with a note
+    attached. A count handed to the caller is not actionable: it names no claim and buys no fix. Here
+    the worker still has its tools and its budget, and one more turn on a cheap model is worth less
+    than a source the owner cannot check.
 
     Lifecycle: one per sub-agent run — it reads that run's recorders.
     """
 
-    def __init__(self, judge: Judge, opened: list[OpenedPages]) -> None:
-        """Bind the real judge and the recorders holding what this run loaded."""
-        self._judge = judge
+    def __init__(self, opened: list[OpenedPages]) -> None:
+        """Bind the recorders holding what this run loaded."""
         self._opened = opened
 
-    async def evaluate(self, transcript: str, answer: str, rules: str) -> Verdict:
-        """Grade completeness first; an otherwise-finished answer still fails on an unread source."""
-        verdict = await self._judge.evaluate(transcript=transcript, answer=answer, rules=rules)
+    async def evaluate(self, transcript: str, answer: str, rules: str) -> Verdict:  # noqa: ARG002 — panel signature
+        """Pass unless the answer cites something this run never read."""
         citations = Citations(answer, [url for recorder in self._opened for url in recorder.urls])
         if not citations.unread:
-            return verdict
+            return Verdict(finished=True, missing=[], feedback="")
         logger.info(
             "Answer cites sources it never opened",
             extra={"cited": len(citations.cited), "read": citations.read},
         )
-        return Verdict(
-            finished=False,
-            missing=[*verdict.missing, citations.demand()],
-            feedback=verdict.feedback,
-        )
+        return Verdict(finished=False, missing=[citations.demand()], feedback=citations.demand())
 
 
 class Citations:

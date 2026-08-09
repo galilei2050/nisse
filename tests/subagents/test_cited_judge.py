@@ -5,17 +5,9 @@ budget. A note handed to the caller instead names no claim and buys no fix.
 """
 
 import pytest
-from baski.agents.judge import Judge, Verdict
+from baski.agents.judge import Verdict
 
 from app.subagents.citations import CitedJudge, OpenedPages
-
-
-class _Stub(Judge):
-    """A completeness judge that always passes, so only the citation check can fail the answer."""
-
-    async def evaluate(self, transcript: str, answer: str, rules: str) -> Verdict:
-        """Say the answer is complete, whatever it says."""
-        return Verdict(finished=True, missing=[], feedback="")
 
 
 class _Browse:
@@ -32,11 +24,15 @@ class _Browse:
 
 
 async def _verdict(answer: str, opened_urls: list[str]) -> Verdict:
-    """Grade `answer` after a run that opened `opened_urls`."""
+    """Grade `answer` on the citation axis alone, after a run that opened `opened_urls`.
+
+    Completeness is a separate member of the jury (`baski.agents.Jury`); this judge answers only
+    "was the cited page read", so the test needs no stand-in for the other one.
+    """
     recorder = OpenedPages(_Browse())  # type: ignore[arg-type]  # duck-typed stand-in
     for url in opened_urls:
         await recorder.execute(url=url)
-    return await CitedJudge(_Stub(), [recorder]).evaluate(transcript="q", answer=answer, rules="r")
+    return await CitedJudge([recorder]).evaluate(transcript="q", answer=answer, rules="r")
 
 
 @pytest.mark.asyncio

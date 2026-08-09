@@ -2,7 +2,7 @@
 
 import logging
 
-from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
+from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, Jury, ToolResult, ToolSet
 from baski.agents.tool import Tool
 from baski.server.logger import log_context
 from pydantic import BaseModel, Field
@@ -134,4 +134,4 @@ class SubagentTool(Tool):
         a note it cannot use.
         """
         graded = GeminiJudge(instructions=self._config.judge_prompt, project=self._deps.judge_project)
-        return CitedJudge(graded, opened)
+        return Jury([graded, CitedJudge(opened)])
