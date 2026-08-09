@@ -1,13 +1,18 @@
 """SubagentTool — wraps one configured sub-agent as a delegating Tool (prompt in → result out)."""
 
-from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, ToolResult, ToolSet
+import logging
+
+from baski.agents import Agent, AgentConfig, GeminiJudge, InMemoryMessageHistory, Judge, Jury, ToolResult, ToolSet
 from baski.agents.tool import Tool
 from baski.server.logger import log_context
 from pydantic import BaseModel, Field
 
 from app.shared import CoreDeps
+from app.subagents.citations import CitedJudge, OpenedPages
 from app.subagents.gateway import gateway_client, is_gateway_model, price_for
 from app.subagents.store import SubagentConfig
+
+logger = logging.getLogger(__name__)
 
 
 class SubagentTool(Tool):
@@ -58,19 +63,29 @@ class SubagentTool(Tool):
         turn cost and links its trace under the parent's — so `total_cost` and the trace tree cover
         the whole delegation, at any depth.
         """
+        opened: list[OpenedPages] = []
         with log_context(agent=self.name):  # tag every log this sub-agent (and its children) emits
-            agent = Agent(self._agent_config())
+            agent = Agent(self._agent_config(opened))
             agent.add_pinned_text(prompt)  # task mode — the prompt IS the child's whole request
             result = await agent.execute()
         if result.response is None:
             raise RuntimeError(f"subagent '{self.name}' produced no response (trace {result.trace_id})")
         return ToolResult(content=result.response, cost=result.total_cost, sub_trace_ids=[result.trace_id])
 
-    def _agent_config(self) -> AgentConfig:
-        """Assemble the child's AgentConfig from its stored config; fresh history per call (stateless)."""
+    def _agent_config(self, opened: list[OpenedPages]) -> AgentConfig:
+        """Assemble the child's AgentConfig from its stored config; fresh history per call (stateless).
+
+        `browse_website` is handed over wrapped, so the run's own list of opened pages exists to check
+        its citations against — the tool call's arguments are the only place that set is knowable.
+        """
         toolset = ToolSet()
         for name in self._config.tool_names:
             for tool in self._resolve_tools(name):
+                if tool.name == "browse_website":
+                    recorder = OpenedPages(tool)
+                    opened.append(recorder)
+                    toolset.add(recorder)
+                    continue
                 toolset.add(tool)
         return AgentConfig(
             toolset=toolset,
@@ -81,7 +96,7 @@ class SubagentTool(Tool):
             database=self._deps.database,
             bucket_name=self._deps.bucket_name,
             system_prompt=self._config.system_prompt,
-            judge=self._judge(),
+            judge=self._judge(opened),
             model=self._config.model,
             price=price_for(self._config.model),
             max_turns=self._config.max_turns,
@@ -111,6 +126,13 @@ class SubagentTool(Tool):
         """A delegated child sub-agent, built with no siblings so nesting is capped at one level."""
         return SubagentTool(config, self._deps, conversation_id=self._conversation_id, siblings={})
 
-    def _judge(self) -> Judge:
-        """The child's own completeness judge, graded against its config's rubric."""
-        return GeminiJudge(instructions=self._config.judge_prompt, project=self._deps.judge_project)
+    def _judge(self, opened: list[OpenedPages]) -> Judge:
+        """The child's completeness judge — joined by the citation check only if it can browse.
+
+        "Cite only what you opened" is a fair demand of a web researcher and a nonsensical one for a
+        worker without `browse_website`: it opens nothing, so every url it mentions would count as
+        unread and every answer would be sent back. The roster decides, not the type — a worker the
+        curator invents tomorrow gets this machinery exactly when it gets the tool.
+        """
+        graded = GeminiJudge(instructions=self._config.judge_prompt, project=self._deps.judge_project)
+        return Jury([graded, CitedJudge(opened)]) if opened else graded
