@@ -17,19 +17,24 @@ class _Browse:
     description = "Read a page."
     one_line = "Read a page."
     Input = Verdict  # any model — the wrapper copies it and nothing here inspects it
+    input_schema = {"type": "object", "properties": {"url": {"type": "string"}}}
 
-    async def execute(self, **kwargs: object) -> str:
-        """Return the page as the real tool would."""
-        return "page text"
+    def __init__(self, *, dead: str = "") -> None:
+        """`dead` names a url this stand-in refuses, the way a 404 does — as text, not a raise."""
+        self._dead = dead
+
+    async def execute(self, url: str, **kwargs: object) -> str:
+        """Return page text, or the refusal the real tool returns for a url that does not exist."""
+        return f"Website not found (404). URL does not exist: {url}" if url == self._dead else "page text"
 
 
-async def _verdict(answer: str, opened_urls: list[str]) -> Verdict:
+async def _verdict(answer: str, opened_urls: list[str], dead: str = "") -> Verdict:
     """Grade `answer` on the citation axis alone, after a run that opened `opened_urls`.
 
     Completeness is a separate member of the jury (`baski.agents.Jury`); this judge answers only
     "was the cited page read", so the test needs no stand-in for the other one.
     """
-    recorder = OpenedPages(_Browse())  # type: ignore[arg-type]  # duck-typed stand-in
+    recorder = OpenedPages(_Browse(dead=dead))  # type: ignore[arg-type]  # duck-typed stand-in
     for url in opened_urls:
         await recorder.execute(url=url)
     return await CitedJudge([recorder]).evaluate(transcript="q", answer=answer, rules="r")

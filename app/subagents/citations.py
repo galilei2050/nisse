@@ -5,9 +5,9 @@ worker cited 1,307 sources and had loaded 295 of them — 22.6% — and 93 answe
 sources having opened none. A prompt rule fixed that for one model (36% -> 64%) and did nothing for
 another (15% -> 13%), which is why this is arithmetic and not an instruction.
 
-It discloses rather than refuses: a claim resting on a search result is sometimes legitimate, and
-breaking that answer would cost more than it saves. What the caller must not have is silence — an
-invented figure under a real-looking link is the failure the owner cannot detect.
+It sends the answer back rather than annotating it. A note travelling upward names no claim and buys
+no fix; at the loop's exit the worker still has its tools, and the demand offers an exit — open the
+page, or drop the claim and say the evidence is thin.
 """
 
 import logging
@@ -31,6 +31,10 @@ _TRAILING = ".,;:!?)]}>】》」＞"
 
 logger = logging.getLogger(__name__)
 
+# `WebBrowseTool` reports a dead url as text rather than raising, so these openings are how a failed
+# fetch is told apart from a page. A url that answered with one of them was never read.
+_FETCH_FAILED = ("Website timed out", "Cannot access website", "Website not found", "Website returned HTTP")
+
 
 def _normalise(url: str) -> str:
     """Compare urls without the parts that do not identify a page."""
@@ -40,35 +44,46 @@ def _normalise(url: str) -> str:
 class OpenedPages(Tool):
     """Wraps `browse_website` and remembers which urls it was asked for.
 
-    baski's `ToolSet` keeps each call's cost and duration but not its arguments, and the set of pages
-    a run opened is knowable only here — adding it to the library for one consumer would be the wrong
-    place. Lifecycle: one per sub-agent run, since the list is that run's evidence.
+    The transcript also records each call (`[tool] browse_website({...})`) and the judge is handed it,
+    so this is not the only place the set exists — it is the only place it stays complete. History
+    truncation drops the oldest turns at 90% of budget, and a page read early in a long run would
+    vanish from the transcript while its citation remained, turning a read source into a demand to
+    re-open it. Lifecycle: one per sub-agent run, since the list is that run's evidence.
     """
 
     class Input(BaseModel):
-        """Placeholder schema, replaced per instance.
+        """Stub, required by `Tool.__init_subclass__`; the wrapped tool's schema replaces it.
 
-        `Tool` demands one on the class; the real schema is the wrapped tool's, copied in `__init__`
-        before the model is ever shown this.
+        Both halves have to be copied in `__init__`: `Input` is what validates the call, while
+        `input_schema` — derived from THIS class at definition time — is what the model is shown.
+        Copying only `Input` left the model looking at a `browse_website` with `url` alone, so
+        `sections` and `offset` became uncallable while the description still told it to use them.
         """
 
         url: str
 
     def __init__(self, browse: Tool) -> None:
-        """Take the wrapped tool's identity so the model sees no difference."""
+        """Take the wrapped tool's identity, schema and all, so the model sees no difference."""
         self.name = browse.name
         self.description = browse.description
         self.one_line = browse.one_line
-        self.Input = browse.Input  # type: ignore[misc]  # the schema the model is shown
+        self.Input = browse.Input  # type: ignore[misc]  # validates the call
+        self.input_schema = browse.input_schema  # what the model is shown
         self._browse = browse
         self.urls: list[str] = []
 
-    async def execute(self, **kwargs: object) -> str | ToolResult:
-        """Record the url, then hand the call to the real tool unchanged."""
-        url = kwargs.get("url")
-        if isinstance(url, str):
+    async def execute(self, url: str, **kwargs: object) -> str | ToolResult:
+        """Fetch first, and record the url only if the page came back.
+
+        Recording the request would let a hallucinated link that 404s count as read — the failure
+        this whole check exists to catch. `WebBrowseTool` returns its errors as text rather than
+        raising, so the result is what says whether there was a page.
+        """
+        result = await self._browse.execute(url=url, **kwargs)
+        content = result if isinstance(result, str) else result.content
+        if not content.startswith(_FETCH_FAILED):
             self.urls.append(url)
-        return await self._browse.execute(**kwargs)
+        return result
 
 
 class CitedJudge(Judge):
@@ -109,8 +124,17 @@ class Citations:
         self.unread = {url for url in self.cited if not self._matches(url)}
 
     def _matches(self, cited: str) -> bool:
-        """A citation counts as read when it names a page the run loaded, or that page's section."""
-        return any(cited.startswith(opened) or opened.startswith(cited) for opened in self._opened)
+        """Read when the citation IS an opened url, or a fragment/sub-path of an opened PATH.
+
+        The boundary matters and a plain `startswith` in both directions does not have it: opening
+        `irs.gov/` normalises to the bare host, and every invented `irs.gov/pub/whatever` would then
+        vouch for itself. An opened url can only stand for something below it, and only if it names
+        a page rather than a whole site.
+        """
+        return any(
+            cited == opened or (("/" in opened and cited.startswith(f"{opened}/")) or cited.startswith(f"{opened}#"))
+            for opened in self._opened
+        )
 
     @property
     def read(self) -> int:

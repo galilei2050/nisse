@@ -127,11 +127,12 @@ class SubagentTool(Tool):
         return SubagentTool(config, self._deps, conversation_id=self._conversation_id, siblings={})
 
     def _judge(self, opened: list[OpenedPages]) -> Judge:
-        """The child's completeness judge, plus the one verdict a model cannot give.
+        """The child's completeness judge — joined by the citation check only if it can browse.
 
-        Whether a cited page was actually opened is arithmetic, and the loop's exit is where it can
-        still be acted on — the worker gets another turn with its tools instead of the caller getting
-        a note it cannot use.
+        "Cite only what you opened" is a fair demand of a web researcher and a nonsensical one for a
+        worker without `browse_website`: it opens nothing, so every url it mentions would count as
+        unread and every answer would be sent back. The roster decides, not the type — a worker the
+        curator invents tomorrow gets this machinery exactly when it gets the tool.
         """
         graded = GeminiJudge(instructions=self._config.judge_prompt, project=self._deps.judge_project)
-        return Jury([graded, CitedJudge(opened)])
+        return Jury([graded, CitedJudge(opened)]) if opened else graded
