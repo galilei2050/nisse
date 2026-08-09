@@ -51,7 +51,7 @@ The bot is a **delegate** standing in for a personal assistant — design and ev
 
 Design notes and deeper docs live in `docs/`. Check there before implementing; filenames describe their topic. See `docs/CLAUDE.md` for what belongs in a doc.
 
-Two registers live at the root instead, because they are working lists the owner reads and acts on rather than design notes: `BUGS.md` (open defects) and `PRICING.md` (what the agent costs, measured, and the levers that would change it — read it before proposing any cost or model change).
+Three working lists live at the root instead, because the owner reads and acts on them rather than designing from them. **`TODO.md` is the one to read first** — it is the single queue of what to do next, in order of harm, and it points at the other two for evidence. `BUGS.md` holds open defects with their reproduction; `PRICING.md` holds what the agent costs, measured, and the levers that would change it (read it before proposing any cost or model change). Neither is a queue: a defect can sit in `BUGS.md` for a reason, and `TODO.md` is where the reason to act now is argued.
 
 ## Commands
 
