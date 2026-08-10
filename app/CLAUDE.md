@@ -224,6 +224,25 @@ app/
                     MAIN_TOOLS, for the research sub-agent's fatter roster)
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
+  browser/          logged-in browser ACTIONS — NOT WIRED TO ANY AGENT (no register_tools, so the
+                    registry doesn't know these names and nothing can call them). Ported from #34 as
+                    the tools alone, on purpose; wiring is a separate decision.
+    session.py      BrowserSession — one chat's isolated, logged-in Playwright context + page, read as
+                    an INDEXED ELEMENT LISTING (`[ref] role "label" — nearby text`) plus a capped slice
+                    of visible page text (totals and "Order Placed" are not interactive, and the agent
+                    has to read them), acted on by `ref`. Refs are re-tagged every action, so only the
+                    latest listing's are valid. Why not `aria_snapshot` role+name, and the open defects
+                    review found before wiring: docs/browser-actions.md
+    tools.py        web_open · web_snapshot · web_click · web_type · web_scroll — one per action, each
+                    returning the post-action listing. Distinct from `browse_website` (public page →
+                    markdown): these are for DOING something behind a login
+    store.py        BrowserSessionStore — the chat's Playwright storage-state (cookies + localStorage)
+                    in Mongo `browser_sessions`, one doc per conversation. Nothing WRITES it yet
+                    (`make startbrowser` was not ported), so `load()` returns None today
+    proxy.py        ProxyPool — pins one residential proxy per host, rotates only on `mark_banned`;
+                    parsed from BROWSER_PROXIES so the provider token stays out of the app
+                    (design + the measured Cloudflare/Turnstile findings: docs/browser-actions.md)
+
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
     store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() records the
                     config it replaced — a sub-agent's prompt IS its behaviour)
@@ -273,7 +292,8 @@ app/
 
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
-`tools`, `shared`. The
+`tools`, `shared`. `browser` is a third state — in the tree, only its proxy pool under test, and
+reachable by no agent, because its tools were ported ahead of the decision to wire them. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
 owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
 passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.

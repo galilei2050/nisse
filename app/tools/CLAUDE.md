@@ -55,3 +55,6 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
   `Conversation` to clear per reply) and `DeleteMessagesTool` (needs the agent's live history) — both
   wired by hand in `Conversations._build`. Sub-agents themselves are data-driven (Mongo, per chat),
   resolved in `SubagentTool`, not registered here.
+- **`app/browser/`'s five action tools are also unregistered, but for a different reason** — not their
+  nature, an open decision. They were ported ahead of it, so no agent can reach them; registering them
+  is the wiring commit, and `docs/browser-actions.md` lists what it has to fix first.
