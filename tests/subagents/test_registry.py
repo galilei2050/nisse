@@ -6,7 +6,18 @@ Also guards the one audience invariant that has no flag to enforce it: the resea
 
 import pytest
 
+from baski.agents.tools import WebBrowseTool
+
 from app.assistant.conversations import MAIN_TOOLS
+from app.browser.tools import (
+    BROWSER_TOOL_NAME,
+    WebClickTool,
+    WebOpenTool,
+    WebScrollTool,
+    WebSnapshotTool,
+    WebTypeTool,
+)
+from app.curator.curator import CURATOR_TOOLS
 from app.tools import ToolRegistry
 from app.tools.wiring import build_tool_registry
 
@@ -49,11 +60,35 @@ def test_browser_is_registered_but_not_on_the_main_roster() -> None:
     """`browser` must be grantable and un-held: the curator can only give a tool the registry knows.
 
     Both halves are the point. Unregistered, `subagent_save` refuses the name and the nightly pass
-    cannot act on evidence that a worker needs to click; on `MAIN_TOOLS`, it would be handed out by
-    this commit rather than by the pass that read the evidence.
+    cannot act on evidence that a worker needs to click; on `MAIN_TOOLS`, it would be handed out by the
+    roster in code rather than by the pass that read the evidence.
     """
-    assert "browser" not in MAIN_TOOLS
-    assert build_tool_registry().get("browser") is not None
+    assert BROWSER_TOOL_NAME not in MAIN_TOOLS
+    assert build_tool_registry().get(BROWSER_TOOL_NAME) is not None
+
+
+def test_acting_on_a_page_reads_differently_from_fetching_one() -> None:
+    """The property the whole capability-gap fix rests on, asserted on the real advertised text.
+
+    A chooser sees only `one_line`. If the browser actions read like `browse_website`, a reader concludes
+    the capability is already there and leaves the roster alone — the measured failure of 2026-08-09. No
+    deps needed: `one_line` is a class attribute.
+    """
+    acting = {tool.one_line for tool in (WebOpenTool, WebSnapshotTool, WebClickTool, WebTypeTool, WebScrollTool)}
+    assert len(acting) == 5, "each action must advertise itself distinctly, or refs and clicking blur together"
+    assert WebBrowseTool.one_line not in acting
+    assert any("act in" in line or "Click" in line or "Type into" in line for line in acting)
+
+
+def test_every_curator_tool_name_resolves() -> None:
+    """A typo in `CURATOR_TOOLS` raises inside `build`, which kills the 04:00 pass with nobody watching.
+
+    `ask_user` stays out on purpose — it blocks on the owner tapping a button, and the owner is asleep.
+    """
+    registry = build_tool_registry()
+    unknown = [name for name in CURATOR_TOOLS if registry.get(name) is None]
+    assert unknown == []
+    assert "ask_user" not in CURATOR_TOOLS
 
 
 class _Stub:

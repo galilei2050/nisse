@@ -16,6 +16,7 @@ lifetime (closed when the shared browser closes). Fine for one owner; revisit if
 so always act on refs from the latest output.
 """
 
+import asyncio
 import contextlib
 
 from baski.clients.playwright_client import PlaywrightClient
@@ -24,6 +25,11 @@ from playwright.async_api import Error as PlaywrightError
 
 from app.browser.proxy import ProxyPool
 from app.browser.store import BrowserSessionStore
+
+
+class NoPageOpenError(RuntimeError):
+    """Raised when an action is asked for before any page was opened — the caller phrases the refusal."""
+
 
 _ACTION_TIMEOUT = 15000  # ms — fail an action fast so the agent can re-read and retry, not hang 90s
 _SETTLE_QUIET = 500  # ms of no DOM mutations that counts as "rendered"
@@ -42,21 +48,41 @@ class BrowserSession:
         self._proxy_pool = proxy_pool
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._opening = asyncio.Lock()
 
     async def _ensure_context(self, url: str | None) -> BrowserContext:
-        """Open the chat's context on first use, loading its saved session and pinning `url`'s proxy."""
-        if self._context is not None:
+        """Open the chat's context on first use, loading its saved session and pinning `url`'s proxy.
+
+        Serialized because a turn's tool calls run concurrently (baski gathers them, parallel tool use
+        enabled). Two `web_open`s in one turn otherwise both see no context, both build one, and the
+        later assignment wins: measured — the following `web_snapshot` returned the FIRST page while the
+        model believed it was on the second, and the losing context stayed alive with nothing holding it.
+        A click on the wrong site is the same action the model thinks it is taking somewhere else.
+        """
+        async with self._opening:
+            if self._context is not None:
+                return self._context
+            storage_state = await self._session_store.load()
+            proxy = self._proxy_pool.for_url(url) if (self._proxy_pool and url) else None
+            self._context = await self._client.new_context(storage_state, proxy=proxy.model_dump() if proxy else None)
             return self._context
-        storage_state = await self._session_store.load()
-        proxy = self._proxy_pool.for_url(url) if (self._proxy_pool and url) else None
-        self._context = await self._client.new_context(storage_state, proxy=proxy.model_dump() if proxy else None)
-        return self._context
 
     async def _live_page(self, url: str | None = None) -> Page:
-        """The chat's persistent page, opening its (proxied, logged-in) context on first use."""
+        """The chat's persistent page, opening its context on first use."""
         context = await self._ensure_context(url)
         if self._page is None or self._page.is_closed():
             self._page = await context.new_page()
+        return self._page
+
+    def _open_page(self) -> Page:
+        """The page a previous `open` left, or a refusal — never a blank one built to satisfy the call.
+
+        `_live_page` would happily create `about:blank`, and the acting tools then answered "0 interactive
+        elements", which reads as "the page is empty or still loading" — measured on a first-call
+        `web_snapshot`. The worker reported that to the owner instead of opening anything.
+        """
+        if self._page is None or self._page.is_closed():
+            raise NoPageOpenError
         return self._page
 
     async def open(self, url: str) -> str:
@@ -67,7 +93,7 @@ class BrowserSession:
 
     async def snapshot(self) -> str:
         """Re-read the current page as a fresh indexed element listing (re-tags refs)."""
-        return await _snapshot(await self._live_page())
+        return await _snapshot(self._open_page())
 
     async def click(self, *, ref: int) -> str:
         """Click the element with this ref, then return the updated listing.
@@ -77,13 +103,13 @@ class BrowserSession:
         div over the page that intercepts normal clicks; force-click lands on the real button instead.
         Safe here because the listing only contains visible elements (the index JS filters by visibility).
         """
-        page = await self._live_page()
+        page = self._open_page()
         await page.locator(f"[data-nisse-ref='{ref}']").click(timeout=_ACTION_TIMEOUT, force=True)
         return await _settled_snapshot(page)
 
     async def type(self, *, ref: int, text: str, submit: bool) -> str:
         """Type text into the field with this ref; press Enter when `submit`. Return the listing."""
-        page = await self._live_page()
+        page = self._open_page()
         field = page.locator(f"[data-nisse-ref='{ref}']")
         await field.fill(text, timeout=_ACTION_TIMEOUT)
         if submit:
@@ -92,7 +118,7 @@ class BrowserSession:
 
     async def scroll(self) -> str:
         """Scroll down to render lazy-loaded content (product grids), then return the fresh listing."""
-        page = await self._live_page()
+        page = self._open_page()
         await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
         return await _settled_snapshot(page)
 

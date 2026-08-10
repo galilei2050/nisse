@@ -45,17 +45,24 @@ MANAGEMENT_TOOL_NAME = "subagents"
 # sub-agent, which ordinary chat reaches by delegation.
 CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME)
 
+# Registry names that must never end up in a `tool_names`, read by BOTH the offer (`_catalogue`) and the
+# refusal (`_reject`) so the shelf cannot advertise something the save then rejects — the curator's whole
+# job here is picking names off that shelf.
+# `ask_user` is here for a different reason than the curator-only pair: it blocks on the owner tapping a
+# button (`app/chat/ask.py`, 300s). A worker holding it under a scheduled fire waits out the timeout with
+# nobody looking at the screen, and answers "the user did not answer".
+NOT_GRANTABLE = (*CURATOR_ONLY_TOOLS, "ask_user")
+
 
 class SubagentListTool(Tool):
     """Reads the conversation's sub-agent roster in full. Lifecycle: per-conversation."""
 
     name = "subagent_list"
-    one_line = "Show the configured sub-agents with their full prompts and tools, and every tool available to grant"
+    one_line = "Show the configured sub-agents in full, and the tools you may grant them"
     description = (
         "Read the conversation's sub-agents in full — name, description, model, tool_names, "
-        "system_prompt, judge_prompt — followed by the catalogue of every tool name you may put in a "
-        "tool_names, with what each one does. Read before editing one: subagent_save replaces a config "
-        "wholesale, so you need the current text to change one part of it."
+        "system_prompt, judge_prompt — then the tools you may grant. Read before editing one: "
+        "subagent_save replaces a config wholesale, so you need the current text to change one part."
     )
 
     class Input(BaseModel):
@@ -87,14 +94,15 @@ class SubagentListTool(Tool):
         """
         catalog = self._deps.tools.catalog(self._deps, self._conversation_id)
         lines = [
-            "### Tools available to grant (any of these names may go in tool_names)",
+            "### Registered tools you may grant (any of these names may go in tool_names)",
             "A worker gets a capability ONLY if its tool_names lists the name. If the work the owner "
             "asked for needs something no listed tool of that worker does, the fix is this list, not "
-            "the prompt.",
+            "the prompt. A tool_names entry may ALSO be the name of one of the workers above — that is "
+            "how a worker delegates — so this list is what is registered, not everything you may name.",
         ]
         for name in sorted(catalog):
-            if name in CURATOR_ONLY_TOOLS:
-                continue  # refused in tool_names anyway; offering it would only invite a rejected save
+            if name in NOT_GRANTABLE:
+                continue  # `_reject` refuses these; offering one would only invite a rejected save
             lines.append(f"- {name}: {' · '.join(catalog[name])}")
         return "\n".join(lines)
 
@@ -180,11 +188,12 @@ class SubagentSaveTool(Tool):
         """
         if config.model not in ALLOWED_MODELS:
             return f"Rejected: model '{config.model}' is not one of {', '.join(ALLOWED_MODELS)}."
-        curator_only = [name for name in CURATOR_ONLY_TOOLS if name in config.tool_names]
-        if curator_only:
-            # Otherwise the curator could hand one of these write surfaces to a sub-agent, which the
-            # main agent delegates to from ordinary chat — routing around "curator-only" entirely.
-            return f"Rejected: {curator_only} may not be given to a sub-agent."
+        refused = [name for name in NOT_GRANTABLE if name in config.tool_names]
+        if refused:
+            # Two reasons, one list (see NOT_GRANTABLE): a write surface handed to a sub-agent is
+            # reachable from ordinary chat by delegation, routing around "curator-only" entirely; and a
+            # tool that blocks on the owner tapping a button strands any worker a schedule drives.
+            return f"Rejected: {refused} may not be given to a sub-agent."
         siblings = {existing.name for existing in await self._store.list()} | {config.name}
         unknown = [n for n in config.tool_names if self._deps.tools.get(n) is None and n not in siblings]
         if unknown:

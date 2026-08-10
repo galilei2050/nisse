@@ -21,5 +21,5 @@ def build_tool_registry() -> ToolRegistry:
     prompts.register_tools(registry)
     subagents.register_tools(registry)  # the researcher-only hypothesis tree
     ask.register_tools(registry)  # the clarifying-question tool (needs `deps.bot`)
-    browser.register_tools(registry)  # `browser` — registered so the curator CAN grant it; nobody holds it
+    browser.register_tools(registry)  # `browser` — registered, held by nobody; see app/browser/__init__.py
     return registry

@@ -78,22 +78,19 @@ triggers a change on its own:
 
 ## What the curator may change, and what it may never learn
 
-Its write surface is five tool sets (`CURATOR_TOOLS`): `memory`, `lists`, `core_memory`,
-`judge_rules`, `subagents`, plus `google_search` and `browse_website` to read with. No `ask_user` —
-the owner is asleep. It uses the **same tools as the live assistant**, so there is one write path per
-store rather than a parallel curator-only one that could drift. Two of the writers are curator-only
-(absent from `MAIN_TOOLS`): `judge_rules` and `subagents` both decide how every later reply is
-produced or accepted, so only the attributed, reported nightly pass writes them.
+Its surface is `CURATOR_TOOLS` (`app/curator/curator.py` — the list and the reason for each entry live
+there, not here): one writer per store, plus search and page-reading to decide with. No `ask_user` —
+the owner is asleep. The writers are the **same tools the live assistant uses**, so there is one write
+path per store rather than a parallel curator-only one that could drift; two of them are absent from
+`MAIN_TOOLS` because they decide how every later reply is produced or accepted, so only the attributed,
+reported nightly pass writes them.
 
-The two read-only tools exist for one job — closing a **capability gap**. When the day shows work the
-assistant could not do at all (it said so, or the owner asked "do you not have X?", or the owner did
-the step by hand and pasted the result back), the lever is the roster, not the wording: grant the
-missing tool to the worker whose job already covers the task, or create a worker when the task differs
-in *kind*. Deciding which of those, and what the capability actually requires, is a question about the
-world rather than about the transcript — so the prompt tells the pass to look it up instead of
-guessing, and these two tools are what makes that instruction followable. The pass is told not to copy
-tool usage rules into a worker's prompt: every tool carries its own, the worker re-reads them each
-turn, and a copy in the prompt is a second version that goes stale and gets followed anyway.
+Why it can read the web at all: a **capability gap** is a failure class the behaviour levers cannot
+touch. When the day shows work the assistant could not do *at all*, the lever is the roster — grant the
+missing tool, or build a worker when the task differs in kind — and deciding which requires knowing what
+the capability actually involves, which is a question about the world rather than about the transcript.
+The rules themselves are in `NISSE_CURATOR_PROMPT` (`app/curator/prompt.py`); this paragraph exists to
+say the class is recognised on purpose, not to restate them.
 
 `judge_rules` is the lever for a failure that core memory cannot fix. When the owner has to repeat a
 complaint the core block already covers, rewording that instruction a third time changes nothing —

@@ -81,7 +81,7 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
             http=http,
             anthropic=anthropic,
             database=database,
-            playwright=playwright,  # unused by the curator's tools, but CoreDeps is one shape for every caller
+            playwright=playwright,  # `browse_website` is in CURATOR_TOOLS, so the pass really does use it
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),
             schedule_endpoint="http://localhost/schedule/fire",

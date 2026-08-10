@@ -153,7 +153,7 @@ class Curator:
             return await agent.execute()
 
     def _agent_config(self, conversation_id: int) -> AgentConfig:
-        """The curator's own agent: its prompt, its five stores, a fresh history, its own judge.
+        """The curator's own agent: its prompt, the tools in `CURATOR_TOOLS`, a fresh history, its own judge.
 
         NOT the assistant's judge — that rubric grades how completely an answer served the owner's
         request, and would push a maintenance pass toward doing more work on thin evidence. The
