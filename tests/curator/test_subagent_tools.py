@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.subagents.tools import ALLOWED_MODELS, SubagentSaveTool
+from app.subagents.tools import ALLOWED_MODELS, NOT_GRANTABLE, SubagentSaveTool
 from app.tools.registry import ToolRegistry
 
 CONVERSATION = 42
@@ -51,11 +51,11 @@ def _fields(**overrides: object) -> dict:
 def _tool(store: _FakeStore) -> SubagentSaveTool:
     registry = ToolRegistry()
     registry.register("google_search", lambda _deps, _cid: [])
-    # The curator-only pair is registered for real, so a config naming one is refused BY THE FENCE.
-    # Leave them out and they are refused as unknown names instead — the same visible outcome, and
-    # the fence could be deleted with the test still green.
-    registry.register("subagents", lambda _deps, _cid: [])
-    registry.register("judge_rules", lambda _deps, _cid: [])
+    # Every refused name is registered for real, so a config naming one is refused BY THE FENCE. Leave one
+    # out and it is refused as an unknown name instead — the same visible outcome, and the fence could be
+    # deleted with the test still green. Built from the constant so a name added there is covered here.
+    for name in NOT_GRANTABLE:
+        registry.register(name, lambda _deps, _cid: [])
     deps = SimpleNamespace(tools=registry, database=None)
     return SubagentSaveTool(store, deps, conversation_id=CONVERSATION)  # type: ignore[arg-type]  # fake deps
 
@@ -68,7 +68,7 @@ async def test_an_unknown_tool_name_is_refused_before_it_can_break_the_next_buil
     assert store.saved == []  # refused, not saved-then-broken
 
 
-@pytest.mark.parametrize("curator_only", ["subagents", "judge_rules"])
+@pytest.mark.parametrize("curator_only", NOT_GRANTABLE)
 async def test_a_curator_only_tool_may_not_be_handed_to_a_subagent(curator_only: str) -> None:
     """Both are registered in the shared registry, so a sub-agent config could name either — and the
     main agent delegates to sub-agents from ordinary chat. Absence from `MAIN_TOOLS` alone leaves that

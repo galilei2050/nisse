@@ -31,6 +31,12 @@ from app.tools.registry import ToolRegistrar
 
 logger = logging.getLogger(__name__)
 
+# The registry name, declared because it is compared elsewhere and not only read: `app/subagents/tools.py`
+# refuses it in a worker's `tool_names` (this tool blocks on the owner tapping a button, so a worker a
+# schedule drives would just wait out the timeout). A literal there and here would drift silently — the
+# refusal would stop matching and nothing would fail loudly.
+ASK_USER_TOOL_NAME = "ask_user"
+
 _ANSWER_TIMEOUT = 300.0  # seconds to wait for an answer — well under the 1800s worker deadline
 _CONFIRM_LABEL = "✅ Done"
 _NONE_LABEL = "None of these"
@@ -206,7 +212,7 @@ class AskUserTool(Tool):
     Lifecycle: per-conversation (built with the chat's bot + chat_id).
     """
 
-    name = "ask_user"
+    name = ASK_USER_TOOL_NAME
     one_line = "Ask the owner a short multiple-choice question and wait for their tap"
     description = (
         "Ask the owner ONE question only they can answer — a budget, a taste, a date or time they "
@@ -272,4 +278,4 @@ def _ask_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
 
 def register_tools(registrar: ToolRegistrar) -> None:
     """Register the ask_user clarifying-question tool."""
-    registrar.register("ask_user", _ask_tools)
+    registrar.register(ASK_USER_TOOL_NAME, _ask_tools)

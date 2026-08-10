@@ -193,7 +193,6 @@ class NisseBot(TelegramServer):
         await ListStore.ensure_indexes(self._database)
         await ReactionStore.ensure_indexes(self._database)
         await SubagentStore.ensure_indexes(self._database)
-        # `browser` is grantable from Mongo with no deploy, so its index cannot wait for a first writer
         await BrowserSessionStore.ensure_indexes(self._database)
         await RevisionLog.ensure_indexes(self._database)  # written by every actor, not just the curator
         await Curator.ensure_indexes(self._database)

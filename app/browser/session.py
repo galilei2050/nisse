@@ -1,7 +1,9 @@
-"""Per-chat logged-in browser session for *acting* on web pages, not just reading them.
+"""Per-chat browser session for *acting* on web pages, not just reading them.
 
-One isolated browser context per conversation, loaded with that chat's saved session (`make
-startbrowser`), branched off the shared browser. Pages are read as an *indexed element listing*: each
+One isolated browser context per conversation, branched off the shared browser and carrying whatever
+session the chat has saved — today none, since nothing writes `browser_sessions`.
+
+Pages are read as an *indexed element listing*: each
 visible interactive element (button/link/field) is tagged with a numeric `ref` and shown with its
 nearby text — including prices and product names that the bare accessibility name omits. The agent
 acts by `ref`, which sidesteps the two ways `aria_snapshot` role+name breaks on real apps: identical
@@ -28,7 +30,23 @@ from app.browser.store import BrowserSessionStore
 
 
 class NoPageOpenError(RuntimeError):
-    """Raised when an action is asked for before any page was opened — the caller phrases the refusal."""
+    """An action was asked for before any page was opened.
+
+    Carries its own agent-facing text and is deliberately NOT caught by the tools: baski's loop logs the
+    traceback, marks the result `is_error=True` and hands the model this message. Catching it to return a
+    sentence would spend the loudness and buy nothing — the model reads the same words either way, while
+    the trace would record a failed action as a successful call.
+    """
+
+    def __init__(self) -> None:
+        """One phrasing, at the layer that knows the condition."""
+        super().__init__("No page is open in this session. Call web_open with a URL first.")
+
+
+def _usable(context: BrowserContext) -> bool:
+    """Whether this context's browser is still there — a dead one fails every action, forever."""
+    browser = context.browser
+    return browser is not None and browser.is_connected()
 
 
 _ACTION_TIMEOUT = 15000  # ms — fail an action fast so the agent can re-read and retry, not hang 90s
@@ -37,7 +55,7 @@ _SETTLE_CAP = 2500  # ms hard cap — don't wait forever on a page that never go
 
 
 class BrowserSession:
-    """One chat's live, logged-in page. Read it with `snapshot`; act by `ref` with `click`/`type`/`scroll`."""
+    """One chat's live page. Read it with `snapshot`; act by `ref` with `click`/`type`/`scroll`."""
 
     def __init__(
         self, *, client: PlaywrightClient, session_store: BrowserSessionStore, proxy_pool: ProxyPool | None = None
@@ -50,50 +68,52 @@ class BrowserSession:
         self._page: Page | None = None
         self._opening = asyncio.Lock()
 
-    async def _ensure_context(self, url: str | None) -> BrowserContext:
-        """Open the chat's context on first use, loading its saved session and pinning `url`'s proxy.
+    async def _prepare_page(self, url: str) -> Page:
+        """This chat's page, building the context and the page on first use. Caller holds `_opening`.
 
-        Serialized because a turn's tool calls run concurrently (baski gathers them, parallel tool use
-        enabled). Two `web_open`s in one turn otherwise both see no context, both build one, and the
-        later assignment wins: measured — the following `web_snapshot` returned the FIRST page while the
-        model believed it was on the second, and the losing context stayed alive with nothing holding it.
-        A click on the wrong site is the same action the model thinks it is taking somewhere else.
+        A context whose browser has gone (Cloud Run OOM-kills Chromium) is dropped rather than reused: the
+        cached one fails every action for the rest of the process, and each failure would be phrased as if
+        a retry could help.
         """
-        async with self._opening:
-            if self._context is not None:
-                return self._context
+        if self._context is not None and not _usable(self._context):
+            self._context, self._page = None, None
+        if self._context is None:
             storage_state = await self._session_store.load()
-            proxy = self._proxy_pool.for_url(url) if (self._proxy_pool and url) else None
+            proxy = self._proxy_pool.for_url(url) if self._proxy_pool else None
             self._context = await self._client.new_context(storage_state, proxy=proxy.model_dump() if proxy else None)
-            return self._context
-
-    async def _live_page(self, url: str | None = None) -> Page:
-        """The chat's persistent page, opening its context on first use."""
-        context = await self._ensure_context(url)
         if self._page is None or self._page.is_closed():
-            self._page = await context.new_page()
+            self._page = await self._context.new_page()
         return self._page
 
-    def _open_page(self) -> Page:
+    def _require_open_page(self) -> Page:
         """The page a previous `open` left, or a refusal — never a blank one built to satisfy the call.
 
-        `_live_page` would happily create `about:blank`, and the acting tools then answered "0 interactive
-        elements", which reads as "the page is empty or still loading" — measured on a first-call
-        `web_snapshot`. The worker reported that to the owner instead of opening anything.
+        Acting methods must not reach the lazy open: it would create `about:blank`, and they then answered
+        "0 interactive elements", which reads as "the page is empty or still loading" — measured on a
+        first-call `web_snapshot`, and the worker reported exactly that to the owner.
         """
         if self._page is None or self._page.is_closed():
             raise NoPageOpenError
         return self._page
 
     async def open(self, url: str) -> str:
-        """Navigate to a URL and return the indexed element listing."""
-        page = await self._live_page(url)
-        await page.goto(url, wait_until="domcontentloaded")
-        return await _settled_snapshot(page)
+        """Navigate to a URL and return the indexed element listing.
+
+        Held under `_opening` for the whole navigate-and-read, not just the lazy build. A turn's tool calls
+        run concurrently (baski gathers them, parallel tool use enabled) and there is ONE page per chat, so
+        two `web_open`s in one turn otherwise interleave their `goto` and their snapshot on that page and
+        each can return the other's content. Measured before this was serialized: both callers navigated,
+        `self._page` kept one of them, and the next click resolved its ref against the other site while the
+        model read its own listing for this one. Serial latency for a case that is already a model mistake.
+        """
+        async with self._opening:
+            page = await self._prepare_page(url)
+            await page.goto(url, wait_until="domcontentloaded")
+            return await _settled_snapshot(page)
 
     async def snapshot(self) -> str:
         """Re-read the current page as a fresh indexed element listing (re-tags refs)."""
-        return await _snapshot(self._open_page())
+        return await _snapshot(self._require_open_page())
 
     async def click(self, *, ref: int) -> str:
         """Click the element with this ref, then return the updated listing.
@@ -103,13 +123,13 @@ class BrowserSession:
         div over the page that intercepts normal clicks; force-click lands on the real button instead.
         Safe here because the listing only contains visible elements (the index JS filters by visibility).
         """
-        page = self._open_page()
+        page = self._require_open_page()
         await page.locator(f"[data-nisse-ref='{ref}']").click(timeout=_ACTION_TIMEOUT, force=True)
         return await _settled_snapshot(page)
 
     async def type(self, *, ref: int, text: str, submit: bool) -> str:
         """Type text into the field with this ref; press Enter when `submit`. Return the listing."""
-        page = self._open_page()
+        page = self._require_open_page()
         field = page.locator(f"[data-nisse-ref='{ref}']")
         await field.fill(text, timeout=_ACTION_TIMEOUT)
         if submit:
@@ -118,7 +138,7 @@ class BrowserSession:
 
     async def scroll(self) -> str:
         """Scroll down to render lazy-loaded content (product grids), then return the fresh listing."""
-        page = self._open_page()
+        page = self._require_open_page()
         await page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
         return await _settled_snapshot(page)
 

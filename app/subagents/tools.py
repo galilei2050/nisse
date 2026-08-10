@@ -51,6 +51,10 @@ CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME)
 # `ask_user` is here for a different reason than the curator-only pair: it blocks on the owner tapping a
 # button (`app/chat/ask.py`, 300s). A worker holding it under a scheduled fire waits out the timeout with
 # nobody looking at the screen, and answers "the user did not answer".
+# `ask_user` is spelled out rather than imported from `app.chat.ask` (where `ASK_USER_TOOL_NAME` is
+# declared): that import cycles — `app.chat` pulls `app.chat.curate`, which pulls `app.curator`, which
+# reaches back here, so importing `app.curator` first fails outright. The drift risk is real and covered by
+# a test instead: `tests/subagents/test_registry.py` asserts every name here resolves in the live registry.
 NOT_GRANTABLE = (*CURATOR_ONLY_TOOLS, "ask_user")
 
 
@@ -188,6 +192,13 @@ class SubagentSaveTool(Tool):
         """
         if config.model not in ALLOWED_MODELS:
             return f"Rejected: model '{config.model}' is not one of {', '.join(ALLOWED_MODELS)}."
+        if self._deps.tools.get(config.name) is not None:
+            # A worker's name becomes its delegating tool's name, and `Conversations._build` adds the
+            # sub-agent tools into the ToolSet AFTER the registry ones — keyed by name, so a worker called
+            # `ask_user` REPLACES the real tool and every clarifying question silently runs an agent
+            # instead of reaching the owner. Refusing `tool_names` while leaving this field open closes one
+            # door of the same room.
+            return f"Rejected: '{config.name}' is already a registered tool name — a worker may not shadow one."
         refused = [name for name in NOT_GRANTABLE if name in config.tool_names]
         if refused:
             # Two reasons, one list (see NOT_GRANTABLE): a write surface handed to a sub-agent is
