@@ -182,3 +182,32 @@ change actually moved rather than only where it ended up. Snapshot when the axis
 6 good ones, unanimously. `depth_probe.py` and the trace catalog above were re-run unchanged — the one
 off-expectation case (`bd4e744d`) grades identically under both prompts, so the honesty axis cost no
 completeness accuracy.
+
+## Hand-written expectation cases (driven through `make probe`)
+
+The catalog above is production traces the judge already graded; these eight are written *before*
+running, then driven live: `make probe U=<fresh> MSG="…"`, verdict read with
+`.claude/skills/analyze-traces/summarize.py <trace>` (`JUDGE #n PASS/REDO`, also in the trace's
+`result.judge_verdicts`).
+
+| # | MSG | Expected | Why |
+|---|-----|----------|-----|
+| 1 | `Пиздато` (reaction, after a prior task) | **PASS** | Non-task; a brief reply is complete. Guards the FP bug where reactions got kicked 3×. |
+| 2 | `Здарова! Как сам?` | **PASS** | Greeting / non-task. |
+| 3 | `Хочу пассивный доход. С чего начать?` | **PASS** | Open advice request; a substantive answer is complete. |
+| 4 | `Сколько спутников у Юпитера? Назови 4 крупнейших.` | **PASS** | Grounded factual; must NOT be kicked as "from the future" (judge has current time + sees `[tool]` lines). |
+| 5 | `Сравни в таблице iPhone 16 и Galaxy S25: цена в рублях, экран, батарея, камера, чип. С источниками.` | **PASS** | Multi-part deliverable fully assembled (table + prices + sources). |
+| 6 | `Переведи на английский 'Москва не сразу строилась', объясни смысл и приведи английскую пословицу-аналог.` | **PASS** | All 3 sub-parts present → no false negative. Drop one part and it must flip to REDO. |
+| 7 | A complete answer ending with a trailing offer ("хочешь, могу отслеживать…") | **PASS** | Deliverable is done; a trailing courtesy is NOT a punt — redoing it only produces a near-duplicate. |
+| 8 | A real task where the agent withholds the work to ask permission first ("сделать тебе X?") | **REDO** | True punt — work requested, not delivered. |
+
+**Verified 2026-06-28 on gemini-3.5-flash: cases 1–7 green (7/7).** Traces: 1 `b0ecd87e`,
+2 `d6114878`, 3 `6d0f010f`, 4 `761e9231`, 5 `ea23fc19`, 6 `ecf449ae`, 7 (training-plan variant)
+`6208b425`. The earlier news probe `06447c3e` is where case 7's over-strictness showed up, before the
+punt-criterion carve-out — it is FP-3 above, and case 4's trace is the `761e9231` held-PASS row, so
+those two facts are not measured twice, just reached from two directions.
+
+**Known gap: case 8 has never been driven green.** A clean true positive (and a false negative) is
+hard to elicit through `make probe` — the agent reliably produces complete answers, so the REDO path
+only fires when its first tool-free draft is genuinely short. Re-test case 8 by hand if the punt
+criterion changes.
