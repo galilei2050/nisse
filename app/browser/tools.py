@@ -13,13 +13,13 @@ tools are for public pages you have to interact with, not for accounts.
 """
 
 import logging
+from typing import ClassVar
 
 from baski.agents.tool import Tool
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, Field
 
-from app.browser.session import BrowserSession, NoPageOpenError
+from app.browser.session import BrowserSession
 from app.browser.store import BrowserSessionStore
 from app.shared import CoreDeps
 from app.tools.registry import ToolRegistrar
@@ -31,21 +31,38 @@ logger = logging.getLogger(__name__)
 BROWSER_TOOL_NAME = "browser"
 
 
-# Each action hands the model a sentence instead of raising, so a stale ref or a dead page is something
-# it can correct on the next turn rather than a lost turn. The cost is that baski's tool loop never sees
-# the exception, so it neither logs it nor marks the result as an error — which is why every one of these
-# logs first. Without that a browser failure in production leaves no trace anywhere and the trace records
-# the call as a success.
-def _failed(action: str, exc: Exception, **fields: object) -> str:
-    """Log one failed browser action and return the sentence the model reads."""
-    logger.warning("Browser action failed", extra={"action": action, "error": str(exc), **fields})
-    return f"{action} failed: {exc}."
-
-
 _REF_FIELD = Field(description="The [ref] number of the target element, from the most recent listing")
 
 
-class WebOpenTool(Tool):
+class _EmptyInput(BaseModel):
+    """Placeholder Input for the abstract base; every concrete action overrides it."""
+
+
+class _BrowserTool(Tool):
+    """Base for the five actions: holds the chat's session and owns the one failure path.
+
+    A site failure (navigation timeout, a ref that no longer exists) comes back as a sentence rather than
+    an exception, so the model corrects on the next turn instead of losing it. That costs the loudness
+    baski's loop would have given — it neither logs nor marks the result an error — so the log line is
+    paid here, once, for every action. `NoPageOpenError` is deliberately NOT caught: calling an action
+    before `web_open` is a caller mistake, not a site problem, and letting it raise buys the traceback and
+    the error mark while the model reads the same words the exception carries.
+    """
+
+    Input: ClassVar[type[BaseModel]] = _EmptyInput
+    hint: ClassVar[str] = ""  # what to do next, when there is something useful to say
+
+    def __init__(self, session: BrowserSession) -> None:
+        """Hold the chat's browser session — one per chat, shared by all five actions."""
+        self._session = session
+
+    def _failed(self, exc: Exception, **fields: object) -> str:
+        """Log this action's failure with its traceback, and return the sentence the model reads."""
+        logger.warning("Browser action failed", exc_info=exc, extra={"action": self.name, **fields})
+        return f"{self.name} failed: {exc}.{self.hint}"
+
+
+class WebOpenTool(_BrowserTool):
     """Open a URL in the chat's browser and return the page as an indexed element listing."""
 
     name = "web_open"
@@ -66,19 +83,15 @@ class WebOpenTool(Tool):
 
         url: str = Field(description="Full URL to open, e.g. https://www.doordash.com")
 
-    def __init__(self, session: BrowserSession) -> None:
-        """Hold the chat's browser session."""
-        self._session = session
-
     async def execute(self, url: str) -> str:
         """Open the URL and return the indexed element listing."""
         try:
             return await self._session.open(url)
-        except (PlaywrightError, PlaywrightTimeoutError) as exc:
-            return _failed("web_open", exc, url=url)
+        except PlaywrightError as exc:
+            return self._failed(exc, url=url)
 
 
-class WebSnapshotTool(Tool):
+class WebSnapshotTool(_BrowserTool):
     """Re-read the current page as a fresh indexed element listing (after it changed, or to get refs)."""
 
     name = "web_snapshot"
@@ -92,24 +105,19 @@ class WebSnapshotTool(Tool):
     class Input(BaseModel):
         """No arguments — snapshots the current page."""
 
-    def __init__(self, session: BrowserSession) -> None:
-        """Hold the chat's browser session."""
-        self._session = session
-
     async def execute(self) -> str:
         """Return the current page's indexed element listing."""
         try:
             return await self._session.snapshot()
-        except NoPageOpenError:
-            return "No page is open in this session. Call web_open with a URL first."
-        except (PlaywrightError, PlaywrightTimeoutError) as exc:
-            return _failed("web_snapshot", exc)
+        except PlaywrightError as exc:
+            return self._failed(exc)
 
 
-class WebClickTool(Tool):
+class WebClickTool(_BrowserTool):
     """Click an element in the chat's browser by its [ref] from the latest listing."""
 
     name = "web_click"
+    hint = " Call web_snapshot to get current refs."
     one_line = "Click an element in your browser session by its [ref]"
     description = (
         "Click the element with the given [ref] (from the most recent listing), then return the "
@@ -121,24 +129,19 @@ class WebClickTool(Tool):
 
         ref: int = _REF_FIELD
 
-    def __init__(self, session: BrowserSession) -> None:
-        """Hold the chat's browser session."""
-        self._session = session
-
     async def execute(self, ref: int) -> str:
         """Click the element and return the updated listing, or a recoverable error."""
         try:
             return await self._session.click(ref=ref)
-        except NoPageOpenError:
-            return "No page is open in this session. Call web_open with a URL first."
-        except (PlaywrightError, PlaywrightTimeoutError) as exc:
-            return _failed("web_click", exc, ref=ref) + " Call web_snapshot to get current refs."
+        except PlaywrightError as exc:
+            return self._failed(exc, ref=ref)
 
 
-class WebTypeTool(Tool):
+class WebTypeTool(_BrowserTool):
     """Type text into a field in the chat's browser by its [ref] from the latest listing."""
 
     name = "web_type"
+    hint = " Call web_snapshot to get current refs."
     one_line = "Type into a field in your browser session by its [ref] (optionally submit)"
     description = (
         "Type text into the field with the given [ref], then return the updated listing. Set "
@@ -152,21 +155,15 @@ class WebTypeTool(Tool):
         text: str = Field(description="Text to type into the field")
         submit: bool = Field(default=False, description="Press Enter after typing (submit the form/search)")
 
-    def __init__(self, session: BrowserSession) -> None:
-        """Hold the chat's browser session."""
-        self._session = session
-
     async def execute(self, ref: int, text: str, *, submit: bool) -> str:
         """Type into the field and return the updated listing, or a recoverable error."""
         try:
             return await self._session.type(ref=ref, text=text, submit=submit)
-        except NoPageOpenError:
-            return "No page is open in this session. Call web_open with a URL first."
-        except (PlaywrightError, PlaywrightTimeoutError) as exc:
-            return _failed("web_type", exc, ref=ref) + " Call web_snapshot to get current refs."
+        except PlaywrightError as exc:
+            return self._failed(exc, ref=ref)
 
 
-class WebScrollTool(Tool):
+class WebScrollTool(_BrowserTool):
     """Scroll the page down to render lazy-loaded content (e.g. product grids), then return the listing."""
 
     name = "web_scroll"
@@ -180,18 +177,12 @@ class WebScrollTool(Tool):
     class Input(BaseModel):
         """No arguments — scrolls the current page down."""
 
-    def __init__(self, session: BrowserSession) -> None:
-        """Hold the chat's browser session."""
-        self._session = session
-
     async def execute(self) -> str:
         """Scroll down and return the updated listing."""
         try:
             return await self._session.scroll()
-        except NoPageOpenError:
-            return "No page is open in this session. Call web_open with a URL first."
-        except (PlaywrightError, PlaywrightTimeoutError) as exc:
-            return _failed("web_scroll", exc)
+        except PlaywrightError as exc:
+            return self._failed(exc)
 
 
 def browser_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:

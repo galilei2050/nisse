@@ -18,6 +18,7 @@ from app.browser.tools import (
     WebTypeTool,
 )
 from app.curator.curator import CURATOR_TOOLS
+from app.subagents.tools import NOT_GRANTABLE
 from app.tools import ToolRegistry
 from app.tools.wiring import build_tool_registry
 
@@ -67,17 +68,39 @@ def test_browser_is_registered_but_not_on_the_main_roster() -> None:
     assert build_tool_registry().get(BROWSER_TOOL_NAME) is not None
 
 
-def test_acting_on_a_page_reads_differently_from_fetching_one() -> None:
-    """The property the whole capability-gap fix rests on, asserted on the real advertised text.
+def test_the_advertised_text_does_not_promise_a_session_that_cannot_exist() -> None:
+    """A chooser sees only `one_line`, so that is where a false promise does its damage.
 
-    A chooser sees only `one_line`. If the browser actions read like `browse_website`, a reader concludes
-    the capability is already there and leaves the roster alone — the measured failure of 2026-08-09. No
-    deps needed: `one_line` is a class attribute.
+    Nothing writes `browser_sessions`, so `load()` returns None and every context opens signed out. The
+    text used to say "logged-in browser session"; a nightly pass reading that grants the browser to close
+    a behind-a-login gap, reports it closed, and the worker gets the login wall as page content — the same
+    promise-then-miss the capability work exists to remove. No deps needed: `one_line` is a class attribute.
     """
-    acting = {tool.one_line for tool in (WebOpenTool, WebSnapshotTool, WebClickTool, WebTypeTool, WebScrollTool)}
+    acting = [t.one_line for t in (WebOpenTool, WebSnapshotTool, WebClickTool, WebTypeTool, WebScrollTool)]
+    assert "no saved logins" in WebOpenTool.one_line.lower(), "the chooser must be told logins are absent"
+    assert not [line for line in acting if "logged-in" in line or "logged in" in line]
+
+
+def test_acting_on_a_page_reads_differently_from_fetching_one() -> None:
+    """`browse_website` and the browser must not look like the same capability on the shelf.
+
+    Reading them as interchangeable is the measured failure of 2026-08-09: the pass saw `browse_website`
+    in the worker's roster and concluded the ability to click was already there.
+    """
+    acting = {t.one_line for t in (WebOpenTool, WebSnapshotTool, WebClickTool, WebTypeTool, WebScrollTool)}
     assert len(acting) == 5, "each action must advertise itself distinctly, or refs and clicking blur together"
     assert WebBrowseTool.one_line not in acting
-    assert any("act in" in line or "Click" in line or "Type into" in line for line in acting)
+
+
+def test_every_refused_name_is_a_real_registry_name() -> None:
+    """`NOT_GRANTABLE` spells `ask_user` out (importing it cycles), so the spelling needs a guard.
+
+    A name that matches nothing is refused by neither the catalogue's skip nor `_reject` — the shelf offers
+    it and the save accepts it, silently. `ask_user` blocks on the owner tapping a button, so a worker a
+    schedule drives would wait out the 300s timeout with nobody looking.
+    """
+    registry = build_tool_registry()
+    assert [name for name in NOT_GRANTABLE if registry.get(name) is None] == []
 
 
 def test_every_curator_tool_name_resolves() -> None:

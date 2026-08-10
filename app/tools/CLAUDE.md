@@ -62,7 +62,7 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
   Mongo — so who holds what is runtime data no file here can state truthfully. What registration buys is
   that a name is *valid* in a `tool_names`, which is the precondition for the nightly curator granting
   it (`subagent_save` validates against this registry). `browser` (`app/browser/`) is the case that made
-  the distinction matter; state and open defects live in `app/browser/__init__.py`.
+  the distinction matter; its open defects are registered in `docs/browser-actions.md`.
 - **A factory must be cheap and side-effect-free to construct.** `ToolRegistry.catalog` builds every
   registered factory to read each tool's `one_line`, so a constructor that reads a required env var or
   opens a connection would break the curator's roster read — a tool it does not even hold. Do the work

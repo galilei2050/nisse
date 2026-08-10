@@ -1,4 +1,4 @@
-"""Logged-in browser actions — a per-chat session the agent reads as an element listing and acts on.
+"""Browser actions — a per-chat page the agent reads as an element listing and acts on.
 
 **Registered, but held by nobody.** `register_tools` puts the five actions in the shared registry under
 the name `browser`; `MAIN_TOOLS` does not list it and no sub-agent config names it, so today nothing

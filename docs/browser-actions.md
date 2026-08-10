@@ -8,7 +8,8 @@ click, type, scroll), and the decisions behind the design. Code: `app/browser/` 
 > (`app/tools/wiring.py`), но `MAIN_TOOLS` их не называет и ни один конфиг субагента тоже — значит
 > позвать их сегодня нечему. Регистрация нужна, чтобы ночной куратор МОГ их выдать: `subagent_save`
 > сверяет `tool_names` с реестром. Кому они достанутся — данные в Mongo, а не код, так что «держит
-> никто» перестанет быть правдой без единого коммита; смотреть надо `make subagents`, не этот файл.
+> никто» перестанет быть правдой без единого коммита; живой состав виден через `subagent_list` (или
+> прямо в коллекции `subagents`), а не из этого файла.
 >
 > Ниже описан замысел целиком, и часть его в дереве отсутствует: управляемого удалённого браузера
 > (`managed.py`, Browserbase через CDP — без него на сайтах под Cloudflare можно читать, но не
@@ -169,14 +170,15 @@ about the shape:
 - **They are not `browse_website`** (read-only public fetch → markdown). The routing rule the
   descriptions carry: search tools for finding facts and URLs; the browser only to read behind a login
   or to act.
-- **A failed action returns the reason plus what to do next** rather than raising, so the agent
-  self-corrects instead of losing the turn. The cost of that choice: baski's tool loop would otherwise
-  log the exception, and it records these as successful results — see the open questions below.
+- **A site failure returns the reason plus what to do next** rather than raising, so the agent
+  self-corrects instead of losing the turn. The cost: baski's loop never sees the exception, so it
+  neither logs it nor marks the result an error — the log line is paid in `_BrowserTool._failed`
+  instead. A caller mistake (acting before `web_open`) does raise, and is logged and marked by the loop.
 
 ## Action use-cases (ranked by value × feasibility, single owner)
 
 1. **Logged-in reads** — order history, balances, "did it ship?" — behind a login the public fetcher
-   can't reach. Highest ROI, lowest risk; the first thing to lean on.
+   can't reach. Highest ROI and lowest risk of the list, and unreachable until a capture flow exists.
 2. **Reorder / buy on a saved-card site** — enabled by the Revolut saved card.
 3. **Booking** — restaurants / appointments / tickets without an API.
 4. **Form-filling** — registrations, applications (the agent already has the owner's facts in core
