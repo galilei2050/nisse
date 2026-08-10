@@ -65,6 +65,13 @@ question, delegates each sub-question, synthesizes) over a `retrieval` worker (a
 self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
 Methodology behind the prompts: `docs/research-subagent.md`.
 
+**`subagent_list` prints its index in the RESULT, not through `Tool.user_message()`** — the one place in
+this app that deviates from the uniform seam. Two reasons: the index here is the whole registry
+(`ToolRegistry.catalog` builds every registered tool to read its `one_line`), so a `user_message()` block
+would pay for all of it on each of the curator's up-to-40 turns; and `subagent_save` already forces a
+`subagent_list` call before any edit, since it replaces a config wholesale. So the read is mandatory
+anyway and the index rides it. Do not copy this for a tool whose index is small — use the seam.
+
 `register_tools` (this package's `__init__.py`) registers the sub-agent-facing registry tools that
 aren't plain web leaves — `hypothesis_tree` (the add/update pair) and `short_term` (a fresh
 `ShortTermMemory`/`working_note` for holding findings across turns). Both build a fresh instance per run.

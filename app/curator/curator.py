@@ -41,10 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 CURATOR_MODEL = "claude-opus-5"  # runs once a night on high-stakes edits; a cheap miss here is expensive
-# Its whole surface — no web, no ask_user. `judge_rules` and `subagents` are here and deliberately not
-# in MAIN_TOOLS: both decide how the assistant behaves for every later reply, so only the attributed,
-# reported nightly pass writes them.
-CURATOR_TOOLS = ["memory", "lists", "core_memory", "judge_rules", "subagents"]
+# Its whole surface — no ask_user, since the owner is asleep. `judge_rules` and `subagents` are here and
+# deliberately not in MAIN_TOOLS: both decide how the assistant behaves for every later reply, so only
+# the attributed, reported nightly pass writes them.
+# Search and page-reading are here for ONE job: closing a capability gap it found. Deciding which tool
+# a worker is missing, or what a new worker's job should be, is a question about the world — and the
+# prompt tells it to find out rather than guess. Telling it to research with nothing to research WITH
+# would be the same broken instruction the prompt forbids it from writing for the assistant.
+CURATOR_TOOLS = ["memory", "lists", "core_memory", "judge_rules", "subagents", "google_search", "browse_website"]
 _CONTEXT_TOKENS = 120_000  # a day of transcript plus the stores it reads back
 _MAX_TURNS = 40
 _WINDOW = datetime.timedelta(days=1)
@@ -149,7 +153,7 @@ class Curator:
             return await agent.execute()
 
     def _agent_config(self, conversation_id: int) -> AgentConfig:
-        """The curator's own agent: its prompt, its five stores, a fresh history, its own judge.
+        """The curator's own agent: its prompt, the tools in `CURATOR_TOOLS`, a fresh history, its own judge.
 
         NOT the assistant's judge — that rubric grades how completely an answer served the owner's
         request, and would push a maintenance pass toward doing more work on thin evidence. The

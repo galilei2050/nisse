@@ -29,9 +29,9 @@ class BrowserSessionStore:
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique index on conversation_id — one session document per chat. Idempotent.
 
-        No caller yet: `backend.py`'s startup hook builds the indexes of the stores that are wired, and
-        this one isn't. Until it is registered there, `save`'s upsert has nothing enforcing
-        one-document-per-chat, so two concurrent saves can leave `load` picking an arbitrary one.
+        The index has to exist before a session is ever written, and `browser` is grantable from Mongo
+        with no deploy — the nightly pass can put it on a worker any night. So this is built at startup
+        like every other store's, not when the first writer lands.
         """
         await ensure_index(database[_COLLECTION], [("conversation_id", 1)], unique=True)
 

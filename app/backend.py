@@ -25,6 +25,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
+from app.browser import BrowserSessionStore
 from app.chat.ask import PendingQuestions
 from app.chat.curate import CurateCommand
 from app.chat.format import compose_answer
@@ -192,6 +193,8 @@ class NisseBot(TelegramServer):
         await ListStore.ensure_indexes(self._database)
         await ReactionStore.ensure_indexes(self._database)
         await SubagentStore.ensure_indexes(self._database)
+        # `browser` is grantable from Mongo with no deploy, so its index cannot wait for a first writer
+        await BrowserSessionStore.ensure_indexes(self._database)
         await RevisionLog.ensure_indexes(self._database)  # written by every actor, not just the curator
         await Curator.ensure_indexes(self._database)
 

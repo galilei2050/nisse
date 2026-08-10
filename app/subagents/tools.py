@@ -45,31 +45,66 @@ MANAGEMENT_TOOL_NAME = "subagents"
 # sub-agent, which ordinary chat reaches by delegation.
 CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME)
 
+# Registry names that must never end up in a `tool_names`, read by BOTH the offer (`_catalogue`) and the
+# refusal (`_reject`) so the shelf cannot advertise something the save then rejects — the curator's whole
+# job here is picking names off that shelf.
+# `ask_user` is here for a different reason than the curator-only pair: it blocks on the owner tapping a
+# button (`app/chat/ask.py`, 300s). A worker holding it under a scheduled fire waits out the timeout with
+# nobody looking at the screen, and answers "the user did not answer".
+NOT_GRANTABLE = (*CURATOR_ONLY_TOOLS, "ask_user")
+
 
 class SubagentListTool(Tool):
     """Reads the conversation's sub-agent roster in full. Lifecycle: per-conversation."""
 
     name = "subagent_list"
-    one_line = "Show the configured sub-agents with their full prompts and tools"
+    one_line = "Show the configured sub-agents in full, and the tools you may grant them"
     description = (
         "Read the conversation's sub-agents in full — name, description, model, tool_names, "
-        "system_prompt, judge_prompt. Read before editing one: subagent_save replaces a config "
-        "wholesale, so you need the current text to change one part of it."
+        "system_prompt, judge_prompt — then the tools you may grant. Read before editing one: "
+        "subagent_save replaces a config wholesale, so you need the current text to change one part."
     )
 
     class Input(BaseModel):
         """No arguments — the roster is always the whole conversation's."""
 
-    def __init__(self, store: SubagentStore) -> None:
-        """Bind to one conversation's sub-agent store."""
+    def __init__(self, store: SubagentStore, deps: CoreDeps, *, conversation_id: int) -> None:
+        """Bind to one conversation's sub-agent store, plus the registry the catalogue is read from."""
         self._store = store
+        self._deps = deps
+        self._conversation_id = conversation_id
 
     async def execute(self) -> str:
-        """Render every configured sub-agent, full text — the curator edits from this, not from memory."""
+        """The roster, then the catalogue — the curator edits from this, not from memory."""
         configs = await self._store.list()
-        if not configs:
-            return "No sub-agents are configured in this conversation."
-        return "\n\n".join(self._render(config) for config in configs)
+        roster = (
+            "\n\n".join(self._render(config) for config in configs)
+            if configs
+            else "No sub-agents are configured in this conversation."
+        )
+        return f"{roster}\n\n{self._catalogue()}"
+
+    def _catalogue(self) -> str:
+        """Every grantable tool name with what it does — so a missing capability is visible as a gap.
+
+        Without this the roster shows only the names a worker ALREADY has, and a worker that cannot do
+        something looks identical to one that can: the reader recognises `browse_website` as "the web"
+        and concludes the capability was present. Naming what is on the shelf is what makes "this
+        worker is missing a tool" a conclusion the evidence can support.
+        """
+        catalog = self._deps.tools.catalog(self._deps, self._conversation_id)
+        lines = [
+            "### Registered tools you may grant (any of these names may go in tool_names)",
+            "A worker gets a capability ONLY if its tool_names lists the name. If the work the owner "
+            "asked for needs something no listed tool of that worker does, the fix is this list, not "
+            "the prompt. A tool_names entry may ALSO be the name of one of the workers above — that is "
+            "how a worker delegates — so this list is what is registered, not everything you may name.",
+        ]
+        for name in sorted(catalog):
+            if name in NOT_GRANTABLE:
+                continue  # `_reject` refuses these; offering one would only invite a rejected save
+            lines.append(f"- {name}: {' · '.join(catalog[name])}")
+        return "\n".join(lines)
 
     @staticmethod
     def _render(config: SubagentConfig) -> str:
@@ -153,11 +188,12 @@ class SubagentSaveTool(Tool):
         """
         if config.model not in ALLOWED_MODELS:
             return f"Rejected: model '{config.model}' is not one of {', '.join(ALLOWED_MODELS)}."
-        curator_only = [name for name in CURATOR_ONLY_TOOLS if name in config.tool_names]
-        if curator_only:
-            # Otherwise the curator could hand one of these write surfaces to a sub-agent, which the
-            # main agent delegates to from ordinary chat — routing around "curator-only" entirely.
-            return f"Rejected: {curator_only} may not be given to a sub-agent."
+        refused = [name for name in NOT_GRANTABLE if name in config.tool_names]
+        if refused:
+            # Two reasons, one list (see NOT_GRANTABLE): a write surface handed to a sub-agent is
+            # reachable from ordinary chat by delegation, routing around "curator-only" entirely; and a
+            # tool that blocks on the owner tapping a button strands any worker a schedule drives.
+            return f"Rejected: {refused} may not be given to a sub-agent."
         siblings = {existing.name for existing in await self._store.list()} | {config.name}
         unknown = [n for n in config.tool_names if self._deps.tools.get(n) is None and n not in siblings]
         if unknown:
@@ -171,7 +207,10 @@ class SubagentSaveTool(Tool):
 def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
     """The read + write pair over one conversation's sub-agent roster (curator-only)."""
     store = SubagentStore(deps.database, conversation_id=conversation_id)
-    return [SubagentListTool(store), SubagentSaveTool(store, deps, conversation_id=conversation_id)]
+    return [
+        SubagentListTool(store, deps, conversation_id=conversation_id),
+        SubagentSaveTool(store, deps, conversation_id=conversation_id),
+    ]
 
 
 def register_management_tools(registrar: ToolRegistrar) -> None:

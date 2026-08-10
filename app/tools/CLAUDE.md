@@ -7,7 +7,9 @@ name to a factory. Removes the old hand-assembled, per-agent tool wiring.
 ## Shape
 
 - `registry.py` — `ToolRegistry` (generic, tool-agnostic): `register(name, factory)`, `get(name)`,
-  `build(names, deps, conversation_id)`. `ToolFactory = Callable[[CoreDeps, int], list[Tool]]` — a
+  `build(names, deps, conversation_id)`, and `catalog(deps, conversation_id)` — every name mapped to the
+  `one_line` of each tool it yields, for a caller that has to CHOOSE names rather than use them (the
+  curator picking a worker's roster). `ToolFactory = Callable[[CoreDeps, int], list[Tool]]` — a
   factory takes `(deps, conversation_id)` and returns the tool(s) for that name (a list, so one name
   can yield several — the four memory tools, the hypothesis-tree pair). Also defines the
   `ToolRegistrar` **Protocol** (just `register`) — what a domain's `register_tools` depends on, so a
@@ -51,10 +53,17 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
   leaves, NOT the researcher-only `hypothesis_tree`) and each sub-agent's `config.tool_names`. There is
   no `for_main`/`for_subagent` flag on a tool. Every web tool is *registered* (so sub-agents may use
   it); the main agent's roster is just the general subset, to keep its per-turn schema lean.
-- **Two tools are NOT registered**, by nature: the short-term scratchpad (its instance is handed to
-  `Conversation` to clear per reply) and `DeleteMessagesTool` (needs the agent's live history) — both
-  wired by hand in `Conversations._build`. Sub-agents themselves are data-driven (Mongo, per chat),
+- **Two tools are wired BY HAND**, by nature, because the main agent's copy is bound to its loop: the
+  short-term scratchpad (its instance is handed to `Conversation` to clear per reply — the `short_term`
+  registry name exists too, for sub-agents that want their own) and `DeleteMessagesTool` (needs the
+  agent's live history). Both in `Conversations._build`. Sub-agents themselves are data-driven (Mongo, per chat),
   resolved in `SubagentTool`, not registered here.
-- **`app/browser/`'s five action tools are also unregistered, but for a different reason** — not their
-  nature, an open decision. They were ported ahead of it, so no agent can reach them; registering them
-  is the wiring commit, and `docs/browser-actions.md` lists what it has to fix first.
+- **Registration is not a grant.** Holders are `MAIN_TOOLS` plus each conversation's `tool_names` in
+  Mongo — so who holds what is runtime data no file here can state truthfully. What registration buys is
+  that a name is *valid* in a `tool_names`, which is the precondition for the nightly curator granting
+  it (`subagent_save` validates against this registry). `browser` (`app/browser/`) is the case that made
+  the distinction matter; state and open defects live in `app/browser/__init__.py`.
+- **A factory must be cheap and side-effect-free to construct.** `ToolRegistry.catalog` builds every
+  registered factory to read each tool's `one_line`, so a constructor that reads a required env var or
+  opens a connection would break the curator's roster read — a tool it does not even hold. Do the work
+  in `execute`, not in `__init__`.

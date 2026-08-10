@@ -224,9 +224,11 @@ app/
                     MAIN_TOOLS, for the research sub-agent's fatter roster)
                     (discovery→detail chains share an entity id; design: docs/serpapi-search-tools.md)
 
-  browser/          logged-in browser ACTIONS — NOT WIRED TO ANY AGENT (no register_tools, so the
-                    registry doesn't know these names and nothing can call them). Ported from #34 as
-                    the tools alone, on purpose; wiring is a separate decision.
+  browser/          logged-in browser ACTIONS — registered as `browser`, HELD BY NOBODY. Not in
+                    MAIN_TOOLS and named by no sub-agent config, so nothing can call them today.
+                    Registered so the nightly curator is ABLE to grant them: `subagent_save` validates
+                    `tool_names` against the registry, so an unregistered tool is one the pass cannot
+                    hand to a worker however plainly the evidence says it is needed
     session.py      BrowserSession — one chat's isolated, logged-in Playwright context + page, read as
                     an INDEXED ELEMENT LISTING (`[ref] role "label" — nearby text`) plus a capped slice
                     of visible page text (totals and "Order Placed" are not interactive, and the agent
@@ -292,8 +294,8 @@ app/
 
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
-`tools`, `shared`. `browser` is a third state — in the tree, only its proxy pool under test, and
-reachable by no agent, because its tools were ported ahead of the decision to wire them. The
+`tools`, `shared`. `browser` is a third state — registered, only its proxy pool under test, and held by
+no agent: it is on the shelf for the curator to grant, not handed out by a commit. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
 owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
 passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.

@@ -37,8 +37,10 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
 ## Design facts
 
 - **Same tools as the live assistant**, built from the shared registry (`CURATOR_TOOLS`): one write
-  path per store, not a parallel curator-only one that could drift. No web tools, no `ask_user` —
-  the owner is asleep. `judge_rules` and `subagents` are curator-only (off `MAIN_TOOLS`).
+  path per store, not a parallel curator-only one that could drift. No `ask_user` — the owner is
+  asleep. `judge_rules` and `subagents` are curator-only (off `MAIN_TOOLS`).
+- **It can research, for one purpose** — closing a capability gap. Why, at the constant
+  (`CURATOR_TOOLS`, `curator.py`); the rules for using it are in `NISSE_CURATOR_PROMPT`.
 - **It edits the assistant's judge, not its own.** `update_judge_rules` appends to the rubric the
   assistant's replies are graded by — the lever for a rule the answering model keeps reading and
   ignoring, where another wording of the same core-memory line changes nothing. Its OWN rubric

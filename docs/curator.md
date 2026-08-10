@@ -78,12 +78,19 @@ triggers a change on its own:
 
 ## What the curator may change, and what it may never learn
 
-Its whole surface is five tool sets (`CURATOR_TOOLS`): `memory`, `lists`, `core_memory`,
-`judge_rules`, `subagents`. No web, no `ask_user` — the owner is asleep. It uses the **same tools as
-the live assistant**, so there is one write path per store rather than a parallel curator-only one
-that could drift. Two of the five are curator-only (absent from `MAIN_TOOLS`): `judge_rules` and
-`subagents` both decide how every later reply is produced or accepted, so only the attributed,
+Its surface is `CURATOR_TOOLS` (`app/curator/curator.py` — the list and the reason for each entry live
+there, not here): one writer per store, plus search and page-reading to decide with. No `ask_user` —
+the owner is asleep. The writers are the **same tools the live assistant uses**, so there is one write
+path per store rather than a parallel curator-only one that could drift; two of them are absent from
+`MAIN_TOOLS` because they decide how every later reply is produced or accepted, so only the attributed,
 reported nightly pass writes them.
+
+Why it can read the web at all: a **capability gap** is a failure class the behaviour levers cannot
+touch. When the day shows work the assistant could not do *at all*, the lever is the roster — grant the
+missing tool, or build a worker when the task differs in kind — and deciding which requires knowing what
+the capability actually involves, which is a question about the world rather than about the transcript.
+The rules themselves are in `NISSE_CURATOR_PROMPT` (`app/curator/prompt.py`); this paragraph exists to
+say the class is recognised on purpose, not to restate them.
 
 `judge_rules` is the lever for a failure that core memory cannot fix. When the owner has to repeat a
 complaint the core block already covers, rewording that instruction a third time changes nothing —

@@ -4,21 +4,21 @@ How nisse goes from *reading* the web to *doing* things on it (open a page behin
 click, type, scroll), and the decisions behind the design. Code: `app/browser/` and baski's
 `PlaywrightClient`.
 
-> **Состояние на 2026-08-09: в дереве лежат только инструменты, и они ни к чему не подключены.**
-> Перенесено из ветки #34 (исследование и замеры ниже — от 2026-06-27): `tools.py`, `session.py`,
-> `store.py`, `proxy.py` и их тесты. Пакет не регистрируется в реестре (`app/tools/`), поэтому ни
-> один агент этих имён не видит — это сделано намеренно, чтобы разобрать перенос до подключения.
+> **Состояние: зарегистрирован как `browser`, не держит никто.** Пять действий стоят в реестре
+> (`app/tools/wiring.py`), но `MAIN_TOOLS` их не называет и ни один конфиг субагента тоже — значит
+> позвать их сегодня нечему. Регистрация нужна, чтобы ночной куратор МОГ их выдать: `subagent_save`
+> сверяет `tool_names` с реестром. Кому они достанутся — данные в Mongo, а не код, так что «держит
+> никто» перестанет быть правдой без единого коммита; смотреть надо `make subagents`, не этот файл.
 >
-> Ниже описан замысел целиком, и часть его в дереве отсутствует. Чего нет: управляемого удалённого
-> браузера (`managed.py`, Browserbase через CDP — без него на сайтах под Cloudflare можно читать, но
-> не покупать) и зависимости `browserbase`, `make startbrowser` (это он ЗАПИСЫВАЕТ сессию чата, так
-> что `BrowserSessionStore.load` пока всегда возвращает None), обвязки в `CoreDeps`/`Conversations`,
-> и сценария оплаты. Разделы про управляемый браузер, захват сессии и оплату читать как список того,
-> что понадобится при подключении, а не как инструкцию, которую можно выполнить сейчас.
+> Ниже описан замысел целиком, и часть его в дереве отсутствует: управляемого удалённого браузера
+> (`managed.py`, Browserbase через CDP — без него на сайтах под Cloudflare можно читать, но не
+> покупать) и зависимости `browserbase`; `make startbrowser` — это он ЗАПИСЫВАЕТ сессию чата, поэтому
+> `BrowserSessionStore.load` возвращает None всегда, контекст открывается разлогиненным, и страница
+> за входом отдаёт свой логин-вол как обычный текст; сценария оплаты. Эти разделы читать как список
+> того, что понадобится, а не как инструкцию, выполнимую сейчас.
 >
-> Тестами покрыт только пул прокси (`tests/browser/test_proxy.py`). `session.py`, `tools.py` и
-> `store.py` не покрыты: их контракт упирается в живую страницу, а `make probe` до них не доберётся,
-> пока пакет не подключён. Своего файла кейсов у этой возможности пока нет — он нужен к подключению.
+> Тестами покрыт пул прокси (`tests/browser/test_proxy.py`) и регистрация. Контракт `session.py`
+> упирается в живую страницу — своего файла кейсов у этой возможности пока нет.
 
 ## Why this exists, and what it is not
 
@@ -203,24 +203,31 @@ the DoorDash flow is the next milestone to drive and harden.
   a single owner; revisit if many chats act concurrently.
 - **Autonomous pay** is bounded by the saved-card requirement and the Revolut limit (above).
 
-## Open defects, found by review before wiring
+## Open defects
 
-Found by an eight-reviewer pass over the port (2026-08-09) and left unfixed on purpose: each one is a
-design decision, not a typo, and none can bite while the package is unreachable. Fix them *at* wiring,
-because that is the commit that makes them reachable.
+Found by review passes over the port and over its registration (2026-08-09). Registration made them
+reachable, so the ones that produce a **wrong answer** were fixed then: the lazy open is now serialized
+(two `web_open`s in a turn used to leave the snapshot on the first page while the model believed it was
+on the second — measured, three live contexts), an action before any `web_open` now says so instead of
+returning an empty `about:blank` listing as "0 interactive elements", and every failure is logged before
+the sentence goes back to the model. What is left is below.
 
-1. **The proxy is pinned to whatever the FIRST action computed, and four of the five actions compute
-   nothing.** `_ensure_context` caches the context forever, and only `open()` passes a url —
-   `snapshot`/`click`/`type`/`scroll` call `_live_page()` with none. So a chat whose first tool call is
-   `web_snapshot` opens an unproxied context and every later `open(url)` reuses it: sticky-per-host
-   pinning never happens, silently, for the life of the process. `mark_banned` has the same shape — it
-   updates the pool while traffic keeps flowing over the banned proxy. Playwright proxies are
-   per-context, so the fix is to compute the proxy first and rebuild the context when it changes.
-2. **The lazy open is a read-then-write across two awaits with no lock, and tools run concurrently**
-   (baski gathers them, parallel tool use enabled). Two `web_open` calls in one turn both see
-   `_context is None`, both build a context and a page; the later assignment wins and the next
-   `web_snapshot` answers about the other site. The loser leaks — there is no `BrowserSession.close()`.
-3. **A dead context is never noticed.** `_live_page` checks `self._page.is_closed()` but
+**A context leaks per delegation, and nothing carries across them.** `SubagentTool.execute` rebuilds its
+tools on every run, so each delegation that touches the browser builds a fresh `BrowserSession` and its
+own context; there is no `close()` anywhere in `app/browser/`. Measured: three sequential builds with one
+action each left three live contexts, dying only with the process — in Cloud Run, that is the
+memory-limit kill. The design in `session.py` says one context per chat for the bot's lifetime, which is
+what a session-per-conversation owner would give; a session built per delegation is not that. Fix before
+the browser is used often, not before it is used once.
+
+1. **The proxy is pinned to the FIRST host opened, and never changes after.** `_ensure_context` caches
+   the context forever while Playwright proxies are per-context, so the second host in a session browses
+   over the first host's proxy — sticky-per-host, the thing `ProxyPool` exists for, holds only for host
+   one. `mark_banned` has the same shape: it updates the pool while traffic keeps flowing over the banned
+   proxy. The fix is to compute the proxy first and rebuild the context when it changes. (The worse half
+   of this is gone: the acting tools no longer open a context of their own, so the proxy is always
+   computed from a real `open(url)` rather than from whichever action ran first with no url at all.)
+2. **A dead context is never noticed.** `_live_page` checks `self._page.is_closed()` but
    `_ensure_context` never checks the context, so once the shared browser closes every action fails
    forever while telling the agent to re-snapshot. It will loop.
 4. **Pool exhaustion is indistinguishable from "no proxies configured"** — both are `None`, which
@@ -230,11 +237,7 @@ because that is the commit that makes them reachable.
    `browser_sessions`, and the agent reads the login wall as content and reports what it found there.
    Given the project's own weighting of an unverifiable miss, this wants a loud failure at the boundary,
    not a `| None` that reads like a rare edge case.
-6. **The five error handlers pre-empt baski's tool loop, which would log the exception and mark the
-   result `is_error=True`.** There is no logger in this package at all, so a browser failure in
-   production leaves no line anywhere and the loop records it as a successful tool result. The
-   self-correction hint is worth keeping; the lost log is not a fair price for it.
-7. **Structure the repo already settled elsewhere:** the five tool classes repeat one constructor and
+6. **Structure the repo already settled elsewhere:** the five tool classes repeat one constructor and
    one error branch where `app/search/serp_tool.py` shows the base-class shape, and `_snapshot` /
    `_settled_snapshot` / `_is_cf_challenge` are free functions over the `Page` that `BrowserSession`
    owns, with the `data-nisse-ref` name split between a module constant and two methods.
