@@ -28,7 +28,8 @@ class WebOpenTool(Tool):
         "Navigate the logged-in browser to a URL and return the page's interactive elements as an "
         'indexed listing — `[ref] role "label" — nearby text` (the nearby text carries prices and '
         "product names). Use for pages behind a login, or any page you intend to act on; for reading a "
-        "public article use browse_website. The session carries the owner's logins from `make startbrowser`."
+        "public article use browse_website. The session carries whatever logins the owner has saved for "
+        "this chat — when none are saved you get the logged-out page, so read the page before assuming."
     )
 
     class Input(BaseModel):
@@ -122,7 +123,7 @@ class WebTypeTool(Tool):
         """Hold the chat's browser session."""
         self._session = session
 
-    async def execute(self, ref: int, text: str, *, submit: bool = False) -> str:
+    async def execute(self, ref: int, text: str, *, submit: bool) -> str:
         """Type into the field and return the updated listing, or a recoverable error."""
         try:
             return await self._session.type(ref=ref, text=text, submit=submit)

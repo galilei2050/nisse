@@ -87,7 +87,7 @@ class BrowserSession:
         field = page.locator(f"[data-nisse-ref='{ref}']")
         await field.fill(text, timeout=_ACTION_TIMEOUT)
         if submit:
-            await field.press("Enter")
+            await field.press("Enter", timeout=_ACTION_TIMEOUT)
         return await _settled_snapshot(page)
 
     async def scroll(self) -> str:
@@ -126,6 +126,10 @@ _INDEX_JS = r"""
       if (best.length > 180) break; }
     return best.slice(0, 180); };
   const lines = [];
+  // Drop the previous pass's refs first. An element that scrolled out or was hidden keeps the number
+  // it was given, and `page.locator` is strict: a re-used number then resolves to two elements and
+  // the click fails on a ref this listing just printed — with re-snapshotting unable to clear it.
+  document.querySelectorAll('[data-nisse-ref]').forEach((el) => el.removeAttribute('data-nisse-ref'));
   [...document.querySelectorAll(SEL)].filter(vis).forEach((el, i) => {
     el.setAttribute('data-nisse-ref', i);
     const role = el.getAttribute('role') || el.tagName.toLowerCase();
@@ -185,7 +189,7 @@ async def _snapshot(page: Page) -> str:
     """
     title = await page.title()
     listing = await page.evaluate(_INDEX_JS)
-    count = len(listing.splitlines()) if listing else 0
+    count = len(listing.splitlines())
     body = listing or "(no interactive elements found — try scroll, or the page may still be loading)"
     text = (await page.locator("body").inner_text()).strip()
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())[:_TEXT_CAP]

@@ -63,6 +63,15 @@ def test_ban_rotates_to_a_different_proxy() -> None:
     assert rotated.server != banned.server
 
 
+def test_ban_is_scoped_to_the_host_that_saw_it() -> None:
+    # a global ban set would pass the rotation test above and still burn a good proxy for every other
+    # site: 3 proxies would then survive 3 bans in total instead of 3 bans per host
+    pool = _pool()
+    banned = pool.for_url("https://www.doordash.com")
+    pool.mark_banned("https://www.doordash.com")
+    assert pool.for_url("https://www.safeway.com") == banned
+
+
 def test_exhaustion_returns_none() -> None:
     pool = ProxyPool(parse_proxies("1.1.1.1:8000:u:p"))
     url = "https://x.com"
@@ -75,8 +84,10 @@ def test_empty_pool_returns_none() -> None:
     assert ProxyPool([]).for_url("https://x.com") is None
 
 
-def test_load_proxy_pool_reads_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BROWSER_PROXIES", "1.1.1.1:8000:u:p")
-    proxy = load_proxy_pool().for_url("https://x.com")
-    assert proxy is not None
-    assert proxy.server == "http://1.1.1.1:8000"
+def test_load_proxy_pool_refuses_to_run_without_the_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The pool's whole job is that traffic never leaves the owner's own IP. An unset (or empty)
+    # BROWSER_PROXIES must crash here, because the quiet alternative — an empty pool — makes `for_url`
+    # return None for every host, which reads as "no proxy needed" and browses from the bot's own IP.
+    monkeypatch.delenv("BROWSER_PROXIES", raising=False)
+    with pytest.raises(ValueError, match="BROWSER_PROXIES"):
+        load_proxy_pool()

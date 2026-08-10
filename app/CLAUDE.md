@@ -228,11 +228,11 @@ app/
                     registry doesn't know these names and nothing can call them). Ported from #34 as
                     the tools alone, on purpose; wiring is a separate decision.
     session.py      BrowserSession — one chat's isolated, logged-in Playwright context + page, read as
-                    an INDEXED ELEMENT LISTING (`[ref] role "label" — nearby text`) and acted on by
-                    `ref`. Not `aria_snapshot` role+name: identical button names and prices living in
-                    non-ARIA text both break it, so a JS pass tags visible interactive elements with
-                    `data-nisse-ref` and merges each one's nearest ancestor text. Refs are re-tagged
-                    every action, so only the latest listing's refs are valid
+                    an INDEXED ELEMENT LISTING (`[ref] role "label" — nearby text`) plus a capped slice
+                    of visible page text (totals and "Order Placed" are not interactive, and the agent
+                    has to read them), acted on by `ref`. Refs are re-tagged every action, so only the
+                    latest listing's are valid. Why not `aria_snapshot` role+name, and the open defects
+                    review found before wiring: docs/browser-actions.md
     tools.py        web_open · web_snapshot · web_click · web_type · web_scroll — one per action, each
                     returning the post-action listing. Distinct from `browse_website` (public page →
                     markdown): these are for DOING something behind a login
@@ -292,8 +292,8 @@ app/
 
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
-`tools`, `shared`. `browser` is a third state — in the tree, tested, and reachable by no agent, because
-its tools were ported ahead of the decision to wire them. The
+`tools`, `shared`. `browser` is a third state — in the tree, only its proxy pool under test, and
+reachable by no agent, because its tools were ported ahead of the decision to wire them. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
 owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
 passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.

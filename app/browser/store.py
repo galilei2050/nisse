@@ -12,6 +12,8 @@ from baski.primitives import datetime
 from playwright.async_api import StorageState
 from pymongo.asynchronous.database import AsyncDatabase
 
+from app.shared.mongo import ensure_index
+
 _COLLECTION = "browser_sessions"
 
 
@@ -25,15 +27,20 @@ class BrowserSessionStore:
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
-        """Unique index on conversation_id — one session document per chat. Idempotent."""
-        await database[_COLLECTION].create_index([("conversation_id", 1)], unique=True)
+        """Unique index on conversation_id — one session document per chat. Idempotent.
 
-    async def load(self) -> StorageState | None:  # noqa: ANON002 — StorageState is a Playwright TypedDict
+        No caller yet: `backend.py`'s startup hook builds the indexes of the stores that are wired, and
+        this one isn't. Until it is registered there, `save`'s upsert has nothing enforcing
+        one-document-per-chat, so two concurrent saves can leave `load` picking an arbitrary one.
+        """
+        await ensure_index(database[_COLLECTION], [("conversation_id", 1)], unique=True)
+
+    async def load(self) -> StorageState | None:
         """This chat's saved storage-state (cookies + origins), or None if it has never logged in."""
         doc = await self._collection.find_one({"conversation_id": self._conversation_id})
         return doc["storage_state"] if doc else None
 
-    async def save(self, storage_state: StorageState) -> None:  # noqa: ANON002 — Playwright TypedDict
+    async def save(self, storage_state: StorageState) -> None:
         """Overwrite this chat's storage-state in place (upsert) — written by `make startbrowser`."""
         now = datetime.now()
         await self._collection.update_one(
