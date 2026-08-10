@@ -1,17 +1,30 @@
 """Logged-in browser actions — a per-chat session the agent reads as an element listing and acts on.
 
-**Not wired.** There is no `register_tools` here, so the shared registry (`app/tools/`) does not know
-these names and no agent can call them; a caller that wants them constructs `BrowserSession` itself.
-Nothing writes the `browser_sessions` collection either, so `BrowserSessionStore.load` returns None
-and every session opens logged out — read the page before believing you are signed in.
+**Registered, but held by nobody.** `register_tools` puts the five actions in the shared registry under
+the name `browser`; `MAIN_TOOLS` does not list it and no sub-agent config names it, so today nothing
+can call them. Registration exists so the nightly curator is *able* to grant them: `subagent_save`
+validates `tool_names` against this registry, and a tool that isn't in it cannot be handed to a worker
+however plainly the evidence says the worker needs it.
 
-Design, the bot-protection findings and what wiring will need: `docs/browser-actions.md`.
+Nothing writes the `browser_sessions` collection yet, so `BrowserSessionStore.load` returns None and
+every session opens logged out — fine for a public page, useless behind a login.
+
+Design, the bot-protection findings and the open defects to fix before this is leaned on:
+`docs/browser-actions.md`.
 """
 
 from app.browser.proxy import ProxyPool, load_proxy_pool
 from app.browser.session import BrowserSession
 from app.browser.store import BrowserSessionStore
-from app.browser.tools import WebClickTool, WebOpenTool, WebScrollTool, WebSnapshotTool, WebTypeTool
+from app.browser.tools import (
+    WebClickTool,
+    WebOpenTool,
+    WebScrollTool,
+    WebSnapshotTool,
+    WebTypeTool,
+    browser_tools,
+    register_tools,
+)
 
 __all__ = [
     "BrowserSession",
@@ -22,5 +35,7 @@ __all__ = [
     "WebScrollTool",
     "WebSnapshotTool",
     "WebTypeTool",
+    "browser_tools",
     "load_proxy_pool",
+    "register_tools",
 ]

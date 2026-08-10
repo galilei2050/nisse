@@ -15,6 +15,9 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel, Field
 
 from app.browser.session import BrowserSession
+from app.browser.store import BrowserSessionStore
+from app.shared import CoreDeps
+from app.tools.registry import ToolRegistrar
 
 _REF_FIELD = Field(description="The [ref] number of the target element, from the most recent listing")
 
@@ -155,3 +158,33 @@ class WebScrollTool(Tool):
             return await self._session.scroll()
         except (PlaywrightError, PlaywrightTimeoutError) as exc:
             return f"Could not scroll: {exc}. Open a page with web_open first."
+
+
+def browser_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
+    """The five actions over one chat's browser session — one session, so they share a page.
+
+    No proxy pool: `load_proxy_pool` requires `BROWSER_PROXIES`, which nothing sets, and a pool of one
+    unconfigured entry would be worse than none. Add it here when residential egress is actually set up.
+    """
+    session = BrowserSession(
+        client=deps.playwright,
+        session_store=BrowserSessionStore(deps.database, conversation_id=conversation_id),
+    )
+    return [
+        WebOpenTool(session),
+        WebSnapshotTool(session),
+        WebClickTool(session),
+        WebTypeTool(session),
+        WebScrollTool(session),
+    ]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the five actions under one name, so a roster names `browser` and gets the whole set.
+
+    Registering does NOT hand them to anybody: `MAIN_TOOLS` does not list `browser`, and a sub-agent
+    only gets it if a config's `tool_names` says so. What it does buy is that the curator's
+    `subagent_save` can validate that name — an unregistered tool is one the nightly pass is unable to
+    grant, however clearly the evidence says the worker needs it.
+    """
+    registrar.register("browser", browser_tools)

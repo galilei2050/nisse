@@ -50,26 +50,53 @@ class SubagentListTool(Tool):
     """Reads the conversation's sub-agent roster in full. Lifecycle: per-conversation."""
 
     name = "subagent_list"
-    one_line = "Show the configured sub-agents with their full prompts and tools"
+    one_line = "Show the configured sub-agents with their full prompts and tools, and every tool available to grant"
     description = (
         "Read the conversation's sub-agents in full — name, description, model, tool_names, "
-        "system_prompt, judge_prompt. Read before editing one: subagent_save replaces a config "
+        "system_prompt, judge_prompt — followed by the catalogue of every tool name you may put in a "
+        "tool_names, with what each one does. Read before editing one: subagent_save replaces a config "
         "wholesale, so you need the current text to change one part of it."
     )
 
     class Input(BaseModel):
         """No arguments — the roster is always the whole conversation's."""
 
-    def __init__(self, store: SubagentStore) -> None:
-        """Bind to one conversation's sub-agent store."""
+    def __init__(self, store: SubagentStore, deps: CoreDeps, *, conversation_id: int) -> None:
+        """Bind to one conversation's sub-agent store, plus the registry the catalogue is read from."""
         self._store = store
+        self._deps = deps
+        self._conversation_id = conversation_id
 
     async def execute(self) -> str:
-        """Render every configured sub-agent, full text — the curator edits from this, not from memory."""
+        """The roster, then the catalogue — the curator edits from this, not from memory."""
         configs = await self._store.list()
-        if not configs:
-            return "No sub-agents are configured in this conversation."
-        return "\n\n".join(self._render(config) for config in configs)
+        roster = (
+            "\n\n".join(self._render(config) for config in configs)
+            if configs
+            else "No sub-agents are configured in this conversation."
+        )
+        return f"{roster}\n\n{self._catalogue()}"
+
+    def _catalogue(self) -> str:
+        """Every grantable tool name with what it does — so a missing capability is visible as a gap.
+
+        Without this the roster shows only the names a worker ALREADY has, and a worker that cannot do
+        something looks identical to one that can: the reader recognises `browse_website` as "the web"
+        and concludes the capability was present. Naming what is on the shelf is what makes "this
+        worker is missing a tool" a conclusion the evidence can support.
+        """
+        catalog = self._deps.tools.catalog(self._deps, self._conversation_id)
+        lines = [
+            "### Tools available to grant (any of these names may go in tool_names)",
+            "A worker gets a capability ONLY if its tool_names lists the name. If the work the owner "
+            "asked for needs something no listed tool of that worker does, the fix is this list, not "
+            "the prompt.",
+        ]
+        for name in sorted(catalog):
+            if name in CURATOR_ONLY_TOOLS:
+                continue  # refused in tool_names anyway; offering it would only invite a rejected save
+            lines.append(f"- {name}: {' · '.join(catalog[name])}")
+        return "\n".join(lines)
 
     @staticmethod
     def _render(config: SubagentConfig) -> str:
@@ -171,7 +198,10 @@ class SubagentSaveTool(Tool):
 def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
     """The read + write pair over one conversation's sub-agent roster (curator-only)."""
     store = SubagentStore(deps.database, conversation_id=conversation_id)
-    return [SubagentListTool(store), SubagentSaveTool(store, deps, conversation_id=conversation_id)]
+    return [
+        SubagentListTool(store, deps, conversation_id=conversation_id),
+        SubagentSaveTool(store, deps, conversation_id=conversation_id),
+    ]
 
 
 def register_management_tools(registrar: ToolRegistrar) -> None:

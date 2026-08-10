@@ -56,6 +56,20 @@ class ToolRegistry(ToolRegistrar):
         """The factory for `name`, or None if nothing is registered under it (caller decides)."""
         return self._factories.get(name)
 
+    def catalog(self, deps: CoreDeps, conversation_id: int) -> dict[str, list[str]]:
+        """Every registered name mapped to the one-line summary of each tool it yields.
+
+        For a reader that has to CHOOSE names — the curator deciding which tools a worker needs. Names
+        alone are not enough to choose with: `browse_website` and a click-and-type browser both look
+        like "the web" until you read what each one does, and a nightly pass that guesses wrong grants
+        a capability the worker already had. Built from each `Tool.one_line`, so the description a
+        chooser reads is the same text the agent holding the tool reads — never a second copy.
+        """
+        return {
+            name: [tool.one_line for tool in factory(deps, conversation_id)]
+            for name, factory in self._factories.items()
+        }
+
     def build(self, names: Iterable[str], deps: CoreDeps, conversation_id: int) -> list[Tool]:
         """Build every tool named in `names` for one conversation; an unknown name fails loud."""
         tools: list[Tool] = []

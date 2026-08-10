@@ -6,7 +6,7 @@ probe both call `build_tool_registry()`, so registration lives in one place inst
 duplicated per entry point. The generic `ToolRegistry` (registry.py) stays tool-agnostic.
 """
 
-from app import lists, memory, prompts, scheduling, search, subagents
+from app import browser, lists, memory, prompts, scheduling, search, subagents
 from app.chat import ask
 from app.tools.registry import ToolRegistry
 
@@ -21,4 +21,5 @@ def build_tool_registry() -> ToolRegistry:
     prompts.register_tools(registry)
     subagents.register_tools(registry)  # the researcher-only hypothesis tree
     ask.register_tools(registry)  # the clarifying-question tool (needs `deps.bot`)
+    browser.register_tools(registry)  # `browser` — registered so the curator CAN grant it; nobody holds it
     return registry
