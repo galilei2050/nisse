@@ -41,6 +41,13 @@ present state — an earlier 👍 that was taken back must not read as still sta
 **A scheduled self-prompt is not the owner.** A reminder firing enters the transcript as a user
 message. Marked as such, so the curator never learns from prompts it wrote itself.
 
+**A window with no owner in it does not get a pass.** That mark is also the run/skip decision: if
+nothing in the window is an owner message or a reaction (`Evidence.has_owner_signal`), `curate()`
+stops before the classifier and records an idle run. Every lever the pass can pull needs the owner's
+words to justify it, so a night of check-ins answering themselves can only produce a report saying
+so — and the turns query already knows that, for free. Reactions count on their own: an emoji with
+no message is the cheapest signal the owner has.
+
 ## The classifier
 
 One call over the whole window labels each owner message. It is **offline by design** — an inline
@@ -84,6 +91,12 @@ the owner is asleep. The writers are the **same tools the live assistant uses**,
 path per store rather than a parallel curator-only one that could drift; two of them are absent from
 `MAIN_TOOLS` because they decide how every later reply is produced or accepted, so only the attributed,
 reported nightly pass writes them.
+
+Building a worker is reversible: `subagent_forget` retires one, and re-saving the name brings it back
+from the change history. It exists because the roster is a routing surface — while a worker the owner
+called useless is listed, work keeps being delegated to it, and narrowing its description does not
+take it out of the running. Retiring is the answer to a rejected worker; the answer to a gap that
+cannot be closed is to report it and build nothing.
 
 Why it can read the web at all: a **capability gap** is a failure class the behaviour levers cannot
 touch. When the day shows work the assistant could not do *at all*, the lever is the roster — grant the

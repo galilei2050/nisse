@@ -215,12 +215,46 @@ class SubagentSaveTool(Tool):
         return None
 
 
+class SubagentForgetTool(Tool):
+    """Retires one sub-agent so it stops being a routing target. Lifecycle: per-conversation."""
+
+    name = "subagent_forget"
+    one_line = "Retire one sub-agent the owner has rejected"
+    description = (
+        "Retire a sub-agent by name so the parent stops seeing it. Use it when the owner has "
+        "rejected a worker outright, or when the job it was built for turned out not to be a job — "
+        "a worker nobody should route to is a wrong routing target, and rewording its description "
+        "leaves it in the roster. The full config is kept in the change history, and saving the "
+        "same name again brings it back."
+    )
+
+    class Input(BaseModel):
+        """The worker to retire, by the name `subagent_list` prints."""
+
+        name: str = Field(description="The sub-agent's name, exactly as subagent_list shows it.")
+
+    def __init__(self, store: SubagentStore) -> None:
+        """Bind to one conversation's sub-agent store — retiring needs no registry lookup."""
+        self._store = store
+
+    async def execute(self, name: str) -> str:
+        """Retire it, or say it was not there — a silent no-op would read as a change in the report."""
+        if not await self._store.soft_delete(name):
+            return f"No live sub-agent named '{name}' in this conversation — nothing retired."
+        logger.info("Sub-agent retired", extra={"subagent": name})
+        return (
+            f"Retired sub-agent '{name}'. It takes effect on the next process start — the "
+            "conversation's agent is built once and cached."
+        )
+
+
 def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
-    """The read + write pair over one conversation's sub-agent roster (curator-only)."""
+    """The read + write trio over one conversation's sub-agent roster (curator-only)."""
     store = SubagentStore(deps.database, conversation_id=conversation_id)
     return [
         SubagentListTool(store, deps, conversation_id=conversation_id),
         SubagentSaveTool(store, deps, conversation_id=conversation_id),
+        SubagentForgetTool(store),
     ]
 
 

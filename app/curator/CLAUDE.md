@@ -20,7 +20,8 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
 - `prompt.py` — `NISSE_CURATOR_PROMPT` (what to look for, the evidence rules, the "do NOT capture"
   list) + `CURATOR_JUDGE_PROMPT` + `REVIEW_BRIEF`. **This file is the feature**; the rest is
   plumbing that delivers evidence and records what changed.
-- `curator.py` — `Curator.curate()`: collect → classify → run the agent inside
+- `curator.py` — `Curator.curate()`: collect → **stop unless the owner said or reacted to something**
+  (`Evidence.has_owner_signal`) → classify → run the agent inside
   `acting_as(CURATOR, run_id=…)` → count the revisions → record the run → message the owner. The
   report is rendered by an injected `format_report` (`chat.format.compose_answer`, supplied in
   `backend.py`) so it ends with the judge's verdict and the cost like any other reply; a domain
@@ -29,7 +30,8 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
   index is created at startup in `backend.py`.
 - `store.py` — `CuratorRun` + `CuratorRunStore` (`curator_runs`): why the night's work happened and
   what it told the owner. An idle pass is recorded too — "ran and found nothing" must not look like
-  "never ran".
+  "never ran". Its `exchanges_reviewed` is what the window held even when the pass was skipped: a
+  night of scheduled check-ins is not the same history as a night with no traffic.
 - `router.py` — `POST /curate`. Empty body (what Cloud Scheduler sends) = every active conversation;
   `{"conversation_id": N}` = one chat. The owner's on-demand entry is the `/curate` command
   (`app/chat/curate.py`), which drives the same `Curator` object over one chat.

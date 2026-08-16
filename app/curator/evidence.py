@@ -76,6 +76,16 @@ class Evidence:
         """How many exchanges the owner actually opened, as opposed to a schedule firing."""
         return sum(1 for exchange in self.exchanges if exchange.has_owner_input)
 
+    @property
+    def has_owner_signal(self) -> bool:
+        """Whether the owner said or reacted to anything — the precondition for a pass to be worth running.
+
+        A window can be full of exchanges and still hold nothing to learn from: a scheduled check-in
+        firing and the assistant answering itself is the whole of a night the owner slept through.
+        Reactions count on their own, because an emoji with no message is the owner's cheapest signal.
+        """
+        return bool(self.owner_message_count or self.reaction_count)
+
     def render(self) -> str:
         """The digest the classifier and the curator both read — one block per exchange, oldest first."""
         if not self.exchanges:

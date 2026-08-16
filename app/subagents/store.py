@@ -4,6 +4,7 @@ Seeded externally (admin script); the bot reads them when a chat's agent is buil
 each as one delegating tool. See app/subagents/CLAUDE.md.
 """
 
+from baski.primitives import datetime
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -88,3 +89,26 @@ class SubagentStore:
             return_document=ReturnDocument.AFTER,
         )
         return SubagentConfig.model_validate(result)
+
+    async def soft_delete(self, name: str) -> bool:
+        """Retire a worker (keep the doc); True if a live one by that name was found here.
+
+        Creating a worker used to be one-way: a worker the owner called useless could only be
+        reworded, and its description went on competing for the parent's routing. `save` replaces
+        the whole document, so re-saving the same name revives this one.
+        """
+        previous = await self.get(name)
+        now = datetime.now()
+        result = await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "name": name, "deleted_at": None},
+            {"$set": {"deleted_at": now, "updated_at": now}},
+        )
+        if previous is not None:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=name,
+                kind=ChangeKind.DELETE,
+                before=previous.model_dump_json(exclude={"id"}, indent=2),
+                after=None,
+            )
+        return result.modified_count > 0

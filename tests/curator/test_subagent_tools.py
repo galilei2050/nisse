@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.subagents.tools import ALLOWED_MODELS, NOT_GRANTABLE, SubagentSaveTool
+from app.subagents.tools import ALLOWED_MODELS, NOT_GRANTABLE, SubagentForgetTool, SubagentSaveTool
 from app.tools.registry import ToolRegistry
 
 CONVERSATION = 42
@@ -21,6 +21,7 @@ class _FakeStore:
 
     def __init__(self, existing: list[str] | None = None) -> None:
         self.saved: list[object] = []
+        self.retired: list[str] = []
         self._existing = existing or []
 
     async def list(self) -> list[SimpleNamespace]:
@@ -32,6 +33,14 @@ class _FakeStore:
     async def save(self, config: object) -> object:
         self.saved.append(config)
         return config
+
+    async def soft_delete(self, name: str) -> bool:
+        """Mirrors the real store: only a name that is actually live counts as retired."""
+        if name not in self._existing:
+            return False
+        self._existing.remove(name)
+        self.retired.append(name)
+        return True
 
 
 def _fields(**overrides: object) -> dict:
@@ -107,3 +116,26 @@ async def test_a_sound_config_is_saved_whole() -> None:
         fields | {"conversation_id": CONVERSATION}
     )
     assert "Created" in result
+
+
+async def test_retiring_a_worker_takes_it_out_of_the_roster() -> None:
+    """A rejected worker has to leave the roster, not just get reworded: while it is listed, the
+    parent can still route to it, which is what "useless agent" meant in the first place."""
+    store = _FakeStore(existing=["maps_list_reader", "retrieval"])
+
+    result = await SubagentForgetTool(store).execute(name="maps_list_reader")  # type: ignore[arg-type]  # fake store
+
+    assert store.retired == ["maps_list_reader"]
+    assert [config.name for config in await store.list()] == ["retrieval"]
+    assert "Retired" in result
+
+
+async def test_retiring_a_name_that_is_not_there_reports_no_change() -> None:
+    """The curator writes its report from what the tools told it, so a no-op that reads like a
+    retirement becomes a change the owner is told about and cannot find in the history."""
+    store = _FakeStore(existing=["retrieval"])
+
+    result = await SubagentForgetTool(store).execute(name="typo_reader")  # type: ignore[arg-type]  # fake store
+
+    assert store.retired == []
+    assert "nothing retired" in result
