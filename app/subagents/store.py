@@ -4,6 +4,7 @@ Seeded externally (admin script); the bot reads them when a chat's agent is buil
 each as one delegating tool. See app/subagents/CLAUDE.md.
 """
 
+from baski.primitives import datetime
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
@@ -34,7 +35,7 @@ class SubagentConfig(NisseDbModel):
 
 
 class SubagentStore:
-    """Read a conversation's sub-agent configs; the write path (`save`) is seed-only.
+    """Read a conversation's sub-agent configs; `save` and `soft_delete` are the write paths.
 
     Lifecycle: per-conversation — built in `_build_subagent_tools`.
     """
@@ -59,6 +60,11 @@ class SubagentStore:
         """Every live sub-agent config in this conversation."""
         query = {"conversation_id": self._conversation_id, "deleted_at": None}
         return [SubagentConfig.model_validate(doc) async for doc in self._collection.find(query)]
+
+    async def retired_names(self) -> set[str]:
+        """Names whose config is soft-deleted here — what `save` would silently revive."""
+        query = {"conversation_id": self._conversation_id, "deleted_at": {"$ne": None}}
+        return {doc["name"] async for doc in self._collection.find(query, {"name": 1})}
 
     async def get(self, name: str) -> SubagentConfig | None:
         """One live config by name within this conversation, or None."""
@@ -88,3 +94,29 @@ class SubagentStore:
             return_document=ReturnDocument.AFTER,
         )
         return SubagentConfig.model_validate(result)
+
+    async def soft_delete(self, name: str) -> bool:
+        """Retire a worker (keep the doc); True if a live one by that name was found here.
+
+        A retired worker stays out of `list`/`get`, so the parent stops routing to it. `save`
+        replaces the whole document and does not filter on `deleted_at`, so re-saving the name
+        revives this one.
+        """
+        previous = await self.get(name)
+        now = datetime.now()
+        result = await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "name": name, "deleted_at": None},
+            {"$set": {"deleted_at": now, "updated_at": now}},
+        )
+        # Gated on the WRITE, not the read: two concurrent retirements of one name both see a live
+        # `previous`, and recording off that would bill the owner's report for a change one of them
+        # did not make.
+        if result.modified_count and previous is not None:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=name,
+                kind=ChangeKind.DELETE,
+                before=previous.model_dump_json(exclude={"id"}, indent=2),
+                after=None,
+            )
+        return result.modified_count > 0

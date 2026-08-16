@@ -66,10 +66,11 @@ curate:
 	uv run python -m app.curate_probe --conversation-id $(U) --days $(or $(DAYS),1) $(if $(DRY),--dry-run,)
 
 # Companion to curate: dump one conversation's change history (who changed what, and what it replaced).
-# `make revisions U=<conversation_id> [RUN=<run_id>]`.
+# `make revisions U=<conversation_id> [RUN=<run_id>] [REV=<revision_id>]`. REV prints one change in
+# full — the listing trims, and an undo needs the text the trim cuts off.
 .PHONY: revisions
 revisions:
-	uv run python scripts/show_revisions.py $(U) $(RUN)
+	uv run python scripts/show_revisions.py $(U) "$(RUN)" "$(REV)"
 
 # Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>` (or U=all).
 .PHONY: seed

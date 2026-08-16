@@ -86,15 +86,19 @@ class Curator:
     async def curate(self, *, conversation_id: int, window: datetime.timedelta = _WINDOW) -> CuratorRun:
         """Review the window and maintain the stores; returns the recorded run.
 
-        A window with nothing in it still records a run — "the curator ran and found nothing" and
-        "the curator never ran" must not look the same to whoever reads the history later.
+        No owner message and no reaction in the window means there is nothing to learn from, and the
+        pass stops before the classifier — the agent would otherwise spend a full review reading its
+        own scheduled check-ins and then report a quiet night the query already knew about.
+
+        A skipped window still records a run — "the curator ran and found nothing" and "the curator
+        never ran" must not look the same to whoever reads the history later.
         """
         run_id = secrets.token_hex(6)  # stamps every revision this pass writes
         since = datetime.now() - window
         with log_context(conversationId=conversation_id, agent="curator", runId=run_id):
             evidence = await self._evidence.collect(conversation_id=conversation_id, since=since)
-            if not evidence.exchanges:
-                return await self._record_idle(run_id, conversation_id=conversation_id, since=since)
+            if not evidence.has_owner_signal:
+                return await self._record_idle(run_id, evidence=evidence)
 
             classification = await self._classifier.classify(evidence)
             # Assigned before the raise it may survive, so `finally` settles on whatever the review
@@ -179,17 +183,21 @@ class Curator:
             local_traces_dir=self._deps.local_traces_dir,
         )
 
-    async def _record_idle(self, run_id: str, *, conversation_id: int, since: datetime.datetime) -> CuratorRun:
-        """Record a pass that had nothing to review — no model call, no message to the owner."""
-        logger.info("Curator found no conversation in the window")
+    async def _record_idle(self, run_id: str, *, evidence: Evidence) -> CuratorRun:
+        """Record a pass that had nothing to review — no model call, no message to the owner.
+
+        `exchanges_reviewed` is what the window actually held, not zero: a night of scheduled
+        check-ins is not the same history as a night with no traffic at all.
+        """
+        logger.info("Curator found no owner signal in the window", extra={"exchanges": len(evidence.exchanges)})
         return await self._runs.record(
             CuratorRun(
-                conversation_id=conversation_id,
+                conversation_id=evidence.conversation_id,
                 run_id=run_id,
-                since=since,
-                exchanges_reviewed=0,
-                owner_messages=0,
-                reactions_reviewed=0,
+                since=evidence.since,
+                exchanges_reviewed=len(evidence.exchanges),
+                owner_messages=evidence.owner_message_count,
+                reactions_reviewed=evidence.reaction_count,
                 signals=[],
                 changes=0,
                 report="",

@@ -248,7 +248,7 @@ app/
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
     store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() records the
                     config it replaced — a sub-agent's prompt IS its behaviour)
-    tools.py        subagent_list / subagent_save — runtime roster management (CURATOR-ONLY, never
+    tools.py        subagent_list / subagent_save / subagent_forget — runtime roster management (CURATOR-ONLY, never
                     in MAIN_TOOLS): a save is validated against the live registry and an allow-list
                     of models before it can break the next conversation build
     tool.py         SubagentTool — wraps one config as a delegating Tool; runs a fresh isolated Agent
@@ -461,7 +461,7 @@ make probe MSG="…" [U=<id>]      # one agent run; prints injected context, too
 make memories                    # dump `memories` (live + soft-deleted)
 make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
 make curate U=<id> [DAYS=n] [DRY=1]   # one curator pass: evidence, every change with its `before`, the report
-make revisions U=<id> [RUN=<id>]      # the change history — who changed what, and what it replaced
+make revisions U=<id> [RUN=<id>] [REV=<id>]   # the change history; REV prints one change untrimmed
 ```
 
 - **Injected context** is the ground truth for what the model saw — read it first.

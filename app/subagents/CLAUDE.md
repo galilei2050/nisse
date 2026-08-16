@@ -108,8 +108,11 @@ locally and links via baski's `sub_trace_ids`). Walk it with `analyze-traces/tra
   description — the strongest lever available under the owner's fixed single-string interface.
 - **`subagents` is a trusted admin surface.** It drives which tools/model/prompts run. Two writers
   exist, both trusted: the seed script, and the nightly curator through `subagent_list` /
-  `subagent_save` (`tools.py`, registered as `subagents` — curator-only, deliberately NOT in
-  `MAIN_TOOLS`, so nothing the owner types in chat reaches this write path). Never wire a
+  `subagent_save` / `subagent_forget` (`tools.py`, registered as `subagents` — curator-only,
+  deliberately NOT in `MAIN_TOOLS`, so nothing the owner types in chat reaches this write path).
+  Retirement is a soft delete and is refused while a live worker names the target in its
+  `tool_names`; `make seed` leaves a retired worker retired, since reviving it would undo a decision
+  made on the owner's evidence. Never wire a
   user-facing writer to it. A save validates `tool_names` against the live registry and `model`
   against `ALLOWED_MODELS` *before* writing — an unknown tool name would otherwise surface as a
   crash at the next conversation build, taking the whole chat down rather than one tool call. The

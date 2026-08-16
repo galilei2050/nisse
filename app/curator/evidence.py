@@ -41,11 +41,12 @@ class Exchange:
     answer_text: str
     reactions: list[str] = field(default_factory=list)  # emoji standing on any message of this exchange
     scheduled: bool = False  # the bot prompted itself (a reminder firing), so there is no owner input
+    owner_attached: bool = False  # a photo or PDF the owner sent; with no caption it is the whole ask
 
     @property
     def has_owner_input(self) -> bool:
         """Whether a human actually said something here — the only messages worth classifying."""
-        return bool(self.owner_text) and not self.scheduled
+        return (bool(self.owner_text) or self.owner_attached) and not self.scheduled
 
     def render(self) -> str:
         """One exchange, labelled so a scheduled self-prompt is never mistaken for the owner talking."""
@@ -55,7 +56,8 @@ class Exchange:
         if self.scheduled:
             header += "  (scheduled self-prompt — NOT the owner)"
         owner_label = "schedule" if self.scheduled else "owner"
-        return f"{header}\n{owner_label}: {self.owner_text or '(no text)'}\nnisse: {self.answer_text or '(no answer)'}"
+        said = self.owner_text or ("(sent a photo or PDF, no caption)" if self.owner_attached else "(no text)")
+        return f"{header}\n{owner_label}: {said}\nnisse: {self.answer_text or '(no answer)'}"
 
 
 @dataclass
@@ -75,6 +77,16 @@ class Evidence:
     def owner_message_count(self) -> int:
         """How many exchanges the owner actually opened, as opposed to a schedule firing."""
         return sum(1 for exchange in self.exchanges if exchange.has_owner_input)
+
+    @property
+    def has_owner_signal(self) -> bool:
+        """Whether the owner said or reacted to anything — the precondition for a pass to be worth running.
+
+        A window can be full of exchanges and still hold nothing to learn from: a scheduled check-in
+        firing and the assistant answering itself is the whole of a night the owner slept through.
+        Reactions count on their own, because an emoji with no message is the owner's cheapest signal.
+        """
+        return bool(self.owner_message_count or self.reaction_count)
 
     def render(self) -> str:
         """The digest the classifier and the curator both read — one block per exchange, oldest first."""
@@ -175,12 +187,14 @@ class EvidenceCollector:
         """
         exchanges: list[Exchange] = []
         for doc in docs:
-            texts = cls._turn_texts(list(doc["messages"]))
+            messages = list(doc["messages"])
+            texts = cls._turn_texts(messages)
             owner_text = "" if texts.owner.startswith(JUDGE_RETRY_PREFIX) else texts.owner
+            attached = cls._attached_by_owner(messages)
             turn_id = doc["turn_id"]
             emoji = reactions.get(turn_id, [])
-            if owner_text or not exchanges:
-                if not owner_text and not texts.answer:
+            if owner_text or attached or not exchanges:
+                if not owner_text and not attached and not texts.answer:
                     continue  # a pure tool turn (or a judge retry) with nothing open to extend
                 exchanges.append(
                     Exchange(
@@ -190,6 +204,7 @@ class EvidenceCollector:
                         answer_text=texts.answer,
                         reactions=list(emoji),
                         scheduled=owner_text.startswith(SCHEDULED_PREFIX),
+                        owner_attached=attached,
                     )
                 )
                 continue
@@ -205,6 +220,22 @@ class EvidenceCollector:
         owner = "\n".join(t for t in (cls._text_of(m, "user") for m in messages) if t).strip()
         answer = "\n".join(t for t in (cls._text_of(m, "assistant") for m in messages) if t).strip()
         return TurnTexts(owner=owner, answer=answer)
+
+    @staticmethod
+    def _attached_by_owner(messages: list[StoredMessage]) -> bool:
+        """Whether the owner attached a photo or a PDF in this turn.
+
+        A caption-less attachment IS the ask — it carries no text block, so counting words alone
+        reads the turn as "the owner said nothing". `app/assistant/history.py` makes the same
+        exception where it renders a turn for the judge.
+        """
+        for message in messages:
+            content = message["content"]
+            if message["role"] != "user" or isinstance(content, str):
+                continue
+            if any(block.get("type") in ("image", "document") for block in content):
+                return True
+        return False
 
     @staticmethod
     def _text_of(message: StoredMessage, role: str) -> str:

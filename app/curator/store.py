@@ -17,8 +17,10 @@ _COLLECTION = "curator_runs"
 class CuratorRun(NisseDbModel):
     """One maintenance pass. Lifecycle: a data record — written once when the pass ends.
 
-    A pass with nothing to review is still recorded, with `exchanges_reviewed` 0 and an empty report:
-    "ran and found nothing" must be distinguishable from "never ran".
+    A pass skipped for want of anything to learn from is still recorded, with an empty report:
+    "ran and found nothing" must be distinguishable from "never ran". Its counts are the window's
+    real ones — a night of scheduled check-ins has exchanges and no owner in them, which reads
+    differently from a night with no traffic at all.
     """
 
     conversation_id: int

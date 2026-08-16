@@ -33,10 +33,18 @@ async def _seed_one(database: AsyncDatabase, conversation_id: int, definitions: 
 
     Attributed to the seed script: `save()` records a revision, and without this the change history
     would name the assistant for a roster rewrite that came from a file and a human running `make`.
+
+    A worker the curator retired is left retired. `save` replaces the document whole and does not
+    filter on `deleted_at`, so seeding it would revive it — undoing a decision made on the owner's
+    evidence, silently, on a run whose purpose was to roll out an unrelated YAML change.
     """
     store = SubagentStore(database, conversation_id=conversation_id)
+    retired = await store.retired_names()
     with acting_as(Actor.SEED, run_id=_AGENTS_YML.name):
         for definition in definitions:
+            if definition["name"] in retired:
+                print(f"skipped '{definition['name']}' for conversation {conversation_id} — retired; re-add by hand")
+                continue
             saved = await store.save(SubagentConfig(conversation_id=conversation_id, **definition))
             print(f"seeded '{saved.name}' for conversation {conversation_id} (tools: {', '.join(saved.tool_names)})")
 

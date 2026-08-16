@@ -214,7 +214,10 @@ class CoreMemoryTool(_PromptLinesTool):
     budget = _CORE_BUDGET
     header = _CORE_HEADER
     empty = _CORE_EMPTY
-    over_budget_hint = "Remove a less-relevant line in the same call, or move it to recall_save."
+    # NOT "drop a weaker line to fit": the block sits at its cap permanently, so that advice turns
+    # every add into the eviction of a standing rule nobody chose to lose. The refusal is the answer;
+    # the finding belongs in a memory.
+    over_budget_hint = "Put this in recall_save instead — do NOT delete a standing line to make room."
 
 
 class JudgeRulesTool(_PromptLinesTool):

@@ -1,9 +1,12 @@
-"""What the owner is told when a nightly pass dies half-way through.
+"""When a nightly pass runs at all, and what the owner is told when it dies half-way through.
 
 The curator's tools commit their edits as they run, so a pass that crashes mid-review can leave the
 owner's stores already rewritten. Nothing re-runs it — Cloud Scheduler is configured with no retries
 — so if the crash goes unreported, the owner wakes to changed behaviour and no explanation, which is
 the one failure the whole attributed-and-reported design exists to prevent.
+
+The other boundary is the cheap one: whether the window holds anything to learn from is a question
+the turns query answers, so a night the owner slept through must not cost a review to discover.
 
 These drive `Curator.curate` at its boundary with the review stubbed out, because a real review needs
 a live Anthropic call and a healthy pass never takes this path.
@@ -19,6 +22,7 @@ from baski.primitives import datetime
 from app.chat.format import compose_answer
 from app.curator.classify import Classification, MessageClassifier
 from app.curator.curator import Curator
+from app.scheduling.store import SCHEDULED_PREFIX
 
 CONVERSATION = 42
 AT = datetime.as_utc(datetime.datetime(2026, 8, 3, 9, 0))
@@ -84,6 +88,11 @@ def _turn(turn_id: int, owner: str, answer: str) -> dict:
             {"role": "assistant", "content": [{"type": "text", "text": answer}]},
         ],
     }
+
+
+def _scheduled_turn(turn_id: int, instruction: str, answer: str) -> dict:
+    """A reminder firing: it enters the transcript as a user message, but the owner never typed it."""
+    return _turn(turn_id, f"{SCHEDULED_PREFIX} {instruction}", answer)
 
 
 def _curator(database: _FakeDatabase, sender: _FakeSender) -> Curator:
@@ -217,3 +226,60 @@ async def test_a_crashed_pass_says_so_without_inventing_a_cost(
     (message,) = sender.sent
     assert "⚖️" not in message
     assert "$" not in message
+
+
+async def test_a_window_of_only_scheduled_check_ins_never_reaches_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A night the owner slept through is answerable from the turns query, so it must cost nothing.
+
+    The exchanges are real and the assistant did answer — what is absent is the owner, and every
+    lever the pass can pull needs the owner's words to justify it.
+    """
+    database = _FakeDatabase()
+    database["conversation_turns"] = _FakeCollection(
+        [_scheduled_turn(1, "Вечерний чек-ин (20:25 PT)", "20:25 — через пять минут комп в сон.")]
+    )
+    sender = _FakeSender()
+
+    async def _must_not_run(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
+        raise AssertionError("the review ran on a window with no owner input")
+
+    monkeypatch.setattr(Curator, "_review", _must_not_run)
+
+    run = await _curator(database, sender).curate(conversation_id=CONVERSATION)
+
+    assert run.owner_messages == 0
+    assert run.changes == 0
+    assert run.cost == 0.0
+    assert run.exchanges_reviewed == 1  # the window was not empty — the owner just was not in it
+    assert sender.sent == []  # nothing happened, so there is nothing to report
+    # Persisted, not just returned: "ran and found nothing" and "never ran" must differ in the history.
+    (recorded,) = database["curator_runs"].inserted
+    assert recorded["conversation_id"] == CONVERSATION
+    assert recorded["exchanges_reviewed"] == 1
+    assert recorded["owner_messages"] == 0
+    assert recorded["report"] == ""
+
+
+async def test_a_reaction_with_no_message_still_earns_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An emoji on yesterday's answer is the owner's cheapest signal — skipping it would drop the
+    one channel `/help` tells him to use when he has nothing to type.
+    """
+    database = _FakeDatabase()
+    database["conversation_turns"] = _FakeCollection([_scheduled_turn(1, "Вечерний чек-ин", "как прошёл день?")])
+    database["reactions"] = _FakeCollection(
+        [{"conversation_id": CONVERSATION, "turn_id": 1, "current": ["👎"], "reacted_at": AT}]
+    )
+    sender = _FakeSender()
+
+    async def _ok(*_args: Any, **_kwargs: Any) -> AgentExecuteResult:
+        return _result("отчёт", cost=0.2)
+
+    monkeypatch.setattr(Curator, "_review", _ok)
+
+    run = await _curator(database, sender).curate(conversation_id=CONVERSATION)
+
+    assert run.reactions_reviewed == 1
+    assert run.report == "отчёт"
+    assert len(sender.sent) == 1
