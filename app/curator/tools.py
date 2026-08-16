@@ -1,14 +1,11 @@
 """Reading the transcript past the window the pass reviews — the curator's one look backwards.
 
-The pass is handed a day. That is a deliberate budget, not an oversight: a wider window means
-re-reviewing a day the previous pass already acted on, and the nightly schedule carries no retries
-because re-applied edits are the one failure it cannot take back.
-
-What the budget costs is the other side of a complaint. The owner objects to yesterday's answer
-after that answer has aged out, the pass sees only the objection, and "quote the owner" is satisfied
-by a complaint that is itself wrong — which is how two permanent judge rules were written on a
-premise nobody checked (`BUGS.md` #18). A tool closes that without widening anything: the pass
-reaches for the disputed turn when a complaint names one, and reads nothing extra when it does not.
+The pass is handed a day, and what that budget costs is the other side of a complaint. The owner
+objects to yesterday's answer after that answer has aged out, the pass sees only the objection, and
+"quote the owner" is satisfied by a complaint that is itself wrong — which is how two permanent judge
+rules were written on a premise nobody checked (`BUGS.md` #18). Reading on demand closes that without
+widening anything: the pass reaches for the disputed turn when a complaint names one, and reads
+nothing extra when it does not. Why a tool and not a wider window: `EvidenceCollector.before`.
 """
 
 import logging
@@ -22,10 +19,10 @@ from app.tools.registry import ToolRegistrar
 
 logger = logging.getLogger(__name__)
 
-TRANSCRIPT_TOOL_NAME = "transcript"
-
-_DEFAULT_LIMIT = 5
-_MAX_LIMIT = 20  # a page of history at a time; the pass reads back to a turn, it does not re-read days
+# One page per call, and the pass reaches further by lowering `before_turn_id` rather than by asking
+# for more. Ten because turns are not exchanges: the 15.08 case needed four exchanges but ten turns to
+# reach, and a page that stops short costs a whole extra round-trip to discover it did.
+_READ_BACK = 10
 
 
 class TranscriptReadTool(Tool):
@@ -42,14 +39,10 @@ class TranscriptReadTool(Tool):
     )
 
     class Input(BaseModel):
-        """Where to read back from, and how far."""
+        """Where to read back from. How far is fixed — call again, lower, to go further."""
 
         before_turn_id: int = Field(
             description="Read the exchanges preceding this turn id. Use the oldest [Turn N] in the digest."
-        )
-        limit: int = Field(
-            default=_DEFAULT_LIMIT,
-            description=f"How many exchanges to return, oldest first (max {_MAX_LIMIT}).",
         )
 
     def __init__(self, evidence: EvidenceCollector, *, conversation_id: int) -> None:
@@ -57,16 +50,21 @@ class TranscriptReadTool(Tool):
         self._evidence = evidence
         self._conversation_id = conversation_id
 
-    async def execute(self, before_turn_id: int, limit: int = _DEFAULT_LIMIT) -> str:
+    async def execute(self, before_turn_id: int) -> str:
         """The exchanges before `before_turn_id`, rendered as the digest renders them."""
-        exchanges = await self._evidence.before(
-            conversation_id=self._conversation_id,
-            turn_id=before_turn_id,
-            limit=min(max(limit, 1), _MAX_LIMIT),
+        read = await self._evidence.before(
+            conversation_id=self._conversation_id, turn_id=before_turn_id, turns=_READ_BACK
         )
-        if not exchanges:
+        if read.oldest_turn_read is None:
             return f"Nothing before turn {before_turn_id} — that is the start of this conversation."
-        return "\n\n".join([*self._cut_note(exchanges[0]), *(exchange.render() for exchange in exchanges)])
+        if not read.exchanges:
+            # Every turn read was a tool round of a question that opens further back. Saying "nothing
+            # here" would stop the walk one call short of the exchange it was sent to find.
+            return (
+                f"Turns {read.oldest_turn_read}–{before_turn_id - 1} are the tool rounds of an exchange "
+                f"that opens earlier. Call again with before_turn_id={read.oldest_turn_read}."
+            )
+        return "\n\n".join([*self._cut_note(read.exchanges[0]), *(exchange.render() for exchange in read.exchanges)])
 
     @staticmethod
     def _cut_note(first: Exchange) -> list[str]:
@@ -77,7 +75,7 @@ class TranscriptReadTool(Tool):
         without a word, that reads as "(no text)" — the owner said nothing — which is the exact
         misreading this tool exists to prevent.
         """
-        if first.owner_text or first.scheduled:
+        if first.has_owner_input or first.scheduled:
             return []
         return [f"(turn {first.turn_id} is cut off here — what the owner said to open it is older; read further back)"]
 
@@ -89,4 +87,4 @@ def transcript_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
 
 def register_tools(registrar: ToolRegistrar) -> None:
     """Register the reader under the name the curator's tool spec references."""
-    registrar.register(TRANSCRIPT_TOOL_NAME, transcript_tools)
+    registrar.register("transcript", transcript_tools)

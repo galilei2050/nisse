@@ -273,6 +273,8 @@ app/
     curator.py      collect → classify → agent (inside acting_as(CURATOR)) → count revisions →
                     record the run → message the owner the report
     store.py        CuratorRun + CuratorRunStore (`curator_runs`); an idle pass is recorded too
+    tools.py        transcript_read — the one read PAST the review window, so a complaint about an
+                    answer that already aged out is checked instead of taken on faith (CURATOR-ONLY)
     router.py       POST /curate — Cloud Scheduler nightly (empty body = every active chat)
                     (design + verified behaviour: docs/curator.md; app/curator/CLAUDE.md)
 

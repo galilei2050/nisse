@@ -61,6 +61,20 @@ class Exchange:
 
 
 @dataclass
+class PastRead:
+    """One look backwards past the review window: what was folded, and what was actually read.
+
+    The two are not the same and the difference is load-bearing. A read that lands entirely inside
+    one question's tool rounds groups to nothing, and reported as a bare empty list that is
+    indistinguishable from having reached the start of the conversation — so the pass would stop
+    walking back exactly where the disputed exchange still lies ahead of it.
+    """
+
+    exchanges: list["Exchange"]
+    oldest_turn_read: int | None  # None only when there was no turn older than the one asked about
+
+
+@dataclass
 class Evidence:
     """One window of a conversation, ready to hand to the classifier and the curator."""
 
@@ -108,8 +122,9 @@ class EvidenceCollector:
     Answers both questions the nightly sweep asks of them: which chats were active, and what was said
     in one of them.
 
-    Lifecycle: long-lived — one per `Curator`, reused across conversations (the window and the chat
-    are arguments to `collect`, the collections it reads are bound here).
+    Lifecycle: long-lived — one per `Curator`, and one more per built `transcript_read`, reused
+    across conversations (the window and the chat are arguments to `collect`, the collections it
+    reads are bound here).
     """
 
     def __init__(self, database: AsyncDatabase) -> None:
@@ -132,12 +147,7 @@ class EvidenceCollector:
         docs = await self._turns.find(
             {"conversation_id": conversation_id, "created_at": {"$gte": since}}, sort=[("turn_id", 1)]
         ).to_list(length=None)
-        reactions = await self._reactions_by_turn(
-            conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
-        )
-        exchanges = self._group(cast("list[StoredTurn]", docs), reactions)
-        for exchange in exchanges:
-            exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
+        exchanges = await self._exchanges(conversation_id=conversation_id, docs=cast("list[StoredTurn]", docs))
 
         evidence = Evidence(conversation_id=conversation_id, since=since, exchanges=exchanges)
         logger.info(
@@ -152,8 +162,12 @@ class EvidenceCollector:
         )
         return evidence
 
-    async def before(self, *, conversation_id: int, turn_id: int, limit: int) -> list[Exchange]:
-        """The `limit` exchanges immediately preceding `turn_id`, oldest first.
+    async def before(self, *, conversation_id: int, turn_id: int, turns: int) -> "PastRead":
+        """The exchanges folded from the `turns` turns immediately preceding `turn_id`, oldest first.
+
+        The budget is in TURNS, not exchanges: one question spans a turn per tool round, so a fixed
+        read yields anywhere from `turns` exchanges down to none — which is why the caller is told
+        what was read and not only what was grouped.
 
         The window the pass reviews is a day, but a complaint about yesterday's answer routinely
         arrives after that answer has fallen out of it — and a complaint judged without the turn it
@@ -164,18 +178,27 @@ class EvidenceCollector:
         """
         docs = await self._turns.find(
             {"conversation_id": conversation_id, "turn_id": {"$lt": turn_id}}, sort=[("turn_id", -1)]
-        ).to_list(length=limit)
-        docs.reverse()  # queried newest-first to take the `limit` nearest; read oldest-first
-        reactions = await self._reactions_by_turn(
-            conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
-        )
-        exchanges = self._group(cast("list[StoredTurn]", docs), reactions)
-        for exchange in exchanges:
-            exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
+        ).to_list(length=turns)
+        docs.reverse()  # queried newest-first to take the `turns` nearest; read oldest-first
+        exchanges = await self._exchanges(conversation_id=conversation_id, docs=cast("list[StoredTurn]", docs))
         logger.info(
             "Curator read past the window",
             extra={"conversationId": conversation_id, "beforeTurn": turn_id, "exchanges": len(exchanges)},
         )
+        return PastRead(exchanges=exchanges, oldest_turn_read=docs[0]["turn_id"] if docs else None)
+
+    async def _exchanges(self, *, conversation_id: int, docs: list[StoredTurn]) -> list[Exchange]:
+        """Turns to exchanges: attach the reactions, fold, and cap the answers.
+
+        Both read paths end here so the digest and the backwards reader cannot come to disagree
+        about what an exchange is or how much of an answer one carries.
+        """
+        reactions = await self._reactions_by_turn(
+            conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
+        )
+        exchanges = self._group(docs, reactions)
+        for exchange in exchanges:
+            exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
         return exchanges
 
     async def _reactions_by_turn(self, *, conversation_id: int, turn_ids: list[int]) -> dict[int, list[str]]:
