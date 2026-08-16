@@ -40,15 +40,10 @@ ALLOWED_MODELS = (
 # reach. Both are needed — the registry resolves any registered name for a sub-agent config.
 MANAGEMENT_TOOL_NAME = "subagents"
 
-# Every tool only the nightly pass may hold, and none of them may travel to a sub-agent, which
-# ordinary chat reaches by delegation. Two of them write what the assistant does with EVERY later
-# reply — its roster, or the rubric its answers are accepted by. The third reads: `transcript` hands
-# back turns the window deliberately left out, which is a maintenance question, and a worker holding
-# it could pull any past exchange into a delegated answer.
-# `transcript` is spelled out rather than imported from `app.curator` for the same reason `ask_user`
-# is below: `app.curator` imports this module's package, so importing it back cycles. Both are
-# covered by `tests/subagents/test_registry.py` asserting every name here resolves in the registry.
-CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME, "transcript")
+# Every tool only the nightly pass may hold. Each writes what the assistant does with EVERY later
+# reply — its roster, or the rubric its answers are accepted by — so neither may travel to a
+# sub-agent, which ordinary chat reaches by delegation.
+CURATOR_ONLY_TOOLS = (MANAGEMENT_TOOL_NAME, JUDGE_RULES_TOOL_NAME)
 
 # Registry names that must never end up in a `tool_names`, read by BOTH the offer (`_catalogue`) and the
 # refusal (`_reject`) so the shelf cannot advertise something the save then rejects — the curator's whole

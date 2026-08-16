@@ -29,10 +29,6 @@ conversation_id) -> list[Tool]` and a `register_tools(registrar: ToolRegistrar)`
 - `prompts.register_tools` — `core_memory` and `judge_rules` (the latter curator-only: it is refused
   in a sub-agent's `tool_names`, see `app/subagents/tools.py`).
 - `subagents.register_tools` — the researcher-only `hypothesis_tree`.
-- `curator.register_tools` — `transcript`, the pass's read past its review window (curator-only, and
-  refused in a sub-agent's `tool_names` for the same reason `judge_rules` is).
-- `chat.ask.register_tools` — `ask_user` (needs `deps.bot`); `browser.register_tools` — `browser`,
-  registered and held by nobody.
 
 `wiring.build_tool_registry()` just calls these in turn; to add a tool, add its factory +
 `register(...)` line in the owning domain (nothing in `wiring.py` changes except a new

@@ -17,10 +17,6 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
   Don-Yehiya et al. / arXiv:2507.23158, not invented. **Offline only** — an inline classifier is a
   rejected direction here. Fails loud on unusable JSON: a silently-empty classification is
   indistinguishable from a quiet night.
-- `tools.py` — `transcript_read`, the pass's only read past the window (`EvidenceCollector.before`).
-  Registered as `transcript`, curator-only. A complaint about an answer that already aged out is
-  otherwise judged on one side, which is how a permanent judge rule got written on a premise nobody
-  could check (`BUGS.md` #18). Why a tool and not a wider window: the reason is on `before`.
 - `prompt.py` — `NISSE_CURATOR_PROMPT` (what to look for, the evidence rules, the "do NOT capture"
   list) + `CURATOR_JUDGE_PROMPT` + `REVIEW_BRIEF`. **This file is the feature**; the rest is
   plumbing that delivers evidence and records what changed.
@@ -43,7 +39,7 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
 
 - **Same tools as the live assistant**, built from the shared registry (`CURATOR_TOOLS`): one write
   path per store, not a parallel curator-only one that could drift. No `ask_user` — the owner is
-  asleep. `judge_rules`, `subagents` and `transcript` are curator-only (off `MAIN_TOOLS`).
+  asleep. `judge_rules` and `subagents` are curator-only (off `MAIN_TOOLS`).
 - **It can research, for one purpose** — closing a capability gap. Why, at the constant
   (`CURATOR_TOOLS`, `curator.py`); the rules for using it are in `NISSE_CURATOR_PROMPT`.
 - **It edits the assistant's judge, not its own.** `update_judge_rules` appends to the rubric the
