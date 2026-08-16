@@ -63,8 +63,8 @@ async def _run(conversation_id: int, days: int, *, dry_run: bool) -> None:
         )
         print(f"\n=== EVIDENCE — {len(evidence.exchanges)} exchanges, {evidence.reaction_count} reacted ===")
         print(evidence.render())
-        if not evidence.exchanges:
-            print("\nNothing in this window — the pass would record an idle run and stop.")
+        if not evidence.has_owner_signal:
+            print("\nNo owner message or reaction in this window — the pass would record an idle run and stop.")
             return
 
         classification = await MessageClassifier(anthropic).classify(evidence)

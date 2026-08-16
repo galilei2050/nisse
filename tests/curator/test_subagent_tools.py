@@ -19,13 +19,14 @@ CONVERSATION = 42
 class _FakeStore:
     """Records saves; `list()` is what the tool checks delegation targets against."""
 
-    def __init__(self, existing: list[str] | None = None) -> None:
+    def __init__(self, existing: list[str] | None = None, delegates: dict[str, list[str]] | None = None) -> None:
         self.saved: list[object] = []
         self.retired: list[str] = []
         self._existing = existing or []
+        self._delegates = delegates or {}
 
     async def list(self) -> list[SimpleNamespace]:
-        return [SimpleNamespace(name=name) for name in self._existing]
+        return [SimpleNamespace(name=name, tool_names=self._delegates.get(name, [])) for name in self._existing]
 
     async def get(self, name: str) -> None:
         return None
@@ -139,3 +140,16 @@ async def test_retiring_a_name_that_is_not_there_reports_no_change() -> None:
 
     assert store.retired == []
     assert "nothing retired" in result
+
+
+async def test_retiring_a_worker_a_sibling_delegates_to_is_refused() -> None:
+    """The seeded roster has `researcher` delegating to `retrieval`. Retiring the target leaves a
+    `tool_names` entry resolving to nothing, and `_resolve_tools` raises inside `execute` — so the
+    owner meets it as a failed research answer hours later, not at the next build."""
+    store = _FakeStore(existing=["retrieval", "researcher"], delegates={"researcher": ["retrieval"]})
+
+    result = await SubagentForgetTool(store).execute(name="retrieval")  # type: ignore[arg-type]  # fake store
+
+    assert store.retired == []
+    assert "researcher" in result
+    assert "Rejected" in result

@@ -27,6 +27,9 @@ _STARTED = (
     "Займёт несколько минут — отчёт пришлю сюда же."
 )
 _ALREADY_RUNNING = "🌙 Разбор уже идёт — дождись отчёта."
+# The pass reports through its own sender, and a skipped pass has nothing to report — but the
+# acknowledgement above already promised a report, so on demand the skip has to say so here.
+_NOTHING_TO_REVIEW = "🌙 Нечего разбирать — за сутки от тебя ни одного сообщения и ни одной реакции."
 
 
 class CurateCommand:
@@ -44,6 +47,9 @@ class CurateCommand:
     async def run(self, message: Message) -> None:
         """Acknowledge, then run one pass over this chat; the curator sends the report itself.
 
+        Unless there was nothing to review — that path reports nothing, so the promise made by the
+        acknowledgement is kept here instead.
+
         One pass per chat at a time. Waiting minutes with the command one tap away in autocomplete,
         the owner taps again — and two passes read-modify-write the same prompt documents, so the
         later write drops the earlier one's line while both are recorded as landed, on two Opus bills.
@@ -56,6 +62,8 @@ class CurateCommand:
         logger.info("Curator pass requested from chat", extra={"conversationId": message.chat.id})
         try:
             await message.answer(_STARTED)
-            await self._curator.curate(conversation_id=message.chat.id)
+            run = await self._curator.curate(conversation_id=message.chat.id)
+            if not run.report:
+                await message.answer(_NOTHING_TO_REVIEW)
         finally:
             self._running.discard(message.chat.id)

@@ -24,31 +24,23 @@ from pymongo import AsyncMongoClient
 _PREVIEW = 400
 
 
-def _preview(text: str | None) -> str:
-    """One field of a revision, trimmed — the full text stays in Mongo."""
+def _side(text: str | None, *, limit: int | None) -> str:
+    """One field of a revision; `limit=None` is the whole text, which is what an undo copies from."""
     if text is None:
         return "—"
-    trimmed = text[:_PREVIEW]
-    return f"{trimmed}…" if len(text) > _PREVIEW else trimmed
+    if limit is None or len(text) <= limit:
+        return text
+    return f"{text[:limit]}…"
 
 
-def _print_revision(doc: dict) -> None:
-    """One change: when, by whom, to what, and both sides of it — trimmed, with the id to expand it."""
+def _print_revision(doc: dict, *, limit: int | None = _PREVIEW) -> None:
+    """One change: when, by whom, to what, and both sides of it — with the id to reprint it untrimmed."""
     when = doc["created_at"].strftime("%Y-%m-%d %H:%M")
     run = doc.get("run_id") or "—"
     print(f"\n{when}  {doc['actor']:<9} run={run:<12} {doc['collection']}/{doc['target']}  [{doc['kind']}]")
     print(f"    id:     {doc['_id']}")
-    print(f"    before: {_preview(doc.get('before'))}")
-    print(f"    after:  {_preview(doc.get('after'))}")
-
-
-def _print_in_full(doc: dict) -> None:
-    """One change with both sides untrimmed — the text an undo is copied from."""
-    when = doc["created_at"].strftime("%Y-%m-%d %H:%M")
-    print(f"{when}  {doc['actor']}  {doc['collection']}/{doc['target']}  [{doc['kind']}]  run={doc.get('run_id') or '—'}")
-    for side in ("before", "after"):
-        print(f"\n=== {side} ===")
-        print(doc.get(side) if doc.get(side) is not None else "—")
+    print(f"    before: {_side(doc.get('before'), limit=limit)}")
+    print(f"    after:  {_side(doc.get('after'), limit=limit)}")
 
 
 async def main() -> None:
@@ -66,7 +58,7 @@ async def main() -> None:
         doc = await database["revisions"].find_one({"conversation_id": conversation_id, "_id": ObjectId(revision_id)})
         if doc is None:
             sys.exit(f"no revision {revision_id} in conversation {conversation_id}")
-        _print_in_full(doc)
+        _print_revision(doc, limit=None)
         await client.close()
         return
 

@@ -254,6 +254,12 @@ async def test_a_window_of_only_scheduled_check_ins_never_reaches_the_model(
     assert run.cost == 0.0
     assert run.exchanges_reviewed == 1  # the window was not empty — the owner just was not in it
     assert sender.sent == []  # nothing happened, so there is nothing to report
+    # Persisted, not just returned: "ran and found nothing" and "never ran" must differ in the history.
+    (recorded,) = database["curator_runs"].inserted
+    assert recorded["conversation_id"] == CONVERSATION
+    assert recorded["exchanges_reviewed"] == 1
+    assert recorded["owner_messages"] == 0
+    assert recorded["report"] == ""
 
 
 async def test_a_reaction_with_no_message_still_earns_a_pass(monkeypatch: pytest.MonkeyPatch) -> None:

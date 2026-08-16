@@ -41,12 +41,12 @@ present state — an earlier 👍 that was taken back must not read as still sta
 **A scheduled self-prompt is not the owner.** A reminder firing enters the transcript as a user
 message. Marked as such, so the curator never learns from prompts it wrote itself.
 
-**A window with no owner in it does not get a pass.** That mark is also the run/skip decision: if
-nothing in the window is an owner message or a reaction (`Evidence.has_owner_signal`), `curate()`
-stops before the classifier and records an idle run. Every lever the pass can pull needs the owner's
-words to justify it, so a night of check-ins answering themselves can only produce a report saying
-so — and the turns query already knows that, for free. Reactions count on their own: an emoji with
-no message is the cheapest signal the owner has.
+**A window with no owner in it does not get a pass.** That `scheduled` mark is also the run/skip
+decision — `Evidence.has_owner_signal` is what `curate()` stops on, and the property says why. The
+design point is that this is answerable in the same query that assembles the window: every lever the
+pass can pull needs the owner's words, so a night of check-ins answering themselves could only ever
+produce a report saying so. Note the reach: reactions count on their own, but only on turns inside
+the window, so a tap on an older answer does not by itself earn a pass.
 
 ## The classifier
 
@@ -92,11 +92,13 @@ path per store rather than a parallel curator-only one that could drift; two of 
 `MAIN_TOOLS` because they decide how every later reply is produced or accepted, so only the attributed,
 reported nightly pass writes them.
 
-Building a worker is reversible: `subagent_forget` retires one, and re-saving the name brings it back
-from the change history. It exists because the roster is a routing surface — while a worker the owner
-called useless is listed, work keeps being delegated to it, and narrowing its description does not
-take it out of the running. Retiring is the answer to a rejected worker; the answer to a gap that
-cannot be closed is to report it and build nothing.
+Building a worker is reversible: `subagent_forget` retires one, and because `save` replaces the
+document whole without filtering on `deleted_at`, re-saving the name revives it. It exists because
+the roster is a routing surface — while a worker the owner called useless is listed, work keeps being
+delegated to it. It is refused while a live worker names the retired one in its `tool_names`, which
+would otherwise surface as a failed delegation in a live turn rather than at the next build. Retiring
+is the answer to a rejected worker; the answer to a gap that cannot be closed is to report it and
+build nothing. `make seed` leaves a retired worker retired.
 
 Why it can read the web at all: a **capability gap** is a failure class the behaviour levers cannot
 touch. When the day shows work the assistant could not do *at all*, the lever is the roster — grant the
@@ -145,6 +147,7 @@ make curate U=<conversation_id>            # one real pass: evidence, changes, r
 make curate U=<conversation_id> DRY=1      # stop after the classification, change nothing
 make curate U=<conversation_id> DAYS=7     # a wider window
 make revisions U=<conversation_id>         # the change history, oldest first
+make revisions U=<conversation_id> REV=<revision_id>   # one change, both sides untrimmed
 ```
 
 In prod, Cloud Scheduler POSTs `/curate` nightly at 04:00 America/Los_Angeles
@@ -187,5 +190,6 @@ split to the size limit like every other send.
   been decided (`app/IDEAS.md`, owner wishlist).
 - **Sub-agent edits take effect on the next process start** — a conversation's agent is built once
   and cached.
-- **No rollback command yet.** `before` holds the text and `make revisions` shows it, but putting a
-  version back is a manual edit today.
+- **No rollback command yet.** `make revisions … REV=<id>` prints the replaced text in full, so the
+  undo is a copy-paste rather than the guesswork it was while the listing trimmed at 400 characters —
+  but putting a version back is still a manual edit, and nothing the curator itself can do.

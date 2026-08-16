@@ -1,7 +1,7 @@
-"""Sub-agent management as tools — read the roster, write one config.
+"""Sub-agent management as tools — read the roster, write one config, retire one.
 
-The roster is editable at runtime through these two tools, which is what lets the curator act on what
-it learned overnight instead of only reporting it. `agents.yml` plus `make seed` remains the other
+The roster is editable at runtime through these three tools, which is what lets the curator act on
+what it learned overnight instead of only reporting it. `agents.yml` plus `make seed` remains the other
 writer — the file is still the source of truth for the roster's shape.
 
 **This is a trusted admin surface** (`app/subagents/CLAUDE.md`): a config decides which tools, which
@@ -224,8 +224,9 @@ class SubagentForgetTool(Tool):
         "Retire a sub-agent by name so the parent stops seeing it. Use it when the owner has "
         "rejected a worker outright, or when the job it was built for turned out not to be a job — "
         "a worker nobody should route to is a wrong routing target, and rewording its description "
-        "leaves it in the roster. The full config is kept in the change history, and saving the "
-        "same name again brings it back."
+        "leaves it in the roster. Refused while another worker delegates to it. Saving the same "
+        "name again brings the worker back, but you cannot re-read the retired config: its text "
+        "survives only in the change history, which the owner reads and you have no tool for."
     )
 
     class Input(BaseModel):
@@ -238,7 +239,13 @@ class SubagentForgetTool(Tool):
         self._store = store
 
     async def execute(self, name: str) -> str:
-        """Retire it, or say it was not there — a silent no-op would read as a change in the report."""
+        """Retire it, or say why not — a silent no-op would read as a change in the report."""
+        dependents = [config.name for config in await self._store.list() if name in config.tool_names]
+        if dependents:
+            # The mirror of SubagentSaveTool._reject: a `tool_names` entry naming a worker that is
+            # gone raises in `_resolve_tools` — and that runs inside `execute`, so it surfaces as a
+            # failed delegation in a live turn hours later, not at the next build.
+            return f"Rejected: {dependents} delegate to '{name}' — re-save them without it first."
         if not await self._store.soft_delete(name):
             return f"No live sub-agent named '{name}' in this conversation — nothing retired."
         logger.info("Sub-agent retired", extra={"subagent": name})
@@ -259,5 +266,5 @@ def build_subagent_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
 
 
 def register_management_tools(registrar: ToolRegistrar) -> None:
-    """Register the management pair. Deliberately NOT in `MAIN_TOOLS`, and refused in `tool_names`."""
+    """Register the management trio. Deliberately NOT in `MAIN_TOOLS`, and refused in `tool_names`."""
     registrar.register(MANAGEMENT_TOOL_NAME, build_subagent_tools)

@@ -169,3 +169,51 @@ async def test_a_scheduled_self_prompt_is_not_counted_as_the_owner_speaking() ->
     assert real.has_owner_input
     assert evidence.owner_message_count == 1
     assert "NOT the owner" in evidence.render()  # the classifier is told which block to skip
+
+
+async def test_a_caption_less_photo_counts_as_the_owner_speaking() -> None:
+    """A photo or PDF with no caption IS the ask, and carries no text block. Counted on words alone
+    it reads as "the owner said nothing" — which now skips the whole pass, not just misses a line."""
+    photo = {
+        "conversation_id": CONVERSATION,
+        "turn_id": 1,
+        "created_at": datetime.as_utc(datetime.datetime(2026, 8, 3, 9, 0)),
+        "messages": [
+            {"role": "user", "content": [{"type": "image", "source": {"type": "base64", "data": "…"}}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Это чек на $42."}]},
+        ],
+    }
+    db = _FakeDatabase(turns=[photo], reactions=[])
+
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
+
+    (exchange,) = evidence.exchanges
+    assert exchange.has_owner_input
+    assert evidence.owner_message_count == 1
+    assert evidence.has_owner_signal  # the gate that decides whether the pass runs at all
+    assert "photo or PDF" in evidence.render()  # the digest must not show the turn as empty
+
+
+async def test_a_window_of_only_scheduled_check_ins_has_no_owner_signal() -> None:
+    """The run/skip gate. A check-in firing and the assistant answering it is the whole of a night
+    the owner slept through — every lever the pass can pull needs his words to justify it."""
+    db = _FakeDatabase(turns=[_turn(1, "[Запланировано] Вечерний чек-ин", "Как прошёл день?")], reactions=[])
+
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
+
+    assert evidence.exchanges  # the window is not empty…
+    assert not evidence.has_owner_signal  # …but there is nothing in it to learn from
+
+
+async def test_a_reaction_alone_is_an_owner_signal() -> None:
+    """An emoji with no message is the cheapest feedback channel `/help` points the owner at; if it
+    did not count, a day of silent taps would be skipped unread."""
+    db = _FakeDatabase(
+        turns=[_turn(1, "[Запланировано] Вечерний чек-ин", "Как прошёл день?")],
+        reactions=[_reaction(1, ["👎"], at_hour=10)],
+    )
+
+    evidence = await EvidenceCollector(db).collect(conversation_id=CONVERSATION, since=SINCE)
+
+    assert evidence.owner_message_count == 0
+    assert evidence.has_owner_signal

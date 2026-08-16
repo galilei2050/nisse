@@ -29,9 +29,8 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
   `Curator.ensure_indexes` covers `curator_runs` only: `revisions` is written by every actor, so its
   index is created at startup in `backend.py`.
 - `store.py` — `CuratorRun` + `CuratorRunStore` (`curator_runs`): why the night's work happened and
-  what it told the owner. An idle pass is recorded too — "ran and found nothing" must not look like
-  "never ran". Its `exchanges_reviewed` is what the window held even when the pass was skipped: a
-  night of scheduled check-ins is not the same history as a night with no traffic.
+  what it told the owner. A pass skipped for want of an owner signal is recorded too — "ran and found
+  nothing" must not look like "never ran"; what its counts mean is on `CuratorRun`.
 - `router.py` — `POST /curate`. Empty body (what Cloud Scheduler sends) = every active conversation;
   `{"conversation_id": N}` = one chat. The owner's on-demand entry is the `/curate` command
   (`app/chat/curate.py`), which drives the same `Curator` object over one chat.

@@ -36,12 +36,14 @@ class _FakeBot:
 class _FakeCurator:
     """Records the pass it was asked for; running one needs a live model and five live stores."""
 
-    def __init__(self) -> None:
+    def __init__(self, report: str = "Убрала дубль в списке покупок.") -> None:
         self.curated: list[int] = []
+        self.report = report
 
     async def curate(self, *, conversation_id: int) -> Any:
         self.curated.append(conversation_id)
-        return SimpleNamespace(changes=0)
+        # `report` is what the handler reads to tell a skipped pass from one that already reported.
+        return SimpleNamespace(changes=0, report=self.report)
 
 
 def _router(assistant: _FakeAssistant, curator: _FakeCurator) -> Any:
