@@ -152,6 +152,32 @@ class EvidenceCollector:
         )
         return evidence
 
+    async def before(self, *, conversation_id: int, turn_id: int, limit: int) -> list[Exchange]:
+        """The `limit` exchanges immediately preceding `turn_id`, oldest first.
+
+        The window the pass reviews is a day, but a complaint about yesterday's answer routinely
+        arrives after that answer has fallen out of it — and a complaint judged without the turn it
+        disputes is how a permanent rule gets written on an unchecked premise (`BUGS.md` #18).
+        Reaching back is deliberately a TOOL rather than a wider window: a wider one would re-review
+        a day the previous pass already acted on, and the nightly schedule runs with no retries
+        precisely because re-applied edits are the failure it cannot take back.
+        """
+        docs = await self._turns.find(
+            {"conversation_id": conversation_id, "turn_id": {"$lt": turn_id}}, sort=[("turn_id", -1)]
+        ).to_list(length=limit)
+        docs.reverse()  # queried newest-first to take the `limit` nearest; read oldest-first
+        reactions = await self._reactions_by_turn(
+            conversation_id=conversation_id, turn_ids=[doc["turn_id"] for doc in docs]
+        )
+        exchanges = self._group(cast("list[StoredTurn]", docs), reactions)
+        for exchange in exchanges:
+            exchange.answer_text = exchange.answer_text[:_ANSWER_PREVIEW]
+        logger.info(
+            "Curator read past the window",
+            extra={"conversationId": conversation_id, "beforeTurn": turn_id, "exchanges": len(exchanges)},
+        )
+        return exchanges
+
     async def _reactions_by_turn(self, *, conversation_id: int, turn_ids: list[int]) -> dict[int, list[str]]:
         """The CURRENT emoji on each of `turn_ids`, from the reaction log.
 

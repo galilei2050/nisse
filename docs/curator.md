@@ -41,6 +41,16 @@ present state — an earlier 👍 that was taken back must not read as still sta
 **A scheduled self-prompt is not the owner.** A reminder firing enters the transcript as a user
 message. Marked as such, so the curator never learns from prompts it wrote itself.
 
+**A complaint can outlive the answer it is about.** The window is a day, and an objection to
+yesterday's reply routinely arrives after that reply has aged out of it — leaving the pass to judge
+one side. `transcript_read` (`app/curator/tools.py`) walks back from the oldest turn in the digest,
+past the window, so the disputed exchange can be read before a rule is written about it. It is a
+tool rather than a wider window on purpose: a wider one re-reviews a day the previous pass already
+acted on, and the nightly schedule carries no retries precisely because re-applied edits are the
+failure it cannot take back. The prompt rule this serves — *a complaint proves the owner was
+unhappy, never that what he recalls is what happened* — is the one that would have stopped the two
+judge rules of 16.08 (`BUGS.md` #18).
+
 **A window with no owner in it does not get a pass.** That `scheduled` mark is also the run/skip
 decision — `Evidence.has_owner_signal` is what `curate()` stops on, and the property says why. The
 design point is that this is answerable in the same query that assembles the window: every lever the
@@ -86,11 +96,12 @@ triggers a change on its own:
 ## What the curator may change, and what it may never learn
 
 Its surface is `CURATOR_TOOLS` (`app/curator/curator.py` — the list and the reason for each entry live
-there, not here): one writer per store, plus search and page-reading to decide with. No `ask_user` —
-the owner is asleep. The writers are the **same tools the live assistant uses**, so there is one write
-path per store rather than a parallel curator-only one that could drift; two of them are absent from
-`MAIN_TOOLS` because they decide how every later reply is produced or accepted, so only the attributed,
-reported nightly pass writes them.
+there, not here): one writer per store, plus the transcript reader, search and page-reading to decide
+with. No `ask_user` — the owner is asleep. The writers are the **same tools the live assistant uses**,
+so there is one write path per store rather than a parallel curator-only one that could drift; three
+entries are absent from `MAIN_TOOLS` — two decide how every later reply is produced or accepted, and
+the third hands back exchanges the window left out, which is a maintenance question and not something
+a worker should be able to pull into a delegated answer.
 
 Building a worker is reversible: `subagent_forget` retires one, and because `save` replaces the
 document whole without filtering on `deleted_at`, re-saving the name revives it. It exists because

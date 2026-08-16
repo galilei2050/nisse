@@ -41,8 +41,10 @@ class _FakeCursor:
     def __init__(self, docs: list[dict]) -> None:
         self._docs = docs
 
-    async def to_list(self, length: object = None) -> list[dict]:  # noqa: ARG002 — pymongo's signature
-        return self._docs
+    async def to_list(self, length: int | None = None) -> list[dict]:
+        # `length` is how `before` caps its read; a fake that ignored it would report the whole
+        # transcript as fitting whatever limit the tool asked for.
+        return self._docs if length is None else self._docs[:length]
 
 
 class _FakeCollection:
@@ -64,6 +66,8 @@ class _FakeCollection:
         for key, condition in flt.items():
             if isinstance(condition, dict):  # {"$gte": ...} / {"$in": [...]} — the operators used here
                 if "$gte" in condition and doc[key] < condition["$gte"]:
+                    return False
+                if "$lt" in condition and doc[key] >= condition["$lt"]:
                     return False
                 if "$in" in condition and doc.get(key) not in condition["$in"]:
                     return False
@@ -203,6 +207,43 @@ async def test_a_window_of_only_scheduled_check_ins_has_no_owner_signal() -> Non
 
     assert evidence.exchanges  # the window is not empty…
     assert not evidence.has_owner_signal  # …but there is nothing in it to learn from
+
+
+async def test_before_returns_the_nearest_earlier_exchanges_oldest_first() -> None:
+    """Walking back from the window's oldest turn: the NEAREST earlier exchanges, in reading order.
+
+    Taking the first `limit` in ascending order instead would hand back the start of the whole
+    conversation — never the exchange a complaint is about.
+    """
+    db = _FakeDatabase(
+        turns=[_turn(n, f"вопрос {n}", f"ответ {n}", at_hour=n) for n in range(1, 8)],
+        reactions=[],
+    )
+
+    exchanges = await EvidenceCollector(db).before(conversation_id=CONVERSATION, turn_id=6, limit=3)
+
+    assert [e.turn_id for e in exchanges] == [3, 4, 5]
+
+
+async def test_before_carries_the_reactions_that_landed_on_those_turns() -> None:
+    """The tap is half of why an older exchange is worth reading — it says which answer to go look at."""
+    db = _FakeDatabase(
+        turns=[_turn(1, "сравни отели", "вот сравнение"), _turn(2, "спасибо", "не за что")],
+        reactions=[_reaction(1, ["👎"], at_hour=11)],
+    )
+
+    (exchange,) = await EvidenceCollector(db).before(conversation_id=CONVERSATION, turn_id=2, limit=5)
+
+    assert exchange.turn_id == 1
+    assert exchange.reactions == ["👎"]
+
+
+async def test_before_the_first_turn_is_empty_not_an_error() -> None:
+    """Reaching past the start of the conversation is an ordinary outcome — the pass asks and learns
+    there is nothing older, rather than getting a failure it has to reason about."""
+    db = _FakeDatabase(turns=[_turn(1, "привет", "привет")], reactions=[])
+
+    assert await EvidenceCollector(db).before(conversation_id=CONVERSATION, turn_id=1, limit=5) == []
 
 
 async def test_a_reaction_alone_is_an_owner_signal() -> None:

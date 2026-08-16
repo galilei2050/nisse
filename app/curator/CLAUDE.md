@@ -17,6 +17,10 @@ memory, memories, lists, judge rules, sub-agents. Design, research grounding, an
   Don-Yehiya et al. / arXiv:2507.23158, not invented. **Offline only** — an inline classifier is a
   rejected direction here. Fails loud on unusable JSON: a silently-empty classification is
   indistinguishable from a quiet night.
+- `tools.py` — `transcript_read`, the pass's only read past the window (`EvidenceCollector.before`).
+  Registered as `transcript`, curator-only. A complaint about an answer that already aged out is
+  otherwise judged on one side, which is how a permanent judge rule got written on a premise nobody
+  could check (`BUGS.md` #18). Why a tool and not a wider window: the reason is on `before`.
 - `prompt.py` — `NISSE_CURATOR_PROMPT` (what to look for, the evidence rules, the "do NOT capture"
   list) + `CURATOR_JUDGE_PROMPT` + `REVIEW_BRIEF`. **This file is the feature**; the rest is
   plumbing that delivers evidence and records what changed.

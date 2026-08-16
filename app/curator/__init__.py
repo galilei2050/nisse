@@ -2,5 +2,6 @@
 
 from app.curator.curator import Curator
 from app.curator.router import build_curate_route
+from app.curator.tools import TRANSCRIPT_TOOL_NAME, register_tools
 
-__all__ = ["Curator", "build_curate_route"]
+__all__ = ["TRANSCRIPT_TOOL_NAME", "Curator", "build_curate_route", "register_tools"]
