@@ -36,7 +36,6 @@ class CoreDeps:
     bucket_name: str
     scheduler: Scheduler
     schedule_endpoint: str
-    browser_cdp_url: str | None  # set → browser runs on a managed remote browser (Browserbase), not local
     judge_project: str  # GCP project the Gemini judges run in; every judge is built per agent, not shared
     tools: "ToolRegistry"  # the process-wide name→factory tool catalog (app/tools)
     bot: Bot  # transport for tools that talk to the owner directly (ask_user); the probe fakes one

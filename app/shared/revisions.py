@@ -14,7 +14,7 @@ A superseded copy living beside the live one would collide with both rules.
 Who is writing is ambient, not a parameter: a store is built the same way for the live assistant and
 for the curator, so the actor rides a context variable (`acting_as`) instead of being threaded
 through every tool factory. The default is the assistant, which makes any writer that ISN'T the live
-agent responsible for declaring itself — the curator and the seed script both do.
+agent responsible for declaring itself, as the curator does.
 """
 
 import contextlib

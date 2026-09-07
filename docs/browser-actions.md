@@ -11,15 +11,14 @@ click, type, scroll), and the decisions behind the design. Code: `app/browser/` 
 > никто» перестанет быть правдой без единого коммита; живой состав виден через `subagent_list` (или
 > прямо в коллекции `subagents`), а не из этого файла.
 >
-> Ниже описан замысел целиком, и часть его в дереве отсутствует: управляемого удалённого браузера
-> (`managed.py`, Browserbase через CDP — без него на сайтах под Cloudflare можно читать, но не
-> покупать) и зависимости `browserbase`; `make startbrowser` — это он ЗАПИСЫВАЕТ сессию чата, поэтому
-> `BrowserSessionStore.load` возвращает None всегда, контекст открывается разлогиненным, и страница
-> за входом отдаёт свой логин-вол как обычный текст; сценария оплаты. Эти разделы читать как список
-> того, что понадобится, а не как инструкцию, выполнимую сейчас.
+> Управляемый браузер (`managed.py`, Browserbase через CDP) и захват логина (`make startbrowser`)
+> в дереве есть и проверены на живых сайтах: сессия Browserbase поднимается, страница читается и
+> принимает клики и ввод. В Cloud Run ключи намеренно не проброшены — открытый дефект 8. Из замысла
+> в дереве по-прежнему нет сценария оплаты: этот раздел читать как список того, что понадобится.
 >
-> Тестами покрыт пул прокси (`tests/browser/test_proxy.py`) и регистрация. Контракт `session.py`
-> упирается в живую страницу — своего файла кейсов у этой возможности пока нет.
+> Тестами покрыт пул прокси (`tests/browser/test_proxy.py`), отказной путь сессии
+> (`tests/browser/test_session.py`) и регистрация. Остальное упирается в живую страницу — своего
+> файла кейсов у этой возможности пока нет.
 
 ## Why this exists, and what it is not
 
@@ -235,25 +234,39 @@ the browser is used often, not before it is used once.
 4. **Pool exhaustion is indistinguishable from "no proxies configured"** — both are `None`, which
    `_ensure_context` reads as "go direct". The host that just banned the last proxy then gets a
    connection from the bot's own IP.
-5. **A logged-out session looks like a page.** `load()` returns None until something writes
-   `browser_sessions`, and the agent reads the login wall as content and reports what it found there.
+5. **A logged-out session looks like a page.** `load()` returns None for any chat that never ran
+   `make startbrowser`, and the agent reads the login wall as content and reports what it found there.
    Given the project's own weighting of an unverifiable miss, this wants a loud failure at the boundary,
    not a `| None` that reads like a rare edge case.
 6. **Structure the repo already settled elsewhere:** the five tool classes repeat one constructor and
    one error branch where `app/search/serp_tool.py` shows the base-class shape, and `_snapshot` /
    `_settled_snapshot` / `_is_cf_challenge` are free functions over the `Page` that `BrowserSession`
    owns, with the `data-nisse-ref` name split between a module constant and two methods.
+7. **One Browserbase session is minted at boot and held for the life of the instance.** `backend.py`
+   resolves the CDP url in a `cached_property` that `_playwright` reads while `CoreDeps` is assembled,
+   so `sessions.create` runs on the startup path: a revoked key or a Browserbase outage aborts the whole
+   container — chat, memory, scheduling — over a capability nobody currently holds. The other end is
+   worse: Browserbase sessions expire and a Cloud Run instance outlives them, after which every action
+   fails against a dead endpoint and `_failed` degrades each one to a sentence at `warning`, so the agent
+   reads "this page had a problem" and retries forever with nothing above `warning` in the logs. Both
+   ends close the same way — acquire the url when an action first needs a page, not at boot.
+8. **The managed browser is not wired into the deploy.** Neither `BROWSERBASE_API_KEY` nor
+   `BROWSERBASE_PROJECT_ID` is bound in `infrastructure/services/cloud_run_backend.py`, so in production
+   `managed_browser_cdp_url()` returns None on every boot and the browser is always the local Chromium
+   whose cart writes Turnstile silently drops. Deliberate for now: binding them would put defect 7 on the
+   startup path of the live service to enable a tool no agent holds. Bind them in the change that grants
+   the browser to a worker, and fix 7 first.
 
 ## Configuration
 
-- `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID` — will route the browser through Browserbase's
-  managed browser (required to transact on Cloudflare-protected sites like DoorDash, and the only
-  autonomous option in prod since Cloud Run has no display). **Nothing reads them today** — they land
-  with `managed.py`; setting them now does nothing.
+- `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID` — route the browser through Browserbase's managed
+  browser (required to transact on Cloudflare-protected sites like DoorDash, and the only autonomous
+  option in prod since Cloud Run has no display). Read by `managed.py` at process start; set locally,
+  and deliberately NOT bound in Cloud Run yet — see open defect 8.
 - `BROWSER_PROXIES` — `host:port:user:pass` lines (the Webshare "download list" output; the provider
   API token stays out of the app). Required in **local** mode; unused in managed mode (Browserbase
   provides egress).
 - Per-chat sessions live in MongoDB (`browser_sessions`), so there's **no** session-dir env var; the
   same `MONGODB_URI` the rest of the app uses covers it.
-- Browsers: `playwright install chromium` (Dockerfile installs it `--with-deps`); managed mode needs
-  the `browserbase` SDK, which is not a dependency yet — it lands with `managed.py`.
+- Browsers: `playwright install chromium` (Dockerfile installs it `--with-deps`); managed mode goes
+  through the `browserbase` SDK, a declared dependency.

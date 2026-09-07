@@ -242,8 +242,8 @@ app/
                     in Mongo `browser_sessions`, one doc per conversation; written by
                     `make startbrowser`, read on each action — so a login survives stateless Cloud Run
     proxy.py        ProxyPool — pins one residential proxy per host, rotates only on `mark_banned`;
-                    parsed from BROWSER_PROXIES so the provider token stays out of the app. LOCAL mode
-                    only, and `browser_tools` does not build one — a managed browser brings its own egress
+                    parsed from BROWSER_PROXIES so the provider token stays out of the app. Why
+                    `browser_tools` builds none is stated at that function
                     (design + the measured Cloudflare/Turnstile findings: docs/browser-actions.md)
     managed.py      managed_browser_cdp_url — creates a Browserbase session and returns its CDP url.
                     BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID set → every browser action runs on that
@@ -306,8 +306,8 @@ app/
 
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
-`tools`, `shared`. `browser` is a third state — registered, only its proxy pool under test, and held by
-no agent: it is on the shelf for the curator to grant, not handed out by a commit. The
+`tools`, `shared`. `browser` is a third state — registered and held by no agent in code: it is on the
+shelf for the curator to grant, not handed out by a commit. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
 owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
 passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.

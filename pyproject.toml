@@ -96,7 +96,7 @@ max-complexity = 8
 # so the implicit-namespace warning (INP001) is by design; `secret_id` is a GCP
 # resource name, not a credential (S106); re-export package inits need no docstring.
 "infrastructure/**" = ["INP001", "S106", "D104"]
-# probe.py, app/tracing, startbrowser.py are manual CLI harnesses whose stdout IS their output (T201).
+# Manual CLI harnesses: stdout IS their output, so print is the point (T201).
 # TraceView takes the display flags as keyword args — a CLI knob set, not a god-signature (PLR0913).
 "app/probe.py" = ["T201"]
 "app/curate_probe.py" = ["T201"]

@@ -98,7 +98,6 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
             bucket_name=str(get_env("PRIVATE_BUCKET_NAME")),
             scheduler=LoggingScheduler(),  # probe has no Cloud Tasks — log the enqueue instead
             schedule_endpoint="http://localhost/schedule/fire",
-            browser_cdp_url=cdp_url,
             judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
             tools=build_tool_registry(),
             local_traces_dir=str(traces_dir),  # main agent + sub-agents write here; probe reads it after
@@ -119,7 +118,7 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
 
 
 def main() -> None:
-    """Parse CLI args and run one probe; the trace is saved under scratch/traces/ for `app.trace`."""
+    """Parse CLI args and run one probe; the trace is saved under scratch/traces/ for `app.tracing`."""
     parser = argparse.ArgumentParser(description="Drive Assistant.run() once for manual end-to-end testing.")
     parser.add_argument("--user-id", type=int, default=1, help="Conversation id (acts as the owner's chat id)")
     parser.add_argument("--message", required=True, help="Text to send to the agent")

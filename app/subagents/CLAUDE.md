@@ -8,9 +8,8 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 
 - `store.py` — `SubagentConfig(NisseDbModel)` (eight required config axes incl. `max_turns` — the hard
   cap on the child's loop, passed to `AgentConfig.max_turns` — + `conversation_id`) +
-  `SubagentStore` (scoped `list()` for the build; `save()` records the config it replaced and is
-  shared by the seed script and the curator; `ensure_indexes` unique on
-  `(conversation_id, name)`).
+  `SubagentStore` (scoped `list()` for the build; `save()` records the config it replaced;
+  `ensure_indexes` unique on `(conversation_id, name)`).
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and
   returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tools` maps
@@ -43,11 +42,8 @@ it HAS siblings.**
 
 **A sub-agent lives ONLY in Mongo — there is no file to edit.** The `subagents` collection is the
 definition; changing how a worker behaves means writing the document, through the curator's
-`subagent_save` or by hand. There was a seed file once; it was deleted because it lied — the live
-prompts had drifted far past it (measured 2026-08-08 on the owner's chat: the live `retrieval` prompt
-carried a whole effort-budget section the file didn't have, `researcher` a stop-early rule — 1367 vs
-1218 chars and 2398 vs 1990), and re-running the seed would have thrown the curator's work away. To
-read what an agent actually does, query `subagents`.
+`subagent_save` or by hand. A seed file would only go stale against the curator's edits, and re-running
+it would throw them away. To read what an agent actually does, query `subagents`.
 
 **Nothing is lost by living in the database.** Every write goes through `SubagentStore.save`, which
 records a revision holding the full text before and after — so the history of a prompt is
@@ -56,8 +52,8 @@ history is already kept.
 
 The shape in use is a `researcher` orchestrator (owns the hypothesis tree, decomposes the question,
 delegates each sub-question, synthesizes) over a `retrieval` worker (answers one self-contained
-sub-question with cited compression, and owns the logged-in `browser`).
-Methodology behind the prompts: `docs/research-subagent.md`.
+sub-question with cited compression). Which tools either one actually holds is in its document, not
+here. Methodology behind the prompts: `docs/research-subagent.md`.
 
 **`subagent_list` prints its index in the RESULT, not through `Tool.user_message()`** — the one place in
 this app that deviates from the uniform seam. Two reasons: the index here is the whole registry
@@ -77,8 +73,8 @@ config). Add a verifier later only if usage shows a need.
 ## Wiring
 
 `Conversations._build_subagent_tools(conversation_id)` reads the configs and adds one `SubagentTool`
-each. Configs are read once at conversation-build; the agent is cached, so a re-seed takes effect on
-the next process start (no cache invalidation — not needed for an admin-seeded, rarely-changing set).
+each. Configs are read once at conversation-build; the agent is cached, so a config change takes effect
+on the next process start (no cache invalidation — not needed for a rarely-changing, admin-only set).
 A sub-agent builds its tools through the SAME `deps.tools` registry the main agent uses (`app/tools/`)
 — the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
 sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).

@@ -6,8 +6,8 @@ per-conversation stores (lists, memories, prompts) — not in object storage. Cl
 Mongo is also what would make a session survive in production. One document per `conversation_id`,
 overwritten in place.
 
-**Nothing writes it yet** — the capture flow was not ported (`docs/browser-actions.md`), so `load`
-returns None for every chat and every context opens signed out.
+Written by `make startbrowser` (`app/startbrowser.py`), where the owner signs in by hand once; a chat
+that has never been through it has no document, `load` returns None, and its contexts open signed out.
 """
 
 from baski.primitives import datetime
@@ -43,7 +43,7 @@ class BrowserSessionStore:
         return doc["storage_state"] if doc else None
 
     async def save(self, storage_state: StorageState) -> None:
-        """Overwrite this chat's storage-state in place (upsert). No caller yet — see the module docstring."""
+        """Overwrite this chat's storage-state in place (upsert) — called by `make startbrowser`."""
         now = datetime.now()
         await self._collection.update_one(
             {"conversation_id": self._conversation_id},

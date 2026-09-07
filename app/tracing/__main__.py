@@ -43,7 +43,7 @@ def main() -> None:
     trace = TraceRecord.model_validate_json(_resolve(args.trace).read_text())
     view = TraceView(trace, system=args.system, results=args.results, grep=args.grep, full=args.full)
     if args.answer:
-        view.print_answer()
+        print(view.answer())
     else:
         view.print_report()
 

@@ -2,8 +2,8 @@
 
 Shared by `app/probe.py` (the run it just executed) and `python -m app.tracing` (re-view any saved
 trace without re-running — don't burn tokens re-running to inspect). The flags keep the output cheap:
-by default print only tool calls + answer + stats; opt into the system prompt, tool results, or a grep
-filter when needed.
+a report is tool calls + answer + cache + stats, and the system prompt, the tool results and a grep
+filter are opt-in, since those are what make a trace expensive to read.
 
 This is a CLI rendering, not a view of the record itself: it prints nisse's own section headers, caps
 results at a length that suits a terminal, and answers to command-line flags. That is why it lives
@@ -60,20 +60,16 @@ class TraceView:
         self._grep = grep
         self._full = full
 
-    def print_answer(self) -> None:
-        """The final answer alone — the whole output of `--answer`."""
-        print(self._answer())
-
     def print_report(self) -> None:
         """The full report: the system prompt when asked, then tool calls, answer, cache and stats."""
         if self._system:
             self._print_system()
         self._print_tool_calls()
-        print("\n=== ANSWER ===\n" + self._answer())
+        print("\n=== ANSWER ===\n" + self.answer())
         self._print_cache_usage()
         self._print_stats()
 
-    def _answer(self) -> str:
+    def answer(self) -> str:
         """The final answer, or a placeholder when the run produced none."""
         result = self._trace.result
         return (result and result.response) or "<no answer>"

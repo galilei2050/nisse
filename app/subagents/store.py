@@ -66,8 +66,8 @@ class SubagentStore:
     async def save(self, config: SubagentConfig) -> SubagentConfig:
         """Insert or replace by (conversation_id, name), recording the config it replaced.
 
-        The seed script and the curator share this path: a sub-agent's prompt IS its behaviour, so a
-        replaced one has to stay readable somewhere — the revision is where the old text survives.
+        Every write comes through here: a sub-agent's prompt IS its behaviour, so a replaced one has to
+        stay readable somewhere — the revision is where the old text survives.
         """
         previous = await self.get(config.name)
         await self._revisions.record(
