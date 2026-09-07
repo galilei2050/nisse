@@ -12,7 +12,7 @@ from pathlib import Path
 
 from baski.agents.trace import TraceRecord
 
-from app.tracing.view import print_trace
+from app.tracing.view import TraceView
 
 _TRACES = Path(__file__).resolve().parent.parent.parent / "scratch" / "traces"
 
@@ -41,9 +41,11 @@ def main() -> None:
     parser.add_argument("--answer", action="store_true", help="print only the final answer")
     args = parser.parse_args()
     trace = TraceRecord.model_validate_json(_resolve(args.trace).read_text())
-    print_trace(
-        trace, system=args.system, results=args.results, grep=args.grep, full=args.full, answer_only=args.answer
-    )
+    view = TraceView(trace, system=args.system, results=args.results, grep=args.grep, full=args.full)
+    if args.answer:
+        view.print_answer()
+    else:
+        view.print_report()
 
 
 if __name__ == "__main__":

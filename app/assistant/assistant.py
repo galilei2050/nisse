@@ -1,22 +1,48 @@
 """Assistant — the thin TG↔agent layer: turns a user message into an agent reply."""
 
-from baski.agents import AgentExecuteResult, Listener, noop
+import logging
 
+from baski.agents import Listener, noop
+from baski.server.logger import log_context
+
+from app.assistant.conversation import Reply
 from app.assistant.conversations import Conversations
 from app.browser import BrowserSessionStore
 from app.memory import MemoryStore
 from app.prompts import PromptStore
 from app.shared import CoreDeps
+from app.shared.blocks import Media
+
+logger = logging.getLogger(__name__)
 
 NISSE_SYSTEM_PROMPT = (
     "You are Nisse, a personal AI assistant for a single owner. Be concise and direct. When a question "
     "needs current or external information, use your tools to look it up, then answer in plain language.\n"
-    "Act, don't ask: never ask permission to do something you can just do — phrasings like \"want me "
-    'to add…/search…/dig deeper?" (in any language) are forbidden; do it, then report. Got it wrong? '
-    "Redo it without asking.\n"
+    'Act, don\'t ask PERMISSION: phrasings like "want me to add…/search…/dig deeper?" (in any '
+    "language) are forbidden; do it, then report. Got it wrong? Redo it without asking. A missing "
+    "OWNER'S CALL is not permission — call the `ask_user` tool before doing the work, and never "
+    "substitute a value of your own for theirs.\n"
     'Be honest first: if what you found does NOT satisfy the request, say so plainly up front ("there '
     "is no X matching Y\") instead of presenting a near-match as if it answered. Treat the owner's "
     "explicit constraints (form factor, exact specs, numbers) as hard filters, not preferences.\n"
+    "Verify, don't guess: any claim you could check with a tool — a price, figure, spec, date, market "
+    "size, what exists, the current state of something — look it up first and ground the answer in what "
+    'you found; never give numbers from memory or invent-then-disclaim them as "assumptions". If a check '
+    "contradicts what you assumed, trust the check. Settled common knowledge (basic math, Ohm's law) "
+    "needs no lookup.\n"
+    "Delegate to your sub-agents instead of doing their job. A single specialized lookup (one hotel "
+    "or flight search, one factual question) → the retrieval worker. A multi-part investigation that "
+    "must be split into several questions and synthesized — a comparison, 'research/plan X across "
+    "options', multi-destination trip planning → hand the WHOLE thing to the research orchestrator as "
+    "one brief; do NOT break it into pieces and run them yourself. They have tools and isolated "
+    "context you lack; don't fall back to your own general search.\n"
+    "Ground analysis, not only facts: if the task is to build a model, compare options, recommend, "
+    "estimate, or analyse anything involving real-world quantities (prices, market size, specs, rates, "
+    "volumes), you MUST gather current data with your tools BEFORE writing the answer — never assemble it "
+    "from memory even if you think you know it, and for comparisons pull more candidates than you present. "
+    "Then close with one honest line about how solid it is: if you grounded it, name the sources "
+    '("Источники: …"); if you did not, say so plainly ("Быстрый ответ по памяти, без проверки '
+    'данных"). Never present an ungrounded analysis as if it were researched.\n'
     "Research means completeness across source TYPES — text AND video experts: first work out which "
     "channels/experts are authoritative on the topic, then read their transcripts. A source's "
     "reputation is not a fact-check; verify the claims themselves.\n"
@@ -30,18 +56,6 @@ NISSE_SYSTEM_PROMPT = (
     "bold labels over headings."
 )
 
-_NO_ANSWER = "I couldn't produce a response — please try rephrasing."
-
-
-def _humanize_tokens(n: int) -> str:
-    """Compact token count for the reply footer: 12_400 → '12.4k', 64_000 → '64k'."""
-    return f"{n / 1000:.1f}k".replace(".0k", "k")
-
-
-def _footer(result: AgentExecuteResult) -> str:
-    """One-line cost + current context-size note appended to every answer."""
-    return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
-
 
 class Assistant:
     """Replies to a message by driving the conversation's reused agent (built/cached by `Conversations`).
@@ -49,26 +63,14 @@ class Assistant:
     Lifecycle: long-lived — one per bot (cached_property in NisseBot), reused for every message.
     """
 
-    def __init__(
-        self,
-        *,
-        deps: CoreDeps,
-        system_prompt: str = NISSE_SYSTEM_PROMPT,
-        await_trace: bool = False,
-        local_traces_dir: str | None = None,
-    ) -> None:
-        """Build the conversation registry from shared deps.
+    def __init__(self, *, deps: CoreDeps, system_prompt: str = NISSE_SYSTEM_PROMPT) -> None:
+        """Build the conversation registry from shared deps (which carry the tool registry).
 
-        `await_trace` / `local_traces_dir` are testing knobs (see `app/probe.py`): block on trace
-        persistence and write the full trace to a local dir instead of GCS. Off in production.
+        The trace-sink testing knobs (`await_trace` / `local_traces_dir`, see `app/probe.py`) ride
+        `deps` so the main agent and every sub-agent share them; off in production (traces → GCS).
         """
         self._deps = deps
-        self._conversations = Conversations(
-            deps=deps,
-            system_prompt=system_prompt,
-            await_trace=await_trace,
-            local_traces_dir=local_traces_dir,
-        )
+        self._conversations = Conversations(deps=deps, system_prompt=system_prompt)
 
     async def setup(self) -> None:
         """One-time startup: ensure the memory, prompt, and browser-session stores' indexes exist."""
@@ -76,37 +78,84 @@ class Assistant:
         await PromptStore.ensure_indexes(self._deps.database)
         await BrowserSessionStore.ensure_indexes(self._deps.database)
 
-    async def run(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> AgentExecuteResult:
-        """Drive the conversation's reused agent over the new message; return the raw result.
+    async def run(  # noqa: PLR0913 — one inbound message (chat, text, media) plus who watches it and may join
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
+    ) -> Reply:
+        """Drive the conversation's reused agent over the new message; return its `Reply`.
 
-        `reply()` wraps this into a user-facing string. Probe/tests call `run()` directly to read
-        the result's `trace_id` (to inspect the persisted trace) and token counts.
+        Probe/tests call this directly to read the result's `trace_id` and token counts; `reply()` is
+        the same call plus a no-answer diagnostic. The chat layer (`chat/format.compose_answer`) turns
+        the result into the user-facing string. `media` is a photo/PDF on the message (if any).
+        `joinable` opens this run to messages the owner sends while it works — see `Conversation.reply`;
+        off unless the caller is showing the owner this reply as it is written.
         """
-        conversation = await self._conversations.get(conversation_id)
-        return await conversation.reply(text=text, on_event=on_event)
+        with log_context(conversationId=conversation_id, agent="main"):  # tags every log; sub-agents override `agent`
+            conversation = await self._conversations.get(conversation_id)
+            return await conversation.reply(text=text, joinable=joinable, media=media, on_event=on_event)
 
-    async def reply(self, *, conversation_id: int, text: str, on_event: Listener = noop) -> str:
-        """Reply to a message within the persistent conversation; the chat router's entry point.
+    async def reply(  # noqa: PLR0913 — mirrors run(), which it is plus a no-answer diagnostic
+        self,
+        *,
+        conversation_id: int,
+        text: str,
+        joinable: bool = False,
+        media: Media | None = None,
+        on_event: Listener = noop,
+    ) -> Reply:
+        """Reply within the persistent conversation; the chat router's entry point.
 
-        `on_event` receives step events as the agent works — the chat router passes a
-        `TelegramProgress` listener so the user sees live progress.
+        Returns the `Reply` — the agent's raw result plus the turn its answer landed in, which the
+        router links its sent messages against. Formatting (footer, judge note, fallback) is the
+        Telegram layer's job — see `chat/format.compose_answer`. `on_event` receives step events as the
+        agent works (the chat router passes a `TelegramProgress` listener for live progress).
         """
-        result = await self.run(conversation_id=conversation_id, text=text, on_event=on_event)
-
+        reply = await self.run(
+            conversation_id=conversation_id, text=text, joinable=joinable, media=media, on_event=on_event
+        )
+        result = reply.result
         if not result.response:
-            self._deps.logger.warning(
-                "Agent produced no user-facing text; sending fallback",
-                labels={
+            logger.warning(
+                "Agent produced no user-facing text; chat layer will send fallback",
+                extra={
+                    "conversationId": conversation_id,
                     "traceId": result.trace_id,
                     "turnCount": result.turn_count,
                     "toolCallCount": result.tool_call_count,
                     "outputTokens": result.total_output_tokens,
                 },
             )
-            return _NO_ANSWER
-        return result.response + _footer(result)
+        return reply
+
+    async def deliver(self, *, conversation_id: int, text: str) -> bool:
+        """Hand a message to that chat's reply already in flight; True once it is in.
+
+        False means nothing joinable is running — either no reply at all, or one the owner is not
+        watching (a scheduled task), so the caller starts a turn of its own.
+
+        What the owner types while the agent works belongs to the SAME request — it corrects, adds a
+        constraint, or answers something the agent was about to guess. A second reply for it instead
+        waits out the first on the chat's lock, then re-runs the whole loop on a second judge and
+        trace, answering the follow-up over a transcript that by then already holds the first answer.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        return conversation.deliver(text)
 
     async def flush(self, *, conversation_id: int) -> None:
         """Await the conversation's durable history writes — called after the answer is sent."""
         conversation = await self._conversations.get(conversation_id)
         await conversation.flush()
+
+    async def link_messages(self, *, conversation_id: int, turn_id: int, message_ids: list[int]) -> None:
+        """Tie the Telegram messages that delivered the answer to the turn that produced it.
+
+        Only knowable in the chat layer, only useful later: it is how a reaction on one of those
+        messages resolves to a turn. Called after `flush()`, so the turn document already exists.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        await conversation.link_messages(turn_id=turn_id, message_ids=message_ids)

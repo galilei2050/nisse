@@ -15,6 +15,7 @@ from baski.clients.playwright_client import PlaywrightClient
 from baski.clients.scheduler import CloudTasksConfig, Scheduler
 from baski.env import get_env
 from baski.telegram.server import TelegramServer
+from elevenlabs import AsyncElevenLabs
 from fastapi import FastAPI
 from google.cloud import tasks_v2
 from pymongo import AsyncMongoClient
@@ -23,11 +24,24 @@ from pymongo.asynchronous.database import AsyncDatabase
 from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
-from app.assistant.history import MongoMessageHistory
-from app.browser import managed_browser_cdp_url
+from app.assistant.history import MongoMessageHistory, TurnLookup
+from app.browser import BrowserSessionStore, managed_browser_cdp_url
+from app.chat.ask import PendingQuestions
+from app.chat.curate import CurateCommand
+from app.chat.format import compose_answer
+from app.chat.reactions import ReactionRecorder
+from app.chat.saved import SavedViewer
+from app.chat.sender import MarkdownSender
+from app.chat.speak import Speaker
+from app.chat.transcribe import Transcriber
+from app.curator import Curator, build_curate_route
 from app.lists import ListStore
+from app.reactions import ReactionStore
 from app.scheduling import LoggingScheduler, ScheduleRunner, ScheduleStore, SchedulingService, build_fire_route
 from app.shared import CoreDeps
+from app.shared.revisions import RevisionLog
+from app.subagents import SubagentStore
+from app.tools.wiring import build_tool_registry
 
 
 class NisseBot(TelegramServer):
@@ -35,7 +49,16 @@ class NisseBot(TelegramServer):
 
     def routers(self) -> Iterable[Router]:
         """Mount the chat router and bind async-client lifecycle to its startup/shutdown."""
-        router = chat.build_router(assistant=self.assistant)
+        router = chat.ChatRouter(
+            assistant=self.assistant,
+            transcriber=self._transcriber,
+            speaker=self._speaker,
+            questions=self.deps.questions,  # the same registry `ask_user` parks its questions on
+        ).build(
+            saved=SavedViewer(self._database),
+            curate=CurateCommand(self.curator),
+            reactions=ReactionRecorder(self._database, turns=TurnLookup(self._database)),
+        )
         router.startup.register(self._on_startup)
         router.shutdown.register(self._on_shutdown)
         return [router]
@@ -56,10 +79,27 @@ class NisseBot(TelegramServer):
         )
 
     def add_webhook_routes(self, app: FastAPI) -> None:
-        """Mount the scheduling fire endpoint Cloud Tasks calls when a task is due (webhook mode)."""
+        """Mount the worker endpoints: the scheduling fire, and the nightly curator (webhook mode)."""
         service = SchedulingService(scheduler=self.deps.scheduler, endpoint=self.deps.schedule_endpoint)
-        runner = ScheduleRunner(assistant=self.assistant, bot=self.bot, database=self._database, scheduling=service)
+        runner = ScheduleRunner(
+            assistant=self.assistant,
+            sender=self.sender,
+            database=self._database,
+            scheduling=service,
+            format_answer=compose_answer,  # the Telegram rendering, supplied here so scheduling needn't import chat
+        )
         build_fire_route(app, runner)
+        build_curate_route(app, self.curator)
+
+    @cached_property
+    def sender(self) -> MarkdownSender:
+        """How a message composed off the reply path (a report, a fired task's answer) reaches the owner."""
+        return MarkdownSender(self.bot)
+
+    @cached_property
+    def curator(self) -> Curator:
+        """The maintenance pass — Cloud Scheduler drives it nightly (POST /curate), `/curate` on demand."""
+        return Curator(self.deps, sender=self.sender, format_report=compose_answer)
 
     @cached_property
     def assistant(self) -> Assistant:
@@ -68,9 +108,8 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def deps(self) -> CoreDeps:
-        """Shared low-level clients assembled from individual cached properties."""
+        """Shared clients + services assembled from individual cached properties."""
         return CoreDeps(
-            logger=self.logger,
             http=self._http,
             anthropic=self._anthropic,
             database=self._database,
@@ -79,12 +118,16 @@ class NisseBot(TelegramServer):
             scheduler=self._scheduler_dep,
             schedule_endpoint=self._schedule_endpoint,
             browser_cdp_url=self._browser_cdp_url,
+            judge_project=str(get_env("GOOGLE_CLOUD_PROJECT")),
+            tools=build_tool_registry(),
+            bot=self.bot,  # lets transport tools (ask_user) message the owner directly
+            questions=PendingQuestions(),
         )
 
     @cached_property
     def _browser_cdp_url(self) -> str | None:
         """Managed remote-browser CDP endpoint (Browserbase) when configured, else None (local browser)."""
-        return managed_browser_cdp_url(self.logger)
+        return managed_browser_cdp_url()
 
     @cached_property
     def _http(self) -> httpx.AsyncClient:
@@ -97,9 +140,24 @@ class NisseBot(TelegramServer):
         return AsyncAnthropic(api_key=str(get_env("ANTHROPIC_API_KEY")), timeout=600.0)
 
     @cached_property
+    def _elevenlabs(self) -> AsyncElevenLabs:
+        """Shared ElevenLabs client — Scribe v2 (STT, inbound) and text-to-speech (voice replies)."""
+        return AsyncElevenLabs(api_key=str(get_env("ELEVENLABS_API_KEY")))
+
+    @cached_property
+    def _transcriber(self) -> Transcriber:
+        """Voice → text adapter (ElevenLabs Scribe v2), used by the chat router on voice messages."""
+        return Transcriber(client=self._elevenlabs)
+
+    @cached_property
+    def _speaker(self) -> Speaker:
+        """Text → voice adapter (Haiku adapt + ElevenLabs TTS) — voices the reply on voice-message turns."""
+        return Speaker(elevenlabs=self._elevenlabs, anthropic=self._anthropic)
+
+    @cached_property
     def _playwright(self) -> PlaywrightClient:
         """Shared browser. Local Chromium by default; a managed remote browser when BROWSERBASE_* is set."""
-        return PlaywrightClient(headless=True, logger=self.logger, cdp_url=self._browser_cdp_url)
+        return PlaywrightClient(headless=True, cdp_url=self._browser_cdp_url)
 
     @cached_property
     def _scheduler_dep(self) -> Scheduler:
@@ -110,7 +168,7 @@ class NisseBot(TelegramServer):
         cloud_tasks_config() would produce two gRPC async clients on the same event loop,
         causing "Task was destroyed but it is pending!" errors.
         """
-        return self._scheduler if self.args["cloud"] else LoggingScheduler(self.logger)
+        return self._scheduler if self.args["cloud"] else LoggingScheduler()
 
     @cached_property
     def _schedule_endpoint(self) -> str:
@@ -139,6 +197,11 @@ class NisseBot(TelegramServer):
         await MongoMessageHistory.ensure_indexes(self._database)
         await ScheduleStore.ensure_indexes(self._database)
         await ListStore.ensure_indexes(self._database)
+        await ReactionStore.ensure_indexes(self._database)
+        await SubagentStore.ensure_indexes(self._database)
+        await BrowserSessionStore.ensure_indexes(self._database)
+        await RevisionLog.ensure_indexes(self._database)  # written by every actor, not just the curator
+        await Curator.ensure_indexes(self._database)
 
     async def _on_shutdown(self) -> None:
         """Close every async client opened on startup."""

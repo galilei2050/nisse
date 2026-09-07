@@ -12,6 +12,8 @@ from baski.agents.tool import Tool
 from pydantic import BaseModel, Field
 
 from app.lists.store import ItemList, ListStore
+from app.shared import CoreDeps
+from app.tools.registry import ToolRegistrar
 
 _LIST_GUIDANCE = (
     "LISTS = collections the owner adds to and crosses off (shopping, todo, or a growing log like the "
@@ -118,3 +120,14 @@ class ListShowTool(Tool):
         lines = [_INDEX_HEADER]
         lines.extend(f"- {lst.name} ({len(lst.items)} items)" for lst in lists)
         return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])
+
+
+def list_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
+    """Named lists (artifact tier) — one store scoped to the chat, its edit/show tools."""
+    store = ListStore(deps.database, conversation_id=conversation_id)
+    return [ListEditTool(store), ListShowTool(store)]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the named-lists tools under the name the main agent references."""
+    registrar.register("lists", list_tools)

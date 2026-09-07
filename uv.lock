@@ -280,6 +280,7 @@ dependencies = [
     { name = "pulumi-gcp" },
     { name = "pydantic" },
     { name = "pymongo" },
+    { name = "pypdf" },
     { name = "python-dateutil" },
     { name = "pytz" },
     { name = "pyyaml" },
@@ -315,6 +316,7 @@ requires-dist = [
     { name = "pulumi-gcp" },
     { name = "pydantic" },
     { name = "pymongo", specifier = ">=4.9" },
+    { name = "pypdf" },
     { name = "python-dateutil" },
     { name = "pytz" },
     { name = "pyyaml" },
@@ -346,7 +348,7 @@ wheels = [
 
 [[package]]
 name = "browserbase"
-version = "1.13.0"
+version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -356,9 +358,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/ff/2ae1ab05d8ecc81bf97fae4bd372f08964080baa9c371c0811910b803957/browserbase-1.13.0.tar.gz", hash = "sha256:35d05b0d3b0c9f2b8e38e5b3736df58f4580a58b7f73dcc8a74a5984107a68e4", size = 155207, upload-time = "2026-06-08T19:41:08.768Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/bc/7cb7e6bc38d924ac481c06a638b8e37e3d426c57a3586ed0f8d7151435b5/browserbase-1.18.1.tar.gz", hash = "sha256:e63c28d235db9861999f5f53ba2ac91a21d93d656e4cffa623f79ce97beb5566", size = 288227, upload-time = "2026-09-03T19:00:27.416Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ab/44/61038f3592ed60c63cb2656223d8da508ab4d28d47ec25bab6334ca05c80/browserbase-1.13.0-py3-none-any.whl", hash = "sha256:ac16a9b16603297223ab4c581b5a5234bbed026e4e00d712170a4f81b800225e", size = 118692, upload-time = "2026-06-08T19:41:07.531Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/6d/0a83d580fc14198fd7b20cb608b2f87a4132cfb16023bf9232f766b3e77c/browserbase-1.18.1-py3-none-any.whl", hash = "sha256:3b69aaaac2e625937e6ae606e1e8a7cefc7393b67a82e3fa808596a42355acf3", size = 146964, upload-time = "2026-09-03T19:00:26.181Z" },
 ]
 
 [[package]]
@@ -664,6 +666,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "elevenlabs"
+version = "2.59.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "requests" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f4/54/198bf4ab4ba88455466963c733473fbab6b3c34910807c71b412c4ee7220/elevenlabs-2.59.0.tar.gz", hash = "sha256:b05cc41636bef94172e1b9343b650f5cc5e543fc88afe06c12217e0120fd1238", size = 717248, upload-time = "2026-07-22T10:13:24.653Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/49/6ed4f12b1451714972d38ce1c0df446414acdd08f08336fc298901b68e95/elevenlabs-2.59.0-py3-none-any.whl", hash = "sha256:cdd048dc380733f81ee512baa3e9b333c11f4f466aa84301b946fe5354a3b6da", size = 1902619, upload-time = "2026-07-22T10:13:22.582Z" },
 ]
 
 [[package]]
@@ -1779,7 +1798,10 @@ dependencies = [
     { name = "anthropic" },
     { name = "baski" },
     { name = "browserbase" },
+    { name = "elevenlabs" },
+    { name = "playwright" },
     { name = "pymongo" },
+    { name = "pyromark" },
     { name = "telegramify-markdown" },
 ]
 
@@ -1797,7 +1819,10 @@ requires-dist = [
     { name = "anthropic" },
     { name = "baski", editable = "../baski" },
     { name = "browserbase", specifier = ">=1.13.0" },
+    { name = "elevenlabs" },
+    { name = "playwright" },
     { name = "pymongo", specifier = ">=4.9" },
+    { name = "pyromark" },
     { name = "telegramify-markdown", specifier = ">=1.1.5" },
 ]
 
@@ -2365,6 +2390,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/d8/b75f6f4ab6c8beb50b0270a4f1e2530b5774f5e116563440e1677ca1820f/pymongo-4.17.0-cp314-cp314t-win32.whl", hash = "sha256:b93b22eedc62598cf5ee9d8c8007a8e9121c50fd88137012d8985500e9dc3151", size = 1056356, upload-time = "2026-04-20T16:39:22.996Z" },
     { url = "https://files.pythonhosted.org/packages/e4/5e/648c8a238eef18a25ed8a169ea6542d4a860bbec3e95b3d9badac2935c71/pymongo-4.17.0-cp314-cp314t-win_amd64.whl", hash = "sha256:3689ea34f6b647c7d1e7bdc60fcfb214b2789ed1359a7fb96569c69f50e5f18f", size = 1090964, upload-time = "2026-04-20T16:39:24.989Z" },
     { url = "https://files.pythonhosted.org/packages/dc/cb/d9780b66939c4fc1f024bcc7be23a2abcfe06a9745ca8fa76dc73395482e/pymongo-4.17.0-cp314-cp314t-win_arm64.whl", hash = "sha256:9543d8f84c2e5608565c08ac679774811e6730770d8a645439b073422a4276fb", size = 1058526, upload-time = "2026-04-20T16:39:27.924Z" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/17/ee75a92718ec7212de831e71454d702225aa5e474a805cce169806044453/pypdf-6.15.0.tar.gz", hash = "sha256:d39c4d955a76409284a905e2d65b40076d77ab76129e0faaeeb6612403ecfc79", size = 6993794, upload-time = "2026-08-06T13:06:49.929Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/72/ce3067ac31e214a66388159f8462ddb8c13dd00170f24d555a1f1ae8ee91/pypdf-6.15.0-py3-none-any.whl", hash = "sha256:14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee", size = 378123, upload-time = "2026-08-06T13:06:47.709Z" },
 ]
 
 [[package]]

@@ -18,6 +18,11 @@ telegram_token_env = create_cloud_run_secret_env("TELEGRAM_TOKEN", "backend")
 anthropic_api_key_env = create_cloud_run_secret_env("ANTHROPIC_API_KEY", "backend")
 mongodb_uri_env = create_cloud_run_secret_env("MONGODB_URI", "backend")
 serpapi_api_key_env = create_cloud_run_secret_env("SERPAPI_API_KEY", "backend")
+elevenlabs_api_key_env = create_cloud_run_secret_env("ELEVENLABS_API_KEY", "backend")
+# Vercel AI Gateway — an Anthropic-compatible endpoint over open-weight models, for sub-agents whose
+# work is cheap to check (docs/retrieval-on-a-gateway.md). The provider is in the name because the
+# gateway was chosen rather than given, and a second one must not have to argue over a shared word.
+vercel_ai_gateway_api_key_env = create_cloud_run_secret_env("VERCEL_AI_GATEWAY_API_KEY", "backend")
 
 backend = create_cloud_run_with_monitoring(
     CloudRunServiceConfig(
@@ -33,10 +38,15 @@ backend = create_cloud_run_with_monitoring(
             anthropic_api_key_env,
             mongodb_uri_env,
             serpapi_api_key_env,
+            elevenlabs_api_key_env,
+            vercel_ai_gateway_api_key_env,
         ],
         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
             cpu_idle=True,
-            limits={"cpu": "1", "memory": "2Gi"},
+            # 4Gi (the ceiling at 1 vCPU): the research sub-agent's concurrent page fetches hold
+            # all fetched HTML/SerpApi JSON in memory at once and blew the 2Gi cap → OOM crash-loop
+            # (Cloud Tasks retried the same update, each retry re-OOMing, so the ask silently died).
+            limits={"cpu": "1", "memory": "4Gi"},
         ),
         service_account_email=cloud_run_service_account.email,
         notification_channels=[],

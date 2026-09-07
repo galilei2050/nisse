@@ -2,30 +2,64 @@
 
 The generic ``baski.agents`` loop emits transport-agnostic ``AgentEvent``s; this
 listener turns them into a single Telegram message, edited in place as the agent
-works. While the model runs it shows a step checklist — each tool with its salient
-argument in a code span, and thinking (a rotating "думаю…" word when the model
-thinks without surfacing text). Once the reply text starts arriving it streams in,
-edited a sentence at a time. Only this side knows about aiogram, chat ids,
-MarkdownV2, and Telegram's flood limits.
+works. While the model runs it shows a step log — each tool with a human label
+(icon + verb) and its salient argument in a code span, thinking (a rotating
+"думаю…" word when the model thinks without surfacing text), and short process
+narration. Substantial prose the model writes *between* tool calls is kept as
+content, not a status line — it accumulates into the reply body so nothing the
+agent said is lost.
+
+``finish()`` settles the message: the step log renders as a Telegram blockquote
+and the accumulated prose + final answer follow below it, all in chronological
+order. Only this side knows about aiogram, chat ids, MarkdownV2, and Telegram's
+flood limits.
 """
 
 import contextlib
 import re
 import time
-from typing import assert_never
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from typing import NamedTuple, assert_never
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
-from baski.agents import AgentEvent, Completed, Message, TextDelta, Thinking, ToolFinished, ToolStarted, TurnStarted
+from baski.agents import (
+    AgentEvent,
+    AgentExecuteResult,
+    Completed,
+    Judged,
+    Message,
+    TextDelta,
+    Thinking,
+    ToolFinished,
+    ToolStarted,
+    TurnStarted,
+)
 
-from app.chat.format import split_message, strip_markdown_v2, to_markdown_v2
+from app.chat.format import NO_ANSWER, footer, split_message, strip_markdown_v2, to_markdown_v2, verdict_line
 
 # Telegram rejects edits faster than ~1/sec per chat; match hermes' 0.5s cadence.
 _EDIT_INTERVAL_S = 0.5
-_MAX_LINES = 20
 _THINKING_LIMIT = 120
 _PREVIEW_LIMIT = 80
 _CURSOR = " ▌"
+
+# Tool-name keyword -> (icon, human label). First substring match wins, so order matters (the
+# specific keys precede the general ones). Surfaces a tasteful step line instead of a raw tool name.
+_TOOL_LABELS = (
+    ("recall_read", "🧠", "Смотрю заметки"),
+    ("recall", "🧠", "Память"),
+    ("core_memory", "🧠", "Память"),
+    ("ai_answer", "🔍", "Спрашиваю"),
+    ("search", "🔍", "Ищу"),
+    ("browse", "🌐", "Открываю"),
+    ("list_show", "📋", "Смотрю список"),
+    ("list", "✍️", "Список"),
+    ("remind", "⏰", "Напоминаю"),
+    ("schedule", "⏰", "Расписание"),
+    ("research", "🔬", "Исследую"),
+)
 
 # Shown (rotating) when the model thinks but surfaces no readable text — Cyrillic + Latin scripts.
 _THINKING_WORDS = (
@@ -50,9 +84,19 @@ _SENTENCE_END = re.compile(r"[.!?…\n][\"»”’)\]]*\s*$")
 _PREVIEW_KEYS = ("query", "url", "title", "text", "body", "message", "name", "public_id")
 
 
-def _pretty(name: str) -> str:
-    """`google_search` -> `google search`."""
-    return name.replace("_", " ")
+class _ToolLabel(NamedTuple):
+    """How a tool's step line reads: an emoji icon and a human verb."""
+
+    icon: str
+    text: str
+
+
+def _label(name: str) -> _ToolLabel:
+    """The icon + human label for a tool name; falls back to `🔧` + the prettified name."""
+    for keyword, icon, text in _TOOL_LABELS:
+        if keyword in name:
+            return _ToolLabel(icon, text)
+    return _ToolLabel("🔧", name.replace("_", " "))
 
 
 def _brief(text: str) -> str:
@@ -75,6 +119,18 @@ def _preview(tool_input: dict[str, object]) -> str:
     return clipped.replace("`", "'")  # a stray backtick would break the code span
 
 
+@dataclass
+class _Seg:
+    """One chronological block of the message: a process group (tools/thinking), model text, or a verdict.
+
+    The whole message is an ordered list of these, so tools, text, and judge verdicts stay interleaved
+    in the order they happened — nothing is split into a separate stream or dropped.
+    """
+
+    kind: str  # "process" | "text" | "judge"
+    lines: list[str] = field(default_factory=list)
+
+
 class TelegramProgress:
     """Async listener that edits one Telegram message to show agent steps, then streams the reply."""
 
@@ -82,21 +138,37 @@ class TelegramProgress:
         """Bind to the chat where the progress message lives."""
         self._bot = bot
         self._chat_id = chat_id
-        self._message_id: int | None = None
-        self._lines: list[str] = []
-        self._tools: dict[str, tuple[int, str]] = {}  # tool name -> (checklist line index, arg preview)
-        self._answer = ""  # the reply, accumulated from text deltas and streamed in sentence by sentence
+        self._message_ids: list[int] = []  # every message sent here, in order; [0] is the live-edited one
+        self._segments: list[_Seg] = []  # the chronological stream: process / text / judge blocks, in order
+        # Tool name -> the lines its still-running calls wrote, oldest first: (segment idx, line idx,
+        # preview). A queue, not one slot, because one turn routinely calls the same tool several
+        # times at once (nine `update_hypothesis` in a row happens) and each call owns its own line.
+        self._tool_loc: dict[str, deque[tuple[int, int, str]]] = defaultdict(deque)
+        self._answer = ""  # the current turn's text, streamed in (live preview); committed into a segment
         self._think_idx = 0
         self._last_edit = 0.0
+
+    @property
+    def message_ids(self) -> list[int]:
+        """The Telegram messages this reply was delivered in — what a later reaction lands on."""
+        return self._message_ids
+
+    def _process(self) -> _Seg:
+        """The open process block to append a tool/thinking line to — a fresh one after any text/judge."""
+        if not self._segments or self._segments[-1].kind != "process":
+            self._segments.append(_Seg("process"))
+        return self._segments[-1]
 
     async def __call__(self, event: AgentEvent) -> None:
         """Consume one agent event; reflect it in the live message (throttled)."""
         if isinstance(event, TurnStarted | Completed):
             return  # turn boundary / final answer (delivered by finish()) — nothing to render here
         if self._consume(event):
-            await self._flush(force=False)
+            # Force an edit on tool boundaries so a long-running call (a sub-agent minutes deep) always
+            # shows its in-flight then ✅-done line — never a frozen cursor while it works.
+            await self._flush(force=isinstance(event, ToolStarted | ToolFinished))
 
-    def _consume(self, event: ToolStarted | ToolFinished | Thinking | TextDelta | Message) -> bool:
+    def _consume(self, event: ToolStarted | ToolFinished | Thinking | TextDelta | Message | Judged) -> bool:
         """Apply the event to the render state; return whether it warrants an edit now."""
         match event:
             case ToolStarted(name=name, tool_input=tool_input):
@@ -104,16 +176,39 @@ class TelegramProgress:
             case ToolFinished():
                 self._finish_tool(event)
             case Thinking(text=text):
-                self._lines.append(f"💭 {self._thinking(text)}")
+                self._process().lines.append(f"💭 {self._thinking(text)}")
             case TextDelta(text=text):
                 self._answer += text
                 return bool(_SENTENCE_END.search(self._answer))  # hold the edit until a sentence completes
             case Message(text=text):
-                self._lines.append(f"💬 {text}")
-                self._answer = ""  # narration is now a committed line; the final reply streams fresh
+                self._commit_message(text)
+            case Judged():
+                return self._commit_judged(event)
             case _:
                 assert_never(event)
         return True
+
+    def _commit_judged(self, event: Judged) -> bool:
+        """Self-check verdict, placed right after the text it graded — so the chronology reads text→verdict.
+
+        The graded draft is committed as text FIRST (never wiped — it's the model's pre-check text and
+        often carries content the rewrite drops), then the verdict line follows it in the stream.
+        """
+        self._commit_answer()  # the model's text came before this verdict — keep it, in order
+        self._segments.append(_Seg("judge", [verdict_line(event)]))  # `_render_seg` supplies the bold
+        return True
+
+    def _commit_message(self, text: str) -> None:
+        """Commit a tool-calling turn's narration as a text block, in order — nothing the model writes is dropped."""
+        self._answer = ""  # this turn's streamed text is finalized as `text`
+        if text:
+            self._segments.append(_Seg("text", [text]))
+
+    def _commit_answer(self) -> None:
+        """Move the streamed live text into a committed text block (kept in chronological order)."""
+        if self._answer:
+            self._segments.append(_Seg("text", [self._answer]))
+            self._answer = ""
 
     def _thinking(self, text: str) -> str:
         """A thinking line's content: the brief if there is one, else a rotating "thinking…" word."""
@@ -125,52 +220,83 @@ class TelegramProgress:
         return f"{word}…"
 
     def _start_tool(self, name: str, preview: str) -> None:
-        """Append an in-flight tool line and remember it so ToolFinished can mark it done in place."""
-        self._lines.append(self._tool_line("🔧", name, preview, suffix="" if preview else "…"))
-        self._tools[name] = (len(self._lines) - 1, preview)
+        """Append an in-flight tool line to the current process block; remember it for ToolFinished."""
+        icon, label = _label(name)
+        seg = self._process()
+        seg.lines.append(self._tool_line(icon, label, preview, suffix="" if preview else "…"))
+        self._tool_loc[name].append((len(self._segments) - 1, len(seg.lines) - 1, preview))
 
     def _finish_tool(self, event: ToolFinished) -> None:
-        """Mark this tool's in-flight line done, keeping its argument preview."""
-        located = self._tools.get(event.name)
-        if located is None:
+        """Mark the finished call's in-flight line done in place, keeping its label and argument preview.
+
+        Oldest line first: `ToolFinished` carries only the tool's name, but baski runs a batch through
+        `asyncio.gather` and emits one finish per result in the order the calls were started, so the
+        n-th finish of a name closes the n-th line that name opened.
+        """
+        pending = self._tool_loc.get(event.name)
+        if not pending:
             return
-        idx, preview = located
+        seg_idx, line_idx, preview = pending.popleft()
+        _, label = _label(event.name)
         mark = "✅" if event.ok else "⚠️"
-        self._lines[idx] = self._tool_line(mark, event.name, preview, suffix=f" ({event.duration_ms / 1000:.1f}s)")
+        suffix = f" ({event.duration_ms / 1000:.1f}s)"
+        self._segments[seg_idx].lines[line_idx] = self._tool_line(mark, label, preview, suffix=suffix)
 
     @staticmethod
-    def _tool_line(icon: str, name: str, preview: str, *, suffix: str) -> str:
-        """One checklist line — `icon tool name `arg` suffix`, the arg as a markdown code span."""
+    def _tool_line(icon: str, label: str, preview: str, *, suffix: str) -> str:
+        """One step-log line — `icon label `arg` suffix`, the arg as a markdown code span."""
         arg = f" `{preview}`" if preview else ""
-        return f"{icon} {_pretty(name)}{arg}{suffix}"
+        return f"{icon} {label}{arg}{suffix}"
 
     def _render(self) -> str:
-        """The message body as markdown source: the step checklist, then the streaming reply."""
-        body = "\n".join(self._lines[-_MAX_LINES:])
+        """The message as markdown source: every segment in order, then the live streaming reply."""
+        parts = [self._render_seg(seg) for seg in self._segments]
         if self._answer:
-            answer = self._answer + _CURSOR
-            body = f"{body}\n\n{answer}" if body else answer
-        return body
+            parts.append(self._answer + _CURSOR)
+        return "\n\n".join(p for p in parts if p)
+
+    @staticmethod
+    def _render_seg(seg: _Seg) -> str:
+        """Process → collapsible blockquote; judge → bold (emphasized verdict); text → plain."""
+        if seg.kind == "process":
+            return "\n".join(f"> {line}" for line in seg.lines)
+        if seg.kind == "judge":
+            return "\n".join(f"**{line}**" for line in seg.lines)
+        return "\n".join(seg.lines)
 
     async def _flush(self, *, force: bool) -> None:
         """Render and deliver the live message, throttled to Telegram's edit cadence."""
-        if not self._lines and not self._answer:
+        if not self._segments and not self._answer:
             return
         now = time.monotonic()
         if not force and now - self._last_edit < _EDIT_INTERVAL_S:
             return
         self._last_edit = now
         try:
-            await self._send(to_markdown_v2(self._render()), edit=self._message_id is not None)
+            await self._send(to_markdown_v2(self._render()), edit=bool(self._message_ids))
         except TelegramRetryAfter as e:
             self._last_edit = now + e.retry_after  # back off; the next event retries
 
-    async def finish(self, answer: str) -> None:
-        """Deliver the final answer as MarkdownV2, reusing the live message and splitting if needed."""
-        chunks = split_message(to_markdown_v2(answer))
-        for i, chunk in enumerate(chunks):
-            # First chunk edits the live message in place; the rest are new messages.
-            await self._send(chunk, edit=i == 0 and self._message_id is not None)
+    async def finish(self, result: AgentExecuteResult) -> None:
+        """Settle the message: the full chronological stream (tools/text/verdicts) + cost footer.
+
+        Reuses the live message and splits to the size limit. Each process block is one paragraph, so
+        `split_message` keeps it atomic — a blockquote is never cut mid-quote.
+        """
+        self._commit_answer()  # commit any trailing streamed text (the judge usually has already)
+        if not any(seg.kind == "text" for seg in self._segments):
+            self._segments.append(_Seg("text", [NO_ANSWER]))  # the agent produced no answer text
+        await self._settle(f"{self._render()}{footer(result)}")
+
+    async def finish_text(self, text: str) -> None:
+        """Settle with a plain message (error/refusal paths that have no result), keeping the steps so far."""
+        self._commit_answer()
+        await self._settle(f"{self._render()}\n\n{text}" if self._segments else text)
+
+    async def _settle(self, body: str) -> None:
+        """Convert, size-split, and deliver the final body — first chunk edits in place, rest are new."""
+        for i, chunk in enumerate(split_message(to_markdown_v2(body))):
+            await self._send(chunk, edit=i == 0 and bool(self._message_ids))
 
     async def _send(self, text: str, *, edit: bool) -> None:
         """Edit/send already-converted MarkdownV2 *text*, falling back to plain text on a parse error."""
@@ -183,13 +309,11 @@ class TelegramProgress:
                 await self._put(strip_markdown_v2(text), edit=edit, parse_mode=None)
 
     async def _put(self, text: str, *, edit: bool, parse_mode: str | None) -> None:
-        """Edit the live message or send a new one; the first send captures the message id to edit."""
-        message_id = self._message_id
-        if edit and message_id is not None:
+        """Edit the live message or send a new one; every send is remembered, the first one is edited."""
+        if edit and self._message_ids:
             await self._bot.edit_message_text(
-                text=text, chat_id=self._chat_id, message_id=message_id, parse_mode=parse_mode
+                text=text, chat_id=self._chat_id, message_id=self._message_ids[0], parse_mode=parse_mode
             )
             return
         sent = await self._bot.send_message(chat_id=self._chat_id, text=text, parse_mode=parse_mode)
-        if self._message_id is None:
-            self._message_id = sent.message_id
+        self._message_ids.append(sent.message_id)

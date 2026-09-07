@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 from app.scheduling.service import SchedulingService
 from app.scheduling.store import ScheduleKind, ScheduleStore
+from app.shared import CoreDeps
+from app.tools.registry import ToolRegistrar
 
 # One line of the guidance the owner asked for: derive the timezone from the owner, don't guess it.
 _TIME_GUIDANCE = (
@@ -122,9 +124,25 @@ class CancelScheduleTool(Tool):
         tasks = await self._store.list()
         if not tasks:
             return None
+        now = datetime.now()
         lines = [_SCHEDULES_HEADER]
         for t in tasks:
             every = f" · every {t.repeat_every_hours}h" if t.repeat_every_hours else ""
             when = t.fire_at.strftime("%Y-%m-%d %H:%M")
-            lines.append(f"- [{t.public_id}] {t.kind}{every} · next {when}Z — {t.instruction}")
+            # Saying "next <past date>" made the bot answer "yes, it's on" about a routine that had
+            # not run in a month. An occurrence that is late has not fired and is not going to.
+            due = f"MISSED — did not fire {when}Z" if t.is_overdue(now) else f"next {when}Z"
+            lines.append(f"- [{t.public_id}] {t.kind}{every} · {due} — {t.instruction}")
         return MessageParam(role="user", content=[TextBlockParam(type="text", text="\n".join(lines))])
+
+
+def scheduling_tools(deps: CoreDeps, conversation_id: int) -> list[Tool]:
+    """Reminders/routines — the scheduling service + a chat-scoped store, their three tools."""
+    service = SchedulingService(scheduler=deps.scheduler, endpoint=deps.schedule_endpoint)
+    store = ScheduleStore(deps.database, conversation_id=conversation_id)
+    return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+
+
+def register_tools(registrar: ToolRegistrar) -> None:
+    """Register the reminder/routine tools under the name the main agent references."""
+    registrar.register("scheduling", scheduling_tools)

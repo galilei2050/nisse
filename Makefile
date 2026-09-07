@@ -1,6 +1,15 @@
-# Load .env when present (local dev). Absent in CI — guard so make doesn't hard-fail.
-ifneq (,$(wildcard ./.env))
-    include .env
+# git exports GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE to its hooks, and they OVERRIDE both `-C` and
+# repo discovery — so a `git` call from inside pre-commit reads whatever repo the hook fired for.
+GIT_CLEAN_ENV := env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+
+# The main checkout, identical from every git worktree (`.claude/worktrees/<x>/`): the git dir is
+# shared, so anchoring on it is what makes `make` work from a worktree at all. Empty outside a repo.
+NISSE_ROOT := $(shell $(GIT_CLEAN_ENV) git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/..
+
+# Load .env when present (local dev). It's git-ignored, so it exists ONLY in the main checkout —
+# read it from there, or every target run from a worktree loses the secrets. Absent in CI: guarded.
+ifneq (,$(wildcard $(NISSE_ROOT)/.env))
+    include $(NISSE_ROOT)/.env
     export
 endif
 
@@ -57,11 +66,30 @@ startbrowser:
 probe:
 	uv run python -m app.probe --user-id $(or $(U),1) --message "$(MSG)"
 
+# One curator maintenance pass, outside Cloud Scheduler: prints evidence, changes, and the report.
+# `make curate U=<conversation_id> [DAYS=7] [DRY=1]`. Real API/DB — it edits the live stores unless DRY=1.
+.PHONY: curate
+curate:
+	uv run python -m app.curate_probe --conversation-id $(U) --days $(or $(DAYS),1) $(if $(DRY),--dry-run,)
+
+# Companion to curate: dump one conversation's change history (who changed what, and what it replaced).
+# `make revisions U=<conversation_id> [RUN=<run_id>] [REV=<revision_id>]`. REV prints one change in
+# full — the listing trims, and an undo needs the text the trim cuts off.
+.PHONY: revisions
+revisions:
+	uv run python scripts/show_revisions.py $(U) "$(RUN)" "$(REV)"
+
 # Companion to probe: dump the long-term `memories` collection (live + soft-deleted).
 # `make memories U=<conversation_id>` for one chat in full; `make memories` groups ALL chats by id.
 .PHONY: memories
 memories:
 	uv run python scripts/show_memories.py $(U)
+
+# Where the money went — by agent (main loop vs each sub-agent vs curator), by token bucket, by tool.
+# `make cost` for the last 30 days; `make cost DAYS=7` for a shorter window.
+.PHONY: cost
+cost:
+	uv run python scripts/cost_report.py $(or $(DAYS),30)
 
 # Companion to probe: dump one conversation's `conversation_turns` (active + soft-deleted).
 # `make turns U=<conversation_id>`. See docs/history-test-cases.md.
@@ -73,13 +101,13 @@ turns:
 lint:
 	uv run ruff format --check app/ infrastructure/
 	uv run ruff check app/ infrastructure/
-	uv run python3 anon_lint.py --recursive app/ infrastructure/
+	uv run python -m baski_lint --recursive app/ infrastructure/
 
 .PHONY: lint-fix
 lint-fix:
 	uv run ruff format app/ infrastructure/
 	uv run ruff check app/ infrastructure/ --fix
-	uv run python3 anon_lint.py --recursive app/ infrastructure/
+	uv run python -m baski_lint --recursive app/ infrastructure/
 
 .PHONY: typecheck
 typecheck:
@@ -88,28 +116,65 @@ typecheck:
 # Functional tests — pure, no running backend. Part of `make test` / CI.
 .PHONY: test-backend
 test-backend:
-	uv run pytest tests/backend/ tests/memory/ tests/assistant/ tests/lists/ tests/browser/
+	# Everything except tests/smoke/, which needs the built image running (see test-backend-image).
+	# Discovered, not listed: an enumerated list silently skips a newly added test directory.
+	uv run pytest tests/ --ignore=tests/smoke
 
-# Smoke — boot the real bot (polling) and verify it's healthy against Telegram.
-# Mirrors clarity: backend-run → backend-wait → pytest tests/smoke. Leaves the bot
-# running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
+# Smoke — boot the real bot (polling) and verify it's healthy against Telegram. Leaves the
+# bot running. Needs a real TELEGRAM_TOKEN — the LOCAL bot, separate from prod's (see
 # CLAUDE.md "Local vs prod"), so this never disturbs the prod webhook. Not in GitHub `ci`.
 .PHONY: smoke-test
-smoke-test: backend-run backend-wait
+smoke-test: backend-run backend-local-wait
 	uv run pytest tests/smoke/
 
-# backend-wait — poll until healthy. Polling has no HTTP; the "Run polling for
-# bot @…" log line (aiogram getMe succeeded) is the ready signal.
-.PHONY: backend-wait
-backend-wait:
+# Readiness for the polling bot: polling opens no HTTP port, so the ready signal is the
+# "Run polling for bot @…" log line (aiogram getMe succeeded), not a port.
+.PHONY: backend-local-wait
+backend-local-wait:
 	@for i in $$(seq 1 20); do \
 		sleep 1; \
 		if ! pgrep -f '[a]pp.backend' >/dev/null; then echo "Backend died — see tmp/backend.log"; exit 1; fi; \
 		if grep -q 'Run polling for bot @' ~/Logs/nisse-backend.log 2>/dev/null; then echo "Backend ready (polling)!"; exit 0; fi; \
 	done; echo "Backend failed to start in 20s — see tmp/backend.log"; exit 1
 
+# Boot the real deploy image and run the smoke suite against it. Catches startup crashes
+# that --dry-run can't: dry-run returns before the lifespan runs, so it never launches the
+# browser or opens a client. Not in `ci` (needs Docker + live secrets) — its own GitHub job.
+.PHONY: test-backend-image
+test-backend-image: backend-image-run backend-cloud-wait
+	BACKEND_URL=http://localhost:8080 uv run pytest tests/smoke/
+
+# Start the deploy image; its entrypoint runs --cloud, so it serves the webhook HTTP port and
+# builds a Cloud Tasks client whose constructor needs Application Default Credentials. Env comes
+# from the caller's environment (CI job `env:` / local .env) — never baked in; when GCP creds are
+# present (CI mints them via WIF) they're mounted into the container.
+.PHONY: backend-image-run
+backend-image-run: backend-docker-build
+	@docker rm -f nisse-smoke 2>/dev/null || true
+	@set -a; [ -f .env ] && . ./.env || true; set +a; \
+		gcp=""; \
+		if [ -n "$$GOOGLE_APPLICATION_CREDENTIALS" ]; then \
+			gcp="-v $$GOOGLE_APPLICATION_CREDENTIALS:$$GOOGLE_APPLICATION_CREDENTIALS:ro -e GOOGLE_APPLICATION_CREDENTIALS"; \
+		fi; \
+		docker run -d --name nisse-smoke -p 8080:8080 -e PORT=8080 $$gcp \
+			-e TELEGRAM_TOKEN -e WEBHOOK_URL -e MONGODB_URI -e ANTHROPIC_API_KEY -e ELEVENLABS_API_KEY \
+			-e GOOGLE_CLOUD_PROJECT -e GOOGLE_CLOUD_REGION -e CLOUD_TASKS_QUEUE -e PRIVATE_BUCKET_NAME \
+			${BACKEND_IMAGE_LATEST}
+	@echo "Backend image started — logs: docker logs nisse-smoke"
+
+# Readiness for the HTTP backend (webhook mode serves a port): curl /ping until it answers;
+# fail fast and dump container logs if it dies first.
+.PHONY: backend-cloud-wait
+backend-cloud-wait:
+	@for i in $$(seq 1 30); do \
+		if [ "$$(docker inspect -f '{{.State.Running}}' nisse-smoke 2>/dev/null)" != "true" ]; then echo "Container exited:"; docker logs nisse-smoke; exit 1; fi; \
+		if curl -fsS http://localhost:8080/ping >/dev/null 2>&1; then echo "Backend image ready — /ping OK"; exit 0; fi; \
+		sleep 2; \
+	done; \
+	echo "Backend image failed to start in 60s:"; docker logs nisse-smoke; exit 1
+
 # Single source of truth for CI — GitHub Actions just runs `make ci`, no copy-paste.
-# Smoke excluded: needs a live backend with a real token + public WEBHOOK_URL.
+# Smoke excluded: needs Docker + live secrets, so it runs as its own GitHub job.
 .PHONY: ci
 ci: lint typecheck test-backend test-backend-dry-run
 
@@ -117,13 +182,18 @@ ci: lint typecheck test-backend test-backend-dry-run
 test: ci
 
 # Git hook entry points (.pre-commit-config.yaml): fast auto-fix on commit,
-# full ci + a real-bot smoke boot on push (mirrors clarity's pre-push-check).
+# full ci + a real-bot smoke boot on push.
+# baski is nisse's sibling. Resolve it through NISSE_ROOT, not a CWD-relative `../baski`, which from
+# a worktree points at `.claude/worktrees/baski` — a directory that doesn't exist.
+BASKI_DIR ?= $(NISSE_ROOT)/../baski
+BASKI_GIT := $(GIT_CLEAN_ENV) git -C $(BASKI_DIR)
+
 .PHONY: check-baski
 check-baski:
-	@git -C ../baski fetch -q origin main
-	@test "$$(git -C ../baski rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
-	@git -C ../baski diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
-	@test "$$(git -C ../baski rev-parse HEAD)" = "$$(git -C ../baski rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
+	@$(BASKI_GIT) fetch -q origin main
+	@test "$$($(BASKI_GIT) rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: baski is not on main"; exit 1; }
+	@$(BASKI_GIT) diff --quiet HEAD || { echo "ERROR: baski has uncommitted changes"; exit 1; }
+	@test "$$($(BASKI_GIT) rev-parse HEAD)" = "$$($(BASKI_GIT) rev-parse FETCH_HEAD)" || { echo "ERROR: baski main differs from origin/main — pull/push baski"; exit 1; }
 
 .PHONY: pre-commit
 pre-commit: check-baski lint-fix

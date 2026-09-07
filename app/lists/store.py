@@ -14,6 +14,8 @@ from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
+from app.shared.revisions import ChangeKind, RevisionLog
 from app.shared.text import match_unique
 
 _COLLECTION = "lists"
@@ -48,7 +50,8 @@ class RemoveResult:
 class ListStore:
     """CRUD over the `lists` collection, scoped to one conversation and addressed by list name.
 
-    Lifecycle: per-conversation — built in `_build_list_tools` and held by that chat's tools.
+    Lifecycle: per-conversation — built in `_build_list_tools` and held by that chat's tools, and
+    built per request by `chat/saved.py` (the read-only `/lists` viewer).
     Items are matched/de-duplicated case-insensitively; the name is normalized so a list is never
     forked by capitalization.
     """
@@ -57,11 +60,12 @@ class ListStore:
         """Bind to the lists collection for one conversation; every query is scoped to it."""
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
+        self._revisions = RevisionLog(database, conversation_id=conversation_id)
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique (conversation_id, name) — one canonical list per name per chat. Idempotent."""
-        await database[_COLLECTION].create_index([("conversation_id", 1), ("name", 1)], unique=True)
+        await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("name", 1)], unique=True)
 
     async def all(self) -> list[ItemList]:
         """Every live list in this conversation, for the always-injected index."""
@@ -90,6 +94,17 @@ class ListStore:
             if item.strip() and item.lower() not in seen:
                 merged.append(item)
                 seen.add(item.lower())
+        # Recorded even though nothing is lost: a dedupe pass runs as clear-then-add, and a history
+        # showing only the clear reads as "the list was destroyed". An add that changed nothing (every
+        # item already present) is not recorded — it would inflate the owner's change count.
+        if existing is None or merged != existing.items:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=_norm_name(name),
+                kind=ChangeKind.REPLACE if existing else ChangeKind.CREATE,
+                before="\n".join(existing.items) if existing else None,
+                after="\n".join(merged),
+            )
         now = datetime.now()
         doc = await self._collection.find_one_and_update(
             {"conversation_id": self._conversation_id, "name": _norm_name(name)},
@@ -128,6 +143,13 @@ class ListStore:
 
         if drop_targets:
             kept = [i for i in existing.items if i not in drop_targets]
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=_norm_name(name),
+                kind=ChangeKind.REPLACE,
+                before="\n".join(existing.items),
+                after="\n".join(kept),
+            )
             await self._collection.update_one(
                 {"conversation_id": self._conversation_id, "name": _norm_name(name), "deleted_at": None},
                 {"$set": {"items": kept, "updated_at": datetime.now()}},
@@ -137,9 +159,18 @@ class ListStore:
 
     async def clear(self, name: str) -> bool:
         """Soft-delete the whole named list; True if a live one was found."""
+        existing = await self.get(name)
         now = datetime.now()
         result = await self._collection.update_one(
             {"conversation_id": self._conversation_id, "name": _norm_name(name), "deleted_at": None},
             {"$set": {"deleted_at": now, "updated_at": now}},
         )
+        if existing is not None:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=_norm_name(name),
+                kind=ChangeKind.DELETE,
+                before="\n".join(existing.items),
+                after=None,
+            )
         return result.modified_count > 0

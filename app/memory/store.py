@@ -4,15 +4,16 @@ Each doc keeps Mongo's `ObjectId` as `_id` (via NisseDbModel) plus a short `publ
 the agent reads from the index and echoes back into recall_read/recall_forget.
 """
 
-import secrets
 from enum import StrEnum
 
 from baski.primitives import datetime
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 from pymongo import ReturnDocument
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.shared.models import NisseDbModel
+from app.shared.models import PublicIdModel
+from app.shared.mongo import ensure_index
+from app.shared.revisions import ChangeKind, RevisionLog
 
 _COLLECTION = "memories"
 
@@ -36,11 +37,6 @@ class SourceKind(StrEnum):
     AGENT = "agent"
 
 
-def _new_public_id() -> str:
-    """A short, LLM-friendly id (10 hex chars) the agent can copy back without error."""
-    return secrets.token_hex(5)
-
-
 class MemorySource(BaseModel):
     """Provenance of a memory: the owner, an external source, or the agent itself. Lifecycle: a value object."""
 
@@ -55,7 +51,7 @@ class MemorySource(BaseModel):
         return self
 
 
-class Memory(NisseDbModel):
+class Memory(PublicIdModel):
     """One durable memory: a titled fact/preference/event with provenance and body.
 
     Lifecycle: a data record — one Mongo document. Scoped to one `conversation_id` (the chat it was
@@ -64,7 +60,6 @@ class Memory(NisseDbModel):
     """
 
     conversation_id: int
-    public_id: str = Field(default_factory=_new_public_id)
     title: str
     category: MemoryCategory
     source: MemorySource
@@ -74,18 +69,20 @@ class Memory(NisseDbModel):
 class MemoryStore:
     """CRUD over the `memories` collection, scoped to one conversation and addressed by public id.
 
-    Lifecycle: per-conversation — built in `_build_memory_tools` and held by that chat's tools.
+    Lifecycle: per-conversation — built in `_build_memory_tools` and held by that chat's tools, and
+    built per request by `chat/saved.py` (the read-only `/memory` viewer).
     """
 
     def __init__(self, database: AsyncDatabase, *, conversation_id: int) -> None:
         """Bind to the memories collection for one conversation; every query is scoped to it."""
         self._collection = database[_COLLECTION]
         self._conversation_id = conversation_id
+        self._revisions = RevisionLog(database, conversation_id=conversation_id)
 
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Unique index on public_id — the agent-facing key. Idempotent; call once at startup."""
-        await database[_COLLECTION].create_index("public_id", unique=True)
+        await ensure_index(database[_COLLECTION], "public_id", unique=True)
 
     async def list(self) -> list[Memory]:
         """Every live memory in this conversation (not soft-deleted), for the always-injected index."""
@@ -104,6 +101,9 @@ class MemoryStore:
         memory = Memory(conversation_id=self._conversation_id, title=title, category=category, source=source, body=body)
         result = await self._collection.insert_one(memory.model_dump(exclude={"id"}))
         memory.id = str(result.inserted_id)
+        await self._revisions.record(
+            collection=_COLLECTION, target=memory.public_id, kind=ChangeKind.CREATE, before=None, after=body
+        )
         return memory
 
     async def overwrite(  # noqa: PLR0913 — mirrors add() plus the public_id of the record to overwrite
@@ -115,6 +115,15 @@ class MemoryStore:
         memory was soft-deleted, and its `public_id` still occupies the unique index — reusing it would
         collide. The caller reports whichever id is now live.
         """
+        previous = await self.get(public_id)
+        if previous is not None:
+            await self._revisions.record(
+                collection=_COLLECTION,
+                target=public_id,
+                kind=ChangeKind.REPLACE,
+                before=previous.body,
+                after=body,
+            )
         result = await self._collection.find_one_and_update(
             {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
             {
@@ -134,6 +143,11 @@ class MemoryStore:
 
     async def set_body(self, public_id: str, *, body: str) -> None:
         """Overwrite one live memory's body (the agent's recall_edit patch); bump updated_at."""
+        previous = await self.get(public_id)
+        if previous is not None:
+            await self._revisions.record(
+                collection=_COLLECTION, target=public_id, kind=ChangeKind.REPLACE, before=previous.body, after=body
+            )
         await self._collection.update_one(
             {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
             {"$set": {"body": body, "updated_at": datetime.now()}},
@@ -141,9 +155,14 @@ class MemoryStore:
 
     async def soft_delete(self, public_id: str) -> bool:
         """Mark a memory deleted (keep the doc); True if a live one was found in this conversation."""
+        previous = await self.get(public_id)
         now = datetime.now()
         result = await self._collection.update_one(
             {"conversation_id": self._conversation_id, "public_id": public_id, "deleted_at": None},
             {"$set": {"deleted_at": now, "updated_at": now}},
         )
+        if previous is not None:
+            await self._revisions.record(
+                collection=_COLLECTION, target=public_id, kind=ChangeKind.DELETE, before=previous.body, after=None
+            )
         return result.modified_count > 0

@@ -2,5 +2,6 @@
 
 from .blocks import block_type
 from .deps import CoreDeps
+from .sending import MessageSender
 
-__all__ = ["CoreDeps", "block_type"]
+__all__ = ["CoreDeps", "MessageSender", "block_type"]

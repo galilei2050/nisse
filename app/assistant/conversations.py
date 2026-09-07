@@ -1,39 +1,39 @@
 """Conversations — registry that builds each chat's agent once and reuses it."""
 
+import asyncio
+
 from baski.agents import Agent, AgentConfig, ToolSet
-from baski.agents.tool import Tool
-from baski.agents.tools import DeleteMessagesTool, ShortTermMemory, WebBrowseTool
-from baski.clients.serpapi_client import SerpApiClient
+from baski.agents.pricing import MODEL_PRICING
+from baski.agents.tools import DeleteMessagesTool, ShortTermMemory
 
 from app.assistant.conversation import Conversation
 from app.assistant.history import MongoMessageHistory
-from app.browser import (
-    BrowserSession,
-    BrowserSessionStore,
-    WebClickTool,
-    WebOpenTool,
-    WebScrollTool,
-    WebSnapshotTool,
-    WebTypeTool,
-    load_proxy_pool,
-)
-from app.lists import ListEditTool, ListShowTool, ListStore
-from app.memory import EditMemoryTool, ForgetTool, MemoryStore, RecallMemoryTool, RememberTool
-from app.prompts import CoreMemoryTool, PromptStore
-from app.scheduling import CancelScheduleTool, RemindTool, RoutineTool, ScheduleStore, SchedulingService
-from app.search import (
-    AmazonProductTool,
-    AmazonSearchTool,
-    GoogleAiModeTool,
-    GoogleEventsTool,
-    GoogleJobsTool,
-    GoogleMapsSearchTool,
-    GoogleNewsTool,
-    GoogleSearchTool,
-    YouTubeSearchTool,
-    YouTubeTranscriptTool,
-)
+from app.assistant.judge import CuratedJudge
+from app.prompts import PromptStore
 from app.shared import CoreDeps
+from app.subagents import SubagentStore, SubagentTool
+
+MAIN_MODEL = "claude-opus-5"  # the main agent's model; a sub-agent's is a field on its Mongo config
+
+# The main Assistant's tool spec — the names it builds from the shared registry (`deps.tools`). The
+# main agent gets only the GENERAL web tools; the specialized SerpApi leaves (maps/news/events/jobs,
+# amazon/youtube) stay registered for sub-agents (e.g. retrieval) but off the always-on roster to keep
+# its per-turn schema lean. The researcher-only `hypothesis_tree` is deliberately absent.
+MAIN_TOOLS: list[str] = [
+    # Search stays — its hits are small. READING a page does not: `browse_website` returns up to
+    # 20k characters, and in the main loop those land in an Opus context and are billed as a cache
+    # write at 6.25 $/M. One measured answer about a city sales-tax rate cost $0.2854, of which
+    # $0.2203 (77%) was writing that one page into the window. The same question delegated to
+    # `retrieval` cost $0.0111 — the worker reads the page in ITS window and returns 173 characters.
+    # So the main agent may find pages, and must delegate to read them.
+    "google_search",
+    "google_ai_answer",
+    "memory",
+    "lists",
+    "scheduling",
+    "core_memory",
+    "ask_user",  # mid-turn clarifying question with tappable options (needs a transport; probe fakes one)
+]
 
 
 class Conversations:
@@ -42,117 +42,85 @@ class Conversations:
     Lifecycle: long-lived — one registry for the bot (holds the per-conversation cache).
     """
 
-    def __init__(
-        self,
-        *,
-        deps: CoreDeps,
-        system_prompt: str,
-        await_trace: bool = False,
-        local_traces_dir: str | None = None,
-    ) -> None:
-        """Hold the shared deps + reply settings used to assemble every conversation's agent."""
+    def __init__(self, *, deps: CoreDeps, system_prompt: str) -> None:
+        """Hold the shared deps (which carry the tool registry + trace-sink settings) and the prompt."""
         self._deps = deps
         self._system_prompt = system_prompt
-        self._await_trace = await_trace
-        self._local_traces_dir = local_traces_dir
-        # Local browser needs our proxy pool; a managed remote browser (Browserbase) brings its own.
-        self._proxy_pool = None if deps.browser_cdp_url else load_proxy_pool()
         self._conversations: dict[int, Conversation] = {}
+        self._building = asyncio.Lock()
 
     async def get(self, conversation_id: int) -> Conversation:
         """The conversation's reused instance, built on first use.
 
-        Single-owner bot: a cold-start burst can't realistically race the first build, so the
-        plain get-or-create is enough — no creation lock. Once cached, every reply reuses it.
+        Built under a lock because `_build` awaits (it loads the transcript from Mongo): without one,
+        two updates for the same chat arriving before the first build finishes each get their OWN
+        Conversation — with its own reply lock, so replies stop being serialized, and its own history
+        minting turn ids from the same starting point. `_write_turn` upserts on
+        `(conversation_id, turn_id)`, so the second writer then REPLACES the first turn's messages and
+        the owner's message is gone from the transcript with nothing to show it ever arrived.
+        One instance is no protection: Cloud Run runs it at containerConcurrency 80, so the two
+        requests are concurrent inside one process. Once cached, every reply reuses the instance and
+        the lock is uncontended.
         """
-        conversation = self._conversations.get(conversation_id)
-        if conversation is None:
-            conversation = await self._build(conversation_id)
-            self._conversations[conversation_id] = conversation
-        return conversation
+        async with self._building:
+            conversation = self._conversations.get(conversation_id)
+            if conversation is None:
+                conversation = await self._build(conversation_id)
+                self._conversations[conversation_id] = conversation
+            return conversation
 
     async def _build(self, conversation_id: int) -> Conversation:
-        """Assemble one chat's agent inline from CoreDeps. Add a tool domain → a new `_build_*_tools`."""
-        history = MongoMessageHistory(
-            logger=self._deps.logger, database=self._deps.database, conversation_id=conversation_id
-        )
+        """Assemble one chat's agent: the main tool spec from the registry + the loop-bound primitives.
+
+        The registry builds every capability tool (search, memory, lists, scheduling, core memory) —
+        the same mechanism sub-agents use. Only the two loop-bound primitives are wired by hand: the
+        short-term scratchpad (its instance is handed to `Conversation` to clear per reply) and
+        `DeleteMessagesTool` (needs this agent's live history).
+        """
+        history = MongoMessageHistory(database=self._deps.database, conversation_id=conversation_id)
         await history.load()
         short_term = ShortTermMemory()
 
-        toolset = ToolSet(logger=self._deps.logger)
+        toolset = ToolSet()
         toolset.add(short_term)
         toolset.add(DeleteMessagesTool(history))
-        for tool in [
-            *self._build_web_tools(),
-            *self._build_browser_action_tools(conversation_id),
-            *self._build_memory_tools(conversation_id),
-            *self._build_list_tools(conversation_id),
-            *self._build_scheduling_tools(conversation_id),
-            CoreMemoryTool(PromptStore(self._deps.database, conversation_id=conversation_id)),
-        ]:
+        for tool in self._deps.tools.build(MAIN_TOOLS, self._deps, conversation_id):
+            toolset.add(tool)
+        for tool in await self._build_subagent_tools(conversation_id):
             toolset.add(tool)
 
         config = AgentConfig(
-            logger=self._deps.logger,
             toolset=toolset,
+            name="assistant",  # the owner-facing loop, as it appears in the `traces` spend breakdown
+            model=MAIN_MODEL,
+            price=MODEL_PRICING[MAIN_MODEL],
             message_history=history,
             anthropic_client=self._deps.anthropic,
             database=self._deps.database,
             bucket_name=self._deps.bucket_name,
             system_prompt=self._system_prompt,
-            await_trace=self._await_trace,
-            local_traces_dir=self._local_traces_dir,
+            await_trace=self._deps.await_trace,
+            local_traces_dir=self._deps.local_traces_dir,
+            # Per conversation, not process-wide: half its rubric is this chat's own `judge_rules`
+            # document, which the nightly curator maintains.
+            judge=CuratedJudge(
+                PromptStore(self._deps.database, conversation_id=conversation_id), project=self._deps.judge_project
+            ),
         )
         return Conversation(agent=Agent(config=config), history=history, short_term=short_term)
 
-    def _build_web_tools(self) -> list[Tool]:
-        """Search + browsing: 10 SerpApi leaves from app.search, plus WebBrowse from baski."""
-        serpapi = SerpApiClient(logger=self._deps.logger, http_client=self._deps.http)
-        return [
-            GoogleSearchTool(serpapi_client=serpapi),
-            GoogleAiModeTool(serpapi_client=serpapi),
-            GoogleMapsSearchTool(serpapi_client=serpapi),
-            GoogleNewsTool(serpapi_client=serpapi),
-            GoogleEventsTool(serpapi_client=serpapi),
-            AmazonSearchTool(serpapi_client=serpapi),
-            AmazonProductTool(serpapi_client=serpapi),
-            YouTubeSearchTool(serpapi_client=serpapi),
-            YouTubeTranscriptTool(serpapi_client=serpapi),
-            GoogleJobsTool(serpapi_client=serpapi),
-            WebBrowseTool(playwright_client=self._deps.playwright),
-        ]
+    async def _build_subagent_tools(self, conversation_id: int) -> list[SubagentTool]:
+        """Configured sub-agents (seeded in Mongo per chat), each exposed as one delegating tool.
 
-    def _build_browser_action_tools(self, conversation_id: int) -> list[Tool]:
-        """Logged-in browser actions — one session/context per chat, loaded with that chat's saved login."""
-        session = BrowserSession(
-            client=self._deps.playwright,
-            session_store=BrowserSessionStore(self._deps.database, conversation_id=conversation_id),
-            proxy_pool=self._proxy_pool,
-        )
-        return [
-            WebOpenTool(session),
-            WebSnapshotTool(session),
-            WebClickTool(session),
-            WebTypeTool(session),
-            WebScrollTool(session),
-        ]
-
-    def _build_memory_tools(self, conversation_id: int) -> list[Tool]:
-        """Long-term memory — store scoped to the chat so memories never cross conversations."""
-        store = MemoryStore(self._deps.database, conversation_id=conversation_id)
-        return [RememberTool(store), RecallMemoryTool(store), EditMemoryTool(store), ForgetTool(store)]
-
-    def _build_list_tools(self, conversation_id: int) -> list[Tool]:
-        """Named lists (ARTIFACT tier) — store scoped to the chat so lists never cross conversations."""
-        store = ListStore(self._deps.database, conversation_id=conversation_id)
-        return [ListEditTool(store), ListShowTool(store)]
-
-    def _build_scheduling_tools(self, conversation_id: int) -> list[Tool]:
-        """Reminders/routines — built in every mode.
-
-        The scheduler is always present (a LoggingScheduler in polling/probe), so these tools always
-        exist; only in webhook mode does a fire actually call back and run.
+        Every config is passed as a sibling to every top-level tool, so an orchestrator sub-agent can
+        resolve a sibling name in its `tool_names` into a child (delegation is allowed when there are
+        siblings — a worker whose `tool_names` are all registry tools simply never delegates). Children
+        are built with no siblings, capping nesting at one level. Each sub-agent builds its tools
+        through the same registry (`deps.tools`).
         """
-        service = SchedulingService(scheduler=self._deps.scheduler, endpoint=self._deps.schedule_endpoint)
-        store = ScheduleStore(self._deps.database, conversation_id=conversation_id)
-        return [RemindTool(store, service), RoutineTool(store, service), CancelScheduleTool(store)]
+        store = SubagentStore(self._deps.database, conversation_id=conversation_id)
+        configs = await store.list()
+        siblings = {config.name: config for config in configs}
+        return [
+            SubagentTool(config, self._deps, conversation_id=conversation_id, siblings=siblings) for config in configs
+        ]

@@ -21,11 +21,25 @@ Write the expected Mongo end-state **before** running; then compare.
 - Each agentic turn = one document in `conversation_turns`, keyed by `(conversation_id, turn_id)` (unique).
 - **Write-on-commit:** each turn is written to Mongo the moment it completes (`__exit__` fires a
   fire-and-forget task). A pure tool turn (messages are only `tool_use`/`tool_result`, no text) is
-  written **already soft-deleted** (`deleted_at` set); `drop_tool_turns()` then removes it from the
-  active in-memory transcript so the next reply's context stays lean.
+  written **already soft-deleted** (`deleted_at` set), so this process still has it for a follow-up
+  while a later one won't restore it.
 - **`flush()`** (called after the answer is sent, under the conversation lock) awaits the in-flight
-  writes, then soft-deletes turns dropped by `truncate()`/`delete_messages` — so trimming is durable
-  and dropped turns don't resurrect on the next `load()`.
+  writes, then soft-deletes turns the agent deleted — so a prune is durable and its turns don't
+  resurrect on the next `load()`.
+- **Nothing shrinks the transcript.** `truncate()`, which the loop calls after every API call, only
+  records the context size for the `[Context: N% used]` footer. A turn dropped mid-loop would both
+  shrink the context a reply is still composing against and move the head of the message list,
+  invalidating the whole cached prefix.
+- **What narrows is the VIEW, in `format_for_api`.** Past `_PAYLOAD_RETENTION` a turn is sent as its
+  words alone (`MongoTurn.said()`): no tool calls, results, attachments or thinking. Before that it is
+  sent whole (`MongoTurn.rendered()`), so a follow-up can reach into the output it refers to. An old
+  turn that was nothing but tool machinery is sent as nothing at all, `[Turn N]` marker included. A
+  call and its result live in the same turn, so a narrowed turn never has a `tool_use` without its
+  `tool_result`.
+- **Hiding is reversible; deleting is not.** The turn objects and their Mongo documents keep
+  everything, so widening the window sends it all again. A turn leaves the transcript only through
+  `delete_turns` — the agent's own `prune_transcript`, a deliberate act — and `deleted_at` and
+  `message_ids` remain the only fields that ever change on a stored turn.
 - **Kept active:** user questions, assistant answers, and narrated tool turns (a tool call that
   also carries assistant text).
 - **Soft-deleted:** pure tool turns + truncated/deleted turns. Their full documents stay in Mongo —
@@ -34,6 +48,14 @@ Write the expected Mongo end-state **before** running; then compare.
 - `turn_id` is a sequential int from baski; `load()` advances the counter past **every** turn
   (including soft-deleted) so an id is never reused → no unique-index collision.
 - Durable facts the agent wants later go to long-term memory (injected separately), not history.
+- **A message that arrives mid-reply enters at a turn boundary.** `deliver(text)` parks it; the next
+  `format_for_api` commits it as an ordinary user turn, so the running loop answers it instead of a
+  second reply doing so. It cannot land inside the turn the agent has open — user text between an
+  agent's `tool_use` blocks and their `tool_result`s is a payload the API rejects.
+- **`link_messages` stamps the turn the caller names,** not the newest one. The ids are known only
+  after the answer is sent, by when a reply that started meanwhile can have added turns of its own;
+  the caller passes the id it read while its own reply still held the lock (`Reply.turn_id`), and a
+  reaction on that answer resolves back to the exchange that produced it.
 - **Recency marker:** each `[Turn N]` marker carries the turn's absolute UTC send-time on the first
   (oldest visible) turn and after a >1h gap from the previous turn — `[Turn 8 · 2026-06-21 21:42 UTC]`;
   consecutive turns inside a session stay bare `[Turn N]`. Absolute UTC (never relative) so the marker
@@ -42,7 +64,7 @@ Write the expected Mongo end-state **before** running; then compare.
   live, from the Mongo doc on `load()`), normalized through baski `as_utc`.
 
 > The unit tests in `tests/assistant/test_history.py` cover these invariants (write-once, durable
-> truncate, durable delete, recoverable pure-tool prune) against a fake collection. The probe
+> trim, durable delete, recoverable pure-tool prune) against a fake collection. The probe
 > scenarios below were last run against the **pre-rewrite** `save()` design — re-run them on the
 > next live probe to confirm end-to-end against real Mongo.
 
@@ -241,3 +263,26 @@ Time is absolute UTC, never relative.
 
 **Pass:** markers match the above; verified 2026-06-21 (U=770004 → turn 1 stamped 06-20, 2–7 bare,
 turn 8 stamped 06-21). Unit-tested in `test_turn_marker_*` against the cold-start `load()` path.
+
+---
+
+## Scenario 10 — a message sent while the agent is working
+
+**Risk:** the second message queues on the conversation lock and starts a whole second run — its own
+judge, its own trace — instead of joining the request it belongs to. Or it is accepted and then never
+read, and the bot goes silent on it.
+
+**Steps:** wire an `Assistant` the way `app/probe.py` does, then, in a scratch harness:
+```python
+running = asyncio.create_task(assistant.run(conversation_id=U, text=<a question needing several tools>, joinable=True))
+await asyncio.sleep(25)  # long enough to be mid-run, short enough to precede the last turn
+joined = await assistant.deliver(conversation_id=U, text=<a constraint that changes the answer>)
+reply = await running
+```
+
+**Expected:** `deliver` returns True; ONE run answers both messages; the answer honours the late
+constraint; the printed cost covers the single run.
+
+**Pass:** verified 2026-08-07 on a fresh conversation — "И сразу переведи цену в евро" delivered 25 s
+into a flight-price run; `deliver` → True, ONE run of 5 turns for $0.09, and the answer priced
+everything in EUR. A second run would have shown as two separate answers.

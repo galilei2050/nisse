@@ -29,6 +29,7 @@ class _FakeCollection:
 
     def __init__(self) -> None:
         self.docs: dict[tuple[int, str], dict] = {}
+        self.inserted: list[dict] = []  # documents with no (conversation_id, name) key — revisions
 
     @staticmethod
     def _match(doc: dict, flt: dict) -> bool:
@@ -57,13 +58,19 @@ class _FakeCollection:
         doc.update(update["$set"])
         return SimpleNamespace(modified_count=1)
 
+    async def insert_one(self, doc: dict) -> SimpleNamespace:
+        self.inserted.append(doc)
+        return SimpleNamespace(inserted_id="000000000000000000000001")
+
 
 class _FakeDatabase:
-    def __init__(self, collection: _FakeCollection) -> None:
-        self._collection = collection
+    """One collection per name, so a store's writes to `revisions` never land in the lists it edits."""
 
-    def __getitem__(self, _name: str) -> _FakeCollection:
-        return self._collection
+    def __init__(self, collection: _FakeCollection) -> None:
+        self._collections = {"lists": collection}
+
+    def __getitem__(self, name: str) -> _FakeCollection:
+        return self._collections.setdefault(name, _FakeCollection())
 
 
 def _store(col: _FakeCollection, conversation_id: int = 1) -> ListStore:

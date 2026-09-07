@@ -18,35 +18,80 @@ infrastructure/services/cloud_run_backend.py) with every entry point sharing one
 """
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Self
+from typing import Literal, Self, TypedDict, cast
 
-from anthropic.types import ContentBlock, MessageParam, TextBlockParam, ToolResultBlockParam, Usage
+from anthropic.types import (
+    ContentBlock,
+    DocumentBlockParam,
+    ImageBlockParam,
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    Usage,
+)
+from anthropic.types.base64_image_source_param import Base64ImageSourceParam
+from anthropic.types.base64_pdf_source_param import Base64PDFSourceParam
 from baski.agents.message_history import MessageHistory, Turn, context_status, mark_cached
 from baski.agents.pricing import effective_input_tokens
-from baski.primitives import datetime
-from baski.server import Logger
-from pydantic import BaseModel, ConfigDict
+from baski.primitives import datetime, json
+from pydantic import BaseModel, ConfigDict, Field
 from pymongo.asynchronous.database import AsyncDatabase
 
-from app.shared.blocks import block_type
+from app.shared.blocks import block_field, block_type
 from app.shared.models import NisseDbModel
+from app.shared.mongo import ensure_index
 
-_COLLECTION = "conversation_turns"
-_MAX_TOKENS = 96_000  # context budget: truncate() drops oldest turns once a turn's effective input
-# (prompt + cached prefix) nears this. Sized around the browser accessibility snapshots that dominate
-# context — each ≈35k tokens — so the running conversation plus ~2 snapshots fit before it trims.
-_TRUNCATE_THRESHOLD = 0.9
-_TRUNCATE_PERCENTAGE = 0.3
+logger = logging.getLogger(__name__)
+
+_ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+
+TURNS_COLLECTION = "conversation_turns"  # public: the curator reads this collection too
+# The judge's retry feedback re-enters the loop as a USER message (baski `judge.retry_prompt`) and is
+# persisted like any other turn, so anything reading the transcript back as "what the owner said"
+# must skip it. Mirrored here rather than imported because baski builds the string, not the prefix.
+JUDGE_RETRY_PREFIX = "[Completeness check]"
+_MAX_TOKENS = 32_000  # the denominator of the [Context: N% used] footer
 _GAP_MARKER_THRESHOLD = datetime.timedelta(hours=1)  # show the send-time on a turn only after a gap this long
+_PAYLOAD_RETENTION = datetime.timedelta(hours=1)  # past this, a turn is sent as text alone
+_JUDGE_ARG_CHARS = 200  # how much of a tool call's arguments the judge's transcript shows
 
 
 @dataclass
 class MongoTurn(Turn):
     """A transcript turn that also carries its UTC send-time, used to render the recency marker."""
 
+    # baski ships no `py.typed`, so `Turn` reaches mypy as `Any` and the inherited field has no type
+    # it can resolve — every `self.messages` here then fails with "Cannot determine type". Restating
+    # the same declaration gives this class one concrete type back.
+    messages: list[MessageParam] = field(default_factory=list)
     created_at: datetime.datetime = field(kw_only=True)
+
+    def rendered(self) -> list[MessageParam]:
+        """This turn as the API should receive it while it is still fresh: everything but thinking."""
+        return [_strip_thinking(message) for message in self.messages]
+
+    def said(self) -> list[MessageParam]:
+        """Just what was said in this turn — the owner's message, the agent's answer.
+
+        Left out: the `tool_use` calls, their `tool_result` payloads, attached images/PDFs, thinking.
+        A message that carried none of the words is left out whole. Nothing is modified: this is a
+        view over the turn, so the turn itself and its Mongo document stay complete.
+        """
+        spoken: list[MessageParam] = []
+        for message in self.messages:
+            content = message["content"]
+            if isinstance(content, str):
+                spoken.append(message)
+                continue
+            blocks = list(content)
+            texts = [b for b in blocks if _is_text_block(b)]
+            if not texts:
+                continue
+            spoken.append(message if len(texts) == len(blocks) else MessageParam(role=message["role"], content=texts))
+        return spoken
 
 
 def _turn_marker(turn_id: int, at: datetime.datetime, prev_at: datetime.datetime | None) -> str:
@@ -86,6 +131,43 @@ class ConversationTurn(NisseDbModel):
     conversation_id: int
     turn_id: int  # baski Turn.id — sequential int, upsert key with conversation_id
     messages: list[MessageParam]  # stored as serialised plain dicts; MessageParam is a TypedDict (= dict at runtime)
+    message_ids: list[int] = Field(default_factory=list)  # Telegram messages this turn's answer was delivered in
+
+
+class StoredBlock(TypedDict, total=False):
+    """One content block as Mongo holds it. Lifecycle: a read view over one stored field.
+
+    Neither key is required — a tool_use or image block legitimately carries neither.
+    """
+
+    type: str
+    text: str
+
+
+class StoredMessage(TypedDict):
+    """One message as Mongo holds it. Lifecycle: a read view over one stored field.
+
+    Deliberately not the SDK's `MessageParam` that `ConversationTurn` writes: what comes back is
+    JSON, and reading it as the type it actually has beats narrowing a union of twenty block shapes
+    to find the text.
+    """
+
+    role: str
+    content: str | list[StoredBlock]
+
+
+class StoredTurn(TypedDict):
+    """One `conversation_turns` document as a reader outside this module sees it.
+
+    The read half of `ConversationTurn` — same document, declared once here rather than a second time
+    wherever it is read back (the nightly curator is the other reader).
+
+    Lifecycle: a read view — one raw Mongo document.
+    """
+
+    turn_id: int
+    created_at: datetime.datetime
+    messages: list[StoredMessage]
 
 
 def _is_text_block(block: object) -> bool:
@@ -96,6 +178,33 @@ def _is_text_block(block: object) -> bool:
 def _is_thinking_block(block: object) -> bool:
     """True for a thinking or redacted-thinking block (by its Anthropic `type` discriminator)."""
     return block_type(block) in ("thinking", "redacted_thinking")
+
+
+def _judge_line(role: str, block: object) -> str | None:
+    """One entry of the judge's transcript: what someone said, what they attached, or what was run.
+
+    None for thinking and for tool results — the first is not conversation, the second is the fact
+    material the judge is deliberately kept away from.
+    """
+    kind = block_type(block)
+    if kind == "text":
+        text = str(block_field(block, "text"))
+        # The judge's own feedback re-enters the loop as a user turn. Read back as the owner's words
+        # it primes the next grade to REDO an answer that already closed the gap it named.
+        return None if text.startswith(JUDGE_RETRY_PREFIX) else f"[{role}] {text}"
+    if kind in ("image", "document"):
+        # A caption-less photo or PDF IS the ask; dropped, the judge grades an answer to nothing.
+        return f"[{role}] <{kind}>"
+    if kind != "tool_use":
+        return None
+    args = block_field(block, "input")
+    # One line, keys in the order the model wrote them — the replay harness renders the same string,
+    # and a prod transcript shaped differently from the measured one makes its verdicts unreadable.
+    whole = json.dumps(args, indent=None, sort_keys=False) if args else ""
+    # A sub-agent's brief is one long argument, and cut silently it reads as the whole task — the
+    # judge would then grade delegated work against a request it only half saw.
+    cut = f"{whole[:_JUDGE_ARG_CHARS]}…" if len(whole) > _JUDGE_ARG_CHARS else whole
+    return f"[tool] {block_field(block, 'name')}({cut})"
 
 
 def _strip_thinking(message: MessageParam) -> MessageParam:  # noqa: ANON002 — MessageParam is an Anthropic SDK TypedDict
@@ -137,13 +246,13 @@ class MongoMessageHistory(MessageHistory):
     Lifecycle: per-conversation — built with its `Conversation` and reused across replies. Call
     `load()` before the first reply to restore the active transcript. During a reply each completed
     turn is written fire-and-forget (`__exit__`); `flush()` awaits those writes after the answer is
-    sent. `drop_tool_turns()` removes pure tool turns from the active transcript between replies.
+    sent. The transcript only ever grows: what the model sees narrows with age in `format_for_api`,
+    and a turn leaves for good only when the agent deletes it (`delete_turns`).
     """
 
-    def __init__(self, *, logger: Logger, database: AsyncDatabase, conversation_id: int) -> None:
+    def __init__(self, *, database: AsyncDatabase, conversation_id: int) -> None:
         """Bind the history to one conversation and start with an empty in-memory transcript."""
-        self._logger = logger
-        self._collection = database[_COLLECTION]
+        self._collection = database[TURNS_COLLECTION]
         self._conversation_id = conversation_id
 
         # In-memory transcript + turn assembly (Protocol surface).
@@ -152,6 +261,8 @@ class MongoMessageHistory(MessageHistory):
         self._next_turn_id = 0
         self._current_turn: Turn | None = None
         self._last_input_tokens = 0
+        self._incoming: list[str] = []  # what the owner said mid-reply, waiting for a turn (see `deliver`)
+        self._settled_through = 0  # turns up to this id are delivered and prunable (see `delete_turns`)
 
         # Durable write bookkeeping.
         self._writes: list[asyncio.Task[None]] = []  # in-flight fire-and-forget turn inserts
@@ -160,9 +271,10 @@ class MongoMessageHistory(MessageHistory):
     @staticmethod
     async def ensure_indexes(database: AsyncDatabase) -> None:
         """Compound indexes for per-conversation queries. Idempotent; call once at startup."""
-        col = database[_COLLECTION]
-        await col.create_index([("conversation_id", 1), ("turn_id", 1)], unique=True)
-        await col.create_index([("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+        col = database[TURNS_COLLECTION]
+        await ensure_index(col, [("conversation_id", 1), ("turn_id", 1)], unique=True)
+        await ensure_index(col, [("conversation_id", 1), ("deleted_at", 1), ("turn_id", 1)])
+        await ensure_index(col, [("conversation_id", 1), ("message_ids", 1)])  # TurnLookup's reverse lookup
 
     # --- MessageHistory protocol: in-memory turn assembly ---
 
@@ -208,20 +320,105 @@ class MongoMessageHistory(MessageHistory):
         """Append a plain user-text message to the open turn."""
         self._turn.messages.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=text)]))
 
+    def add_photo(self, *, data: str, media_type: str) -> None:
+        """Append a user image message — a photo the model reads as vision (media_type checked upstream)."""
+        source = Base64ImageSourceParam(type="base64", media_type=cast("_ImageMediaType", media_type), data=data)
+        self._turn.messages.append(MessageParam(role="user", content=[ImageBlockParam(type="image", source=source)]))
+
+    def add_document(self, *, data: str) -> None:
+        """Append a user PDF-document message the model reads natively."""
+        source = Base64PDFSourceParam(type="base64", media_type="application/pdf", data=data)
+        self._turn.messages.append(
+            MessageParam(role="user", content=[DocumentBlockParam(type="document", source=source)])
+        )
+
+    # --- What the owner says while the loop is already running ---
+
+    def deliver(self, text: str) -> None:
+        """Hold a message that arrived mid-reply; the loop picks it up on its next turn.
+
+        Appending it the moment it arrives would drop it INTO the turn the agent has open, between
+        its `tool_use` blocks and the results that must follow them — which the API rejects. So it
+        waits here for `format_for_api`: of the calls baski makes with no turn open, that is the one
+        that runs BEFORE the payload is assembled, so the message rides the very turn being built
+        instead of the one after it.
+        """
+        self._incoming.append(text)
+
+    @property
+    def has_incoming(self) -> bool:
+        """Whether a delivered message is still waiting for a turn to carry it to the model."""
+        return bool(self._incoming)
+
+    def commit_incoming(self) -> None:
+        """Move everything delivered mid-reply into the transcript as one ordinary user turn.
+
+        Called with no turn open — from `format_for_api` as the loop builds a turn, and from the top
+        of a reply for anything a failed run left behind. The assert is a tripwire: opening a turn
+        inside the agent's own would drop its assistant message and burn its id, in silence.
+        """
+        if self._current_turn is not None:  # impossible on today's call sites — tripwire
+            raise RuntimeError("commit_incoming ran inside an open turn")
+        if not self._incoming:
+            return
+        incoming, self._incoming = self._incoming, []
+        with self:
+            for text in incoming:
+                self.add_user_text(text)
+        logger.info("Owner messages joined the running reply", extra={"messages": len(incoming)})
+
     def format_for_api(self) -> list[MessageParam]:
-        """Render the transcript with [Turn N] markers; cache breakpoint on the last turn (thinking stripped)."""
+        """Render the transcript with [Turn N] markers; cache breakpoint on the last turn.
+
+        Commits anything `deliver`ed first, so a message the owner sent while the agent was working
+        is part of the very turn being built rather than waiting for a whole new reply.
+
+        Past `_PAYLOAD_RETENTION` a turn is sent as its words alone (`said`): the tool calls, their
+        results and the attachments were consumed by the answer that used them, and they are most of
+        what the transcript weighs — 45% of the live context when measured, against 16% for the
+        conversation itself. Before that they all go, because a follow-up reaches into them ("show me
+        the second one you found"), and 85% of the owner's messages arrive within the hour.
+
+        A turn whose whole content was tool machinery renders as nothing — marker included.
+
+        This is a view, not an edit. The turn and its Mongo document keep everything; widen the window
+        and it is all sent again.
+        """
+        self.commit_incoming()
         result: list[MessageParam] = []
         prev_at: datetime.datetime | None = None
+        cutoff = datetime.now() - _PAYLOAD_RETENTION
         for turn in self._turns:
             at = datetime.as_utc(turn.created_at)
+            messages = turn.rendered() if at > cutoff else turn.said()
+            if not messages:
+                continue
             marker = _turn_marker(turn.id, at, prev_at)
             result.append(MessageParam(role="user", content=[TextBlockParam(type="text", text=marker)]))
-            result.extend(_strip_thinking(m) for m in turn.messages)
+            result.extend(messages)
             prev_at = at
 
         if result:
             result[-1] = mark_cached(result[-1])
         return result
+
+    def format_for_judge(self) -> str:
+        """The conversation as the completeness judge reads it: what was said, and what was run.
+
+        Tool RESULTS are left out on purpose — the judge grades whether the reply finished the ask,
+        and raw tool output both bloats the prompt and pulls it into fact-checking instead. Unlike
+        `format_for_api` nothing narrows with age: this is text either way, and a judge that cannot
+        see what the owner asked three turns ago cannot tell a finished answer from a partial one.
+        """
+        lines: list[str] = []
+        for turn in self._turns:
+            for message in turn.messages:
+                role, content = message["role"], message["content"]
+                if isinstance(content, str):  # the shape `StoredMessage` allows and `said()` keeps
+                    lines.append(f"[{role}] {content}")
+                    continue
+                lines += [line for block in content if (line := _judge_line(role, block))]
+        return "\n".join(lines)
 
     def context_status(self) -> MessageParam | None:
         """The context-usage footer, rendered by the shared helper from this history's counters."""
@@ -232,27 +429,38 @@ class MongoMessageHistory(MessageHistory):
         return not self._turns and input_tokens > self.max_tokens // 2
 
     def truncate(self, usage: Usage) -> None:
-        """Drop oldest turns when input-token usage exceeds the budget; mark them for soft-delete."""
-        context_tokens = effective_input_tokens(usage)
-        self._last_input_tokens = context_tokens
-        if context_tokens < int(self.max_tokens * _TRUNCATE_THRESHOLD) or not self._turns:
-            return
-        count = max(int(len(self._turns) * _TRUNCATE_PERCENTAGE), 1)
-        dropped, self._turns = self._turns[:count], self._turns[count:]
-        self._dropped.update(turn.id for turn in dropped)
-        self._logger.info(
-            "Truncated message history",
-            labels={"inputTokens": context_tokens, "turnsRemoved": count, "turnsAfter": len(self._turns)},
-        )
+        """Record this call's context size, for the `[Context: N% used]` footer. Nothing is dropped.
+
+        baski calls this after every API call of the loop. Dropping a turn here would move the head of
+        the message list mid-run: the cached prefix stops matching and the whole transcript is
+        re-written at 1.25x on every remaining turn instead of read back at 0.1x — and the reply loses
+        context it is still composing against. What the model sees shrinks by age, in `format_for_api`;
+        what the transcript HOLDS only changes when the agent deletes a turn on purpose.
+        """
+        self._last_input_tokens = effective_input_tokens(usage)
 
     async def delete_turns(self, turn_ids: list[int]) -> int:
-        """Remove whole turns by id from context; their soft-delete is persisted on the next flush()."""
-        ids = set(turn_ids)
-        original = len(self._turns)
+        """Remove whole turns by id — the agent's `prune_transcript`, and the only way a turn leaves.
+
+        Only SETTLED turns go: a turn belongs to the reply being written until `flush()` records it
+        as delivered, and `_turns` is the one list both the model and the judge read. A run that
+        pruned its own exchange answered, forgot it had, and delivered "the answer was fully
+        delivered" instead of the answer, with the judge equally blind (conversation 112991176, turns
+        373-375). The settled mark moves in `load()` and `flush()` — the history's own lifecycle — so
+        no caller has to remember to arm it. The count returned is what actually went, so the agent
+        is never told it pruned more than it did.
+
+        `flush()` soft-deletes them in Mongo, so they stay readable there and never come back on
+        `load()`.
+        """
+        ids = {turn_id for turn_id in turn_ids if turn_id <= self._settled_through}
+        if refused := sorted(set(turn_ids) - ids):
+            logger.warning("Refused to prune the reply being written", extra={"turnIds": refused})
+        before = len(self._turns)
         self._turns = [turn for turn in self._turns if turn.id not in ids]
-        removed = original - len(self._turns)
         self._dropped.update(ids)
-        self._logger.info("Turns deleted by agent", labels={"turnIds": sorted(ids), "turnsRemoved": removed})
+        removed = before - len(self._turns)
+        logger.info("Turns deleted by agent", extra={"turnIds": sorted(ids), "turnsRemoved": removed})
         return removed
 
     # --- persistence ---
@@ -278,6 +486,7 @@ class MongoMessageHistory(MessageHistory):
             sort=[("turn_id", -1)],
         )
         self._next_turn_id = newest["turn_id"] if newest else 0
+        self._settled_through = self._next_turn_id  # everything on disk is a delivered exchange
 
     async def flush(self) -> None:
         """Await the in-flight turn writes, then persist soft-deletes. Called after the reply is sent.
@@ -300,13 +509,36 @@ class MongoMessageHistory(MessageHistory):
                 {"$set": {"deleted_at": now, "updated_at": now}},
             )
 
-    def drop_tool_turns(self) -> None:
-        """Drop pure tool turns from the active transcript so the next reply's context stays lean.
+        # The reply is delivered, so its turns are now history like any other — and prunable.
+        self._settled_through = self._next_turn_id
 
-        Their Mongo docs were already written soft-deleted (see `_write_turn`), so this is an
-        in-memory prune only — no extra write, and the full turn stays recoverable in Mongo.
+    @property
+    def last_turn_id(self) -> int:
+        """The id of the newest COMMITTED turn — read while the reply still holds the lock, to link against.
+
+        Not the turn counter: `__exit__` drops a turn that ended up with no messages but leaves the
+        counter advanced, and an id naming no document would make `link_messages` match nothing and
+        drop the ids in silence.
         """
-        self._turns = [turn for turn in self._turns if _has_text(turn)]
+        if not self._turns:  # a reply always commits at least its own answer turn — tripwire
+            raise RuntimeError("asked which turn to link against before any turn was committed")
+        return self._turns[-1].id
+
+    async def link_messages(self, *, turn_id: int, message_ids: list[int]) -> None:
+        """Attach the Telegram messages that delivered a turn's answer to that turn.
+
+        The link is only knowable at send time, and it is what lets a later emoji reaction on one of
+        those messages be traced back to the turn it graded. The turn is named by the caller rather
+        than taken as "the newest": this runs after the answer is sent, by when a reply that started
+        meanwhile can already have added turns of its own, and the ids would land on a turn that did
+        not produce them. Call it AFTER `flush()`: the turn insert is fire-and-forget, and this update
+        deliberately does not upsert — a document created here would miss the insert's `$setOnInsert`
+        audit fields.
+        """
+        await self._collection.update_one(
+            {"conversation_id": self._conversation_id, "turn_id": turn_id},
+            {"$addToSet": {"message_ids": {"$each": message_ids}}},
+        )
 
     async def _write_turn(self, turn: Turn) -> None:
         """Insert one turn document, once. A pure tool turn is written already soft-deleted."""
@@ -326,3 +558,27 @@ class MongoMessageHistory(MessageHistory):
             },
             upsert=True,
         )
+
+
+class TurnLookup:
+    """Reverse lookup over `conversation_turns`: a delivered Telegram message → the turn it came from.
+
+    The forward link is written by `MongoMessageHistory.link_messages`. Lifecycle: long-lived — one
+    per bot, held by whoever sees Telegram message ids without owning a conversation's history.
+    """
+
+    def __init__(self, database: AsyncDatabase) -> None:
+        """Bind to the turns collection; the conversation is a query argument, not a scope."""
+        self._collection = database[TURNS_COLLECTION]
+
+    async def turn_for_message(self, *, conversation_id: int, message_id: int) -> int | None:
+        """The turn a message belongs to, or None.
+
+        None is ordinary: many messages are not an agent answer at all — a transcript echo, a
+        `/lists` view, an error notice. A pruned turn keeps its link, so old answers stay resolvable.
+        """
+        doc = await self._collection.find_one(
+            {"conversation_id": conversation_id, "message_ids": message_id},
+            {"turn_id": 1},
+        )
+        return doc["turn_id"] if doc else None

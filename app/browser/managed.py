@@ -8,18 +8,20 @@ Optional: set BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID to route the agent th
 browser; leave them unset to launch a local Chromium (fine for dev and unprotected sites).
 """
 
+import logging
 import os
 
-from baski.server import Logger
 from browserbase import Browserbase
 
+logger = logging.getLogger(__name__)
 
-def managed_browser_cdp_url(logger: Logger) -> str | None:
+
+def managed_browser_cdp_url() -> str | None:
     """A fresh Browserbase session's CDP connect URL, or None when Browserbase isn't configured."""
     api_key = os.environ.get("BROWSERBASE_API_KEY")
     project_id = os.environ.get("BROWSERBASE_PROJECT_ID")
     if not (api_key and project_id):
         return None
     session = Browserbase(api_key=api_key).sessions.create(project_id=project_id)
-    logger.info("Browserbase session created", labels={"sessionId": session.id})
+    logger.info("Browserbase session created", extra={"sessionId": session.id})
     return session.connect_url

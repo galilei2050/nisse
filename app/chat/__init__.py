@@ -1,5 +1,5 @@
 """Chat module — the only aiogram Router; Telegram I/O for the assistant."""
 
-from .router import build_router
+from .router import ChatRouter
 
-__all__ = ["build_router"]
+__all__ = ["ChatRouter"]

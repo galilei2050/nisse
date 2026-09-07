@@ -1,18 +1,77 @@
-"""Render an LLM markdown answer as Telegram MarkdownV2, split to the size limit.
+"""Render an agent result as the user-facing Telegram message.
 
-``Assistant.reply()`` returns standard markdown (``**bold**``, ``## headers``,
-fenced code, links, lists). :func:`to_markdown_v2` converts it to Telegram
-MarkdownV2 via the ``telegramify-markdown`` library (a real pulldown-cmark
-parser, not regex); :func:`split_message` keeps each message under Telegram's
-UTF-16 limit; :func:`strip_markdown_v2` is the plain-text fallback when Telegram
-rejects the converted entities.
+:func:`compose_answer` assembles the plain-markdown reply from a raw
+``AgentExecuteResult`` (the agent's answer + cost footer, or a fallback) — the
+Telegram layer owns this, not ``Assistant``; the completeness judge streams as
+``Judged`` step events instead. The agent emits standard markdown
+(``**bold**``, ``## headers``, fenced code, links, lists);
+:func:`to_markdown_v2` converts it to Telegram MarkdownV2 via the
+``telegramify-markdown`` library (a real pulldown-cmark parser, not regex);
+:func:`split_message` keeps each message under Telegram's UTF-16 limit;
+:func:`strip_markdown_v2` is the plain-text fallback when Telegram rejects the
+converted entities.
 """
 
 import re
 
+import pyromark
 import telegramify_markdown
+import telegramify_markdown.converter
+from baski.agents import AgentExecuteResult, Judged, Verdict
 
-__all__ = ["split_message", "strip_markdown_v2", "to_markdown_v2"]
+# telegramify hardcodes math parsing into its options, so `$340 to $345` is read as an inline formula:
+# both dollar signs are eaten as delimiters and the amount comes back as a code span. The owner reads
+# prices and budgets off these replies. The library exposes no toggle — `latex_escape=False` only
+# skips LaTeX→unicode, not the parsing — so the bit is cleared here, once, at import. If the constant
+# ever disappears upstream, this raises on import rather than quietly resuming the corruption.
+telegramify_markdown.converter.STANDARD_OPTIONS &= ~pyromark.Options.ENABLE_MATH
+
+__all__ = [
+    "NO_ANSWER",
+    "compose_answer",
+    "footer",
+    "split_message",
+    "strip_markdown_v2",
+    "to_markdown_v2",
+    "verdict_line",
+]
+
+NO_ANSWER = "I couldn't produce a response — please try rephrasing."
+
+
+def _humanize_tokens(n: int) -> str:
+    """Compact token count for the reply footer: 12_400 → '12.4k', 64_000 → '64k'."""
+    return f"{n / 1000:.1f}k".replace(".0k", "k")
+
+
+def footer(result: AgentExecuteResult) -> str:
+    """One-line cost + current context-size note appended to every answer."""
+    return f"\n\n— ${result.total_cost:.4f} · контекст {_humanize_tokens(result.context_tokens)}"
+
+
+def verdict_line(verdict: Verdict | Judged) -> str:
+    """How a completeness verdict reads to the owner — one wording for the live and the flat paths.
+
+    Both paths show it for the same reason: the owner cannot re-derive whether an answer was checked,
+    so one that arrives without its verdict is one they have to audit themselves. Kept in one place
+    because two copies drift, and a live reply and a report disagreeing on the mark is precisely the
+    mixed signal the verdict exists to remove. The caller supplies the emphasis.
+    """
+    return "⚖️ ✅ готово" if verdict.finished else f"⚖️ 🔄 {verdict.feedback}"
+
+
+def compose_answer(result: AgentExecuteResult) -> str:
+    """The reply text for the non-streamed paths (a fired task, a curator report): answer + verdict + footer.
+
+    The interactive chat path renders the chronological stream itself (`TelegramProgress.finish`); this
+    flat form is for callers without a live message. An unjudged run (the judge fails open on an
+    outage) gets no verdict line rather than an invented ✅.
+    """
+    if not result.response:
+        return NO_ANSWER
+    graded = f"\n\n**{verdict_line(result.judge_verdicts[-1])}**" if result.judge_verdicts else ""
+    return result.response + graded + footer(result)
+
 
 # Telegram's per-message limit, counted in UTF-16 code units.
 MAX_MESSAGE_LENGTH = 4096

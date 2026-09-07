@@ -31,6 +31,7 @@ registers. Shared Cloud Run / Pulumi helpers come from `baski.infra` — don't r
 | `iam.py` | Runtime service account `cloud-run` (the identity; its *grants* are manual) |
 | `services/cloud_run_backend.py` | Cloud Run service `backend` + 5xx alert (via `create_cloud_run_with_monitoring`) |
 | `services/cloud_tasks.py` | Cloud Tasks queue `tg-update-queue` |
+| `services/curator_schedule.py` | Cloud Scheduler job `curator-nightly` (04:00 PT → `POST /curate`) |
 
 ## Provisioned by hand (never in Pulumi)
 
