@@ -13,9 +13,9 @@ if the observed trace doesn't match. Probe harness: `app/CLAUDE.md` → "Manual 
 
 ## End-to-end (real API + Mongo, via `make probe`)
 
-Setup: `uv run --env-file .env python scratch/seed_subagents.py --user-id 777` seeds the `researcher`
-(sonnet, 180k context, `google_search`/`google_ai_answer`/`google_news`/`youtube_transcript`/`browse_website`,
-compression-demanding system + judge prompts). Use a **fresh** `U=777`.
+Setup: the probed conversation needs its own `subagents` documents — a `researcher` orchestrator over
+a `retrieval` worker, with compression-demanding system + judge prompts. There is no seed file: copy
+the documents from a conversation that has them, changing `conversation_id`.
 
 `make probe U=777 MSG="Исследуй стратегию завести друзей"` — expectations, checked from the trace:
 

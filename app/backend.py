@@ -25,7 +25,7 @@ from app import chat
 from app.access import AllowlistMiddleware
 from app.assistant import Assistant
 from app.assistant.history import MongoMessageHistory, TurnLookup
-from app.browser import BrowserSessionStore
+from app.browser import BrowserSessionStore, managed_browser_cdp_url
 from app.chat.ask import PendingQuestions
 from app.chat.curate import CurateCommand
 from app.chat.format import compose_answer
@@ -124,6 +124,11 @@ class NisseBot(TelegramServer):
         )
 
     @cached_property
+    def _browser_cdp_url(self) -> str | None:
+        """Managed remote-browser CDP endpoint (Browserbase) when configured, else None (local browser)."""
+        return managed_browser_cdp_url()
+
+    @cached_property
     def _http(self) -> httpx.AsyncClient:
         """Shared async HTTP client."""
         return httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0))
@@ -150,8 +155,8 @@ class NisseBot(TelegramServer):
 
     @cached_property
     def _playwright(self) -> PlaywrightClient:
-        """Headless browser client."""
-        return PlaywrightClient(headless=True)
+        """Shared browser. Local Chromium by default; a managed remote browser when BROWSERBASE_* is set."""
+        return PlaywrightClient(headless=True, cdp_url=self._browser_cdp_url)
 
     @cached_property
     def _scheduler_dep(self) -> Scheduler:

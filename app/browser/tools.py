@@ -5,11 +5,11 @@ page say", these answer "what does it say AFTER I pick dates and press the butto
 an indexed listing: `[ref] role "label" — nearby text` (the nearby text carries prices and product
 names). Act by `ref`; refs are valid only for the most recent listing.
 
-**No saved logins.** `BrowserSessionStore.load` returns None for every chat because nothing writes
-`browser_sessions` (the capture flow was not ported — `docs/browser-actions.md`), so a context opens
-signed out and a page behind a sign-in returns its login wall as ordinary content. That distinction
-cannot be made by this layer, so it is stated where the chooser and the holder both read it: these
-tools are for public pages you have to interact with, not for accounts.
+**A chat's login is whatever `make startbrowser` captured for it.** The owner signs in once by hand and
+that chat's cookies land in `browser_sessions`; a chat with no captured session opens signed out and a
+page behind a sign-in returns its login wall as ordinary content. This layer cannot tell the two apart,
+so the tools never promise an account — the model must read the page it got back rather than assume it
+is in.
 """
 
 import logging
@@ -67,15 +67,16 @@ class WebOpenTool(_BrowserTool):
 
     name = "web_open"
     one_line = (
-        "Open a URL in a real browser you can act in — returns the page's interactive elements by [ref]. "
-        "NO saved logins: it opens signed out, so it reaches public pages and forms, not accounts"
+        "Open a URL in a real browser you can act in — returns the page's interactive elements by [ref], "
+        "carrying whatever login this chat captured"
     )
     description = (
         "Navigate the browser to a URL and return the page's interactive elements as an "
         'indexed listing — `[ref] role "label" — nearby text` (the nearby text carries prices and '
         "product names). Use it for any page you need to ACT on — pick dates, submit a form, read what "
-        "the page says back; for reading a public article use browse_website. There are no saved logins, "
-        "so anything behind a sign-in shows you the login wall — read the page, do not assume you are in."
+        "the page says back; for reading a public article use browse_website. The session carries this "
+        "chat's saved cookies when the owner captured them, so check the page you got: a login wall "
+        "means this chat has no session for that site, not that the page failed."
     )
 
     class Input(BaseModel):

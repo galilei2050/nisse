@@ -87,7 +87,7 @@ nisse/                                  # the tool family lives here
 │   │   ├── serp_tool.py                # SerpTool base (params/render)       (NEW)
 │   │   └── tools.py                    # the 10 leaves, one class each       (NEW)
 │   └── assistant/
-│       └── conversations.py            # _build_web_tools(): register 10     (edit)
+│       └── conversations.py            # MAIN_TOOLS: the names the assistant builds
 └── docs/
     └── serpapi-search-tools.md         # this design
 
@@ -202,7 +202,7 @@ A new engine touches **zero** client code. Existing typed helpers stay for other
 
 Every web tool is registered by name in `app/search/__init__.py` (`register_tools`), and each agent
 names the ones it wants: `MAIN_TOOLS` in `app/assistant/conversations.py` for the assistant, a
-sub-agent's `tool_names` in `app/subagents/agents.yml`. Read those three for the current roster —
+sub-agent's `tool_names` on its Mongo config (`subagent_list`). Read those for the current roster —
 the selection point named here (`Conversations._build_web_tools`) was replaced by the registry.
 
 ## APIs to implement
@@ -260,10 +260,9 @@ focused sub-agent does **not** pay that tax: the research `retrieval` worker is 
 call. Its tool schemas never touch the owner-facing turns. So the two rosters split by consumer, and
 a fatter roster is fine — even wanted — on the worker:
 
-- **Main agent** (`MAIN_TOOLS` in `app/tools/wiring.py`) — the lean everyday set the owner routes by
-  hand: `google_search`, `google_ai_answer`, `google_maps_search`, `google_news`, `google_events`,
-  the Amazon/YouTube chains, `google_jobs`, `browse_website`.
-- **Research `retrieval` sub-agent** (`tool_names` in `scratch/seed_subagents.py`) — carries the
+- **Main agent** (`MAIN_TOOLS` in `app/assistant/conversations.py`) — the lean everyday set, general
+  search only: it may FIND pages and must delegate to read them, for the cost reason stated there.
+- **Research `retrieval` sub-agent** (`tool_names` on its Mongo config) — carries the
   fuller *research* roster; fill its context freely, that's the point of a focused worker.
 
 **The research-worker roster (implemented + registered, off `MAIN_TOOLS`):**
@@ -315,7 +314,7 @@ discovery→detail chain explicit in the schema. Clarity of selection is the sta
 the few hundred tokens buy it.
 
 **Adding an engine is a leaf change.** New engine = one subclass (engine id + `Input` +
-`params` + `render`) + one line in `_build_web_tools`. No client change, no base change, no
+`params` + `render`) + one line in `app/search/__init__.py`'s `register_tools`. No client change, no base change, no
 risk to existing tools. The abstraction is justified by ten concrete users today — reuse,
 not speculation.
 

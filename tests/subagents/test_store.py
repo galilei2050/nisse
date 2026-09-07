@@ -157,13 +157,3 @@ async def test_saving_the_name_again_revives_a_retired_worker() -> None:
     live = await store.list()
     assert [config.name for config in live] == ["maps_list_reader"]
     assert live[0].system_prompt == "Rebuilt from the change history."
-    assert await store.retired_names() == set()
-
-
-async def test_retired_names_is_what_the_seed_script_must_not_revive() -> None:
-    """`make seed` re-saves every definition in agents.yml; without this read it would silently undo
-    a retirement the curator made on the owner's evidence."""
-    store, _ = await _seeded("retrieval", "maps_list_reader")
-    await store.soft_delete("maps_list_reader")
-
-    assert await store.retired_names() == {"maps_list_reader"}

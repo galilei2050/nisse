@@ -13,7 +13,7 @@ from app.prompts import PromptStore
 from app.shared import CoreDeps
 from app.subagents import SubagentStore, SubagentTool
 
-MAIN_MODEL = "claude-opus-5"  # the main agent's model (sub-agents pick their own in agents.yml)
+MAIN_MODEL = "claude-opus-5"  # the main agent's model; a sub-agent's is a field on its Mongo config
 
 # The main Assistant's tool spec — the names it builds from the shared registry (`deps.tools`). The
 # main agent gets only the GENERAL web tools; the specialized SerpApi leaves (maps/news/events/jobs,

@@ -53,6 +53,13 @@ backend-run:
 test-backend-dry-run:
 	uv run python -m app.backend --dry-run
 
+# Open a real browser to log in once for a chat; the session (cookies + localStorage) is
+# saved per chat-id and the assistant reuses it for logged-in browsing/actions. Re-run when
+# a login expires. `make startbrowser U=<chat-id>`. See docs/browser-actions.md.
+.PHONY: startbrowser
+startbrowser:
+	uv run python -m app.startbrowser --chat-id $(U) $(if $(URL),--url $(URL),)
+
 # Manual end-to-end probe — one Assistant.reply(); prints injected context, tool calls, answer.
 # Real API/DB calls; throwaway user. `make probe MSG="…" [U=42]`. See docs/memory-test-cases.md.
 .PHONY: probe
@@ -71,11 +78,6 @@ curate:
 .PHONY: revisions
 revisions:
 	uv run python scripts/show_revisions.py $(U) "$(RUN)" "$(REV)"
-
-# Seed a conversation's sub-agents from app/subagents/agents.yml. `make seed U=<conversation_id>` (or U=all).
-.PHONY: seed
-seed:
-	uv run python -m scripts.seed_subagents $(U)
 
 # Companion to probe: dump the long-term `memories` collection (live + soft-deleted).
 # `make memories U=<conversation_id>` for one chat in full; `make memories` groups ALL chats by id.

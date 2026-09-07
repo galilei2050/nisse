@@ -6,13 +6,14 @@ can call them. Registration exists so the nightly curator is *able* to grant the
 validates `tool_names` against this registry, and a tool that isn't in it cannot be handed to a worker
 however plainly the evidence says the worker needs it.
 
-Nothing writes the `browser_sessions` collection yet, so `BrowserSessionStore.load` returns None and
-every session opens logged out — fine for a public page, useless behind a login.
+A chat's login comes from `make startbrowser`, which writes `browser_sessions` after the owner signs in
+by hand; a chat that never ran it opens logged out — fine for a public page, useless behind a login.
 
 Design, the bot-protection findings and the open defects to fix before this is leaned on:
 `docs/browser-actions.md`.
 """
 
+from app.browser.managed import managed_browser_cdp_url
 from app.browser.proxy import ProxyPool, load_proxy_pool
 from app.browser.session import BrowserSession
 from app.browser.store import BrowserSessionStore
@@ -37,5 +38,6 @@ __all__ = [
     "WebTypeTool",
     "browser_tools",
     "load_proxy_pool",
+    "managed_browser_cdp_url",
     "register_tools",
 ]

@@ -15,7 +15,6 @@ Usage + expectation-first test cases: `app/CLAUDE.md` → "Manual probe", `docs/
 
 import argparse
 import asyncio
-import json
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -29,10 +28,12 @@ from baski.server.logger import configure_logging
 from pymongo import AsyncMongoClient
 
 from app.assistant import Assistant
+from app.browser import managed_browser_cdp_url
 from app.chat.ask import PendingQuestions
 from app.scheduling import LoggingScheduler
-from app.shared import CoreDeps, block_type
+from app.shared import CoreDeps
 from app.tools.wiring import build_tool_registry
+from app.tracing import TraceView
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -81,59 +82,11 @@ class _AutoTapBot:
         return _AutoTapQuestion()
 
 
-def _render_content(content: object) -> str:
-    """Flatten a serialized message's content (text rendered verbatim, other blocks tagged)."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content)
-    parts = []
-    for block in content:
-        btype = block_type(block)
-        if btype == "text":
-            parts.append(str(block["text"]))
-        elif btype is not None:
-            parts.append(f"<{btype}>")
-        else:
-            parts.append(str(block))
-    return "\n".join(parts)
-
-
-def _print_trace(trace: TraceRecord) -> None:
-    """Print injected context (system + first-turn messages), tool calls, and the answer."""
-    print("\n=== INJECTED CONTEXT — system prompt ===\n" + trace.system_prompt)
-
-    print("\n=== INJECTED CONTEXT — messages (first turn) ===")
-    for msg in trace.turns[0].messages:  # SkipValidation kept these as raw {role, content} dicts
-        print(f"\n[{msg['role']}]\n{_render_content(msg['content'])}")
-
-    print("\n=== TOOL CALLS ===")
-    for turn in trace.turns:
-        for tc in turn.tool_calls:
-            print(f"- {tc.name}({json.dumps(tc.input, ensure_ascii=False)})")
-
-    result = trace.result
-    print("\n=== ANSWER ===\n" + ((result and result.response) or "<no answer>"))
-
-    print("\n=== PROMPT CACHE (per turn) ===")
-    for turn in trace.turns:
-        print(
-            f"turn {turn.turn_number}: input={turn.input_tokens} "
-            f"cache_read={turn.cache_read_tokens} cache_write={turn.cache_creation_tokens}"
-        )
-
-    if result:
-        print(
-            f"\n=== STATS ===\nturns={result.turn_count} tool_calls={result.tool_call_count} "
-            f"in={result.total_input_tokens} out={result.total_output_tokens} "
-            f"cost=${result.total_cost:.4f}"
-        )
-
-
 async def _run(user_id: int, message: str, traces_dir: Path) -> None:
     async with AsyncExitStack() as resources:
         http = await resources.enter_async_context(httpx.AsyncClient(timeout=httpx.Timeout(timeout=30.0)))
-        playwright = await resources.enter_async_context(PlaywrightClient(headless=True))
+        cdp_url = managed_browser_cdp_url()
+        playwright = await resources.enter_async_context(PlaywrightClient(headless=True, cdp_url=cdp_url))
         database: AsyncDatabase = AsyncMongoClient(str(get_env("MONGODB_URI")), tz_aware=True).get_default_database()
         questions = PendingQuestions()
         auto_tap = _AutoTapBot(questions)
@@ -157,15 +110,15 @@ async def _run(user_id: int, message: str, traces_dir: Path) -> None:
         result = (await assistant.run(conversation_id=user_id, text=message)).result
         await assistant.flush(conversation_id=user_id)  # persist turn writes + soft-deletes, as prod does post-send
 
-    trace_path = traces_dir / f"{result.trace_id}.json"
-    trace = TraceRecord.model_validate_json(trace_path.read_text())
-    _print_trace(trace)
+    trace = TraceRecord.model_validate_json((traces_dir / f"{result.trace_id}.json").read_text())
+    TraceView(trace, system=True).print_report()  # re-inspect any saved run with `python -m app.tracing`
     print(f"\n=== ASKED THE OWNER === {len(auto_tap.asked)}")  # the questions themselves are in TOOL CALLS
-    print(f"\n=== TRACE FILE ===\n{trace_path}  (analyse: summarize.py / show_text.py)")
+    print(f"\n=== TRACE SAVED ===\n{result.trace_id}")
+    print(f"inspect: uv run python -m app.tracing {result.trace_id} --results [--grep TEXT] [--system] [--full]")
 
 
 def main() -> None:
-    """Parse CLI args and run one probe against a throwaway local trace dir."""
+    """Parse CLI args and run one probe; the trace is saved under scratch/traces/ for `app.tracing`."""
     parser = argparse.ArgumentParser(description="Drive Assistant.run() once for manual end-to-end testing.")
     parser.add_argument("--user-id", type=int, default=1, help="Conversation id (acts as the owner's chat id)")
     parser.add_argument("--message", required=True, help="Text to send to the agent")

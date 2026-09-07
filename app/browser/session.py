@@ -1,7 +1,7 @@
 """Per-chat browser session for *acting* on web pages, not just reading them.
 
 One isolated browser context per conversation, branched off the shared browser and carrying whatever
-session the chat has saved — today none, since nothing writes `browser_sessions`.
+session the chat has saved through `make startbrowser` — none, for a chat that never ran it.
 
 Pages are read as an *indexed element listing*: each
 visible interactive element (button/link/field) is tagged with a numeric `ref` and shown with its

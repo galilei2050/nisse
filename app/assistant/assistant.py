@@ -7,6 +7,7 @@ from baski.server.logger import log_context
 
 from app.assistant.conversation import Reply
 from app.assistant.conversations import Conversations
+from app.browser import BrowserSessionStore
 from app.memory import MemoryStore
 from app.prompts import PromptStore
 from app.shared import CoreDeps
@@ -72,9 +73,10 @@ class Assistant:
         self._conversations = Conversations(deps=deps, system_prompt=system_prompt)
 
     async def setup(self) -> None:
-        """One-time startup: ensure the memory and prompt stores' indexes exist."""
+        """One-time startup: ensure the memory, prompt, and browser-session stores' indexes exist."""
         await MemoryStore.ensure_indexes(self._deps.database)
         await PromptStore.ensure_indexes(self._deps.database)
+        await BrowserSessionStore.ensure_indexes(self._deps.database)
 
     async def run(  # noqa: PLR0913 — one inbound message (chat, text, media) plus who watches it and may join
         self,

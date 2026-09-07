@@ -144,7 +144,7 @@ app/
                     chat/format.compose_answer). `deliver(conversation_id, text)` hands a message to the
                     reply already running — False when there is none, and the caller starts a turn
     conversations.py Conversations — registry: builds each chat's agent once and caches it (main model
-                    `MAIN_MODEL = claude-opus-5`; sub-agents pick their own in agents.yml)
+                    `MAIN_MODEL = claude-opus-5`; each sub-agent's model is a field on its Mongo config)
     conversation.py Conversation — one chat's reused agent + history + scratchpad; runs one reply
                     (lock-serialized). **A message the owner sends mid-reply joins that run** rather than
                     queueing for a second one: `deliver()` hands it to the history, and the loop's next
@@ -239,11 +239,16 @@ app/
                     returning the post-action listing. Distinct from `browse_website` (public page →
                     markdown): these are for DOING something behind a login
     store.py        BrowserSessionStore — the chat's Playwright storage-state (cookies + localStorage)
-                    in Mongo `browser_sessions`, one doc per conversation. Nothing WRITES it yet
-                    (`make startbrowser` was not ported), so `load()` returns None today
+                    in Mongo `browser_sessions`, one doc per conversation; written by
+                    `make startbrowser`, read on each action — so a login survives stateless Cloud Run
     proxy.py        ProxyPool — pins one residential proxy per host, rotates only on `mark_banned`;
-                    parsed from BROWSER_PROXIES so the provider token stays out of the app
+                    parsed from BROWSER_PROXIES so the provider token stays out of the app. Why
+                    `browser_tools` builds none is stated at that function
                     (design + the measured Cloudflare/Turnstile findings: docs/browser-actions.md)
+    managed.py      managed_browser_cdp_url — creates a Browserbase session and returns its CDP url.
+                    BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID set → every browser action runs on that
+                    managed remote browser, which Turnstile trusts (a local Chromium's cart writes are
+                    silently dropped); unset → local Chromium, fine for dev and unprotected sites
 
   subagents/        configurable sub-agents (agents-as-tools) — configs seeded in Mongo per chat
     store.py        SubagentConfig + SubagentStore (Mongo `subagents`, scoped; save() records the
@@ -283,6 +288,13 @@ app/
     (future: more nisse-specific leaf Tool classes here — gmail·calendar·perplexity, one per file;
     + external MCP servers as an optional secondary tool source — hybrid)
 
+  tracing/          read a saved run WITHOUT re-running it
+    view.py         TraceView — one trace plus the display flags, printed section by section. A CLI
+                    rendering (nisse's own headers, a length cap, `--grep`), which is why it is a type
+                    here and not a method on baski's TraceRecord
+    __main__.py     the CLI: `python -m app.tracing <id> [--results --grep TEXT --system --full --answer]`.
+                    `probe.py` prints the run it just executed through the same TraceView
+
   skills/           code skills — dev-authored bundles (Python, may wrap a sub-agent)
     research/       research SUB-AGENT (own Agent + search tools)
       agent.py      the sub-agent loop
@@ -294,8 +306,8 @@ app/
 
 `skills/` is design intent (not built yet); the sections below describe it. Shipped today: `chat`,
 `assistant`, `memory`, `lists`, `prompts`, `reactions`, `scheduling`, `search`, `subagents`, `curator`,
-`tools`, `shared`. `browser` is a third state — registered, only its proxy pool under test, and held by
-no agent: it is on the shelf for the curator to grant, not handed out by a commit. The
+`tools`, `shared`. `browser` is a third state — registered and held by no agent in code: it is on the
+shelf for the curator to grant, not handed out by a commit. The
 LLM-as-judge now lives in **baski** (`baski.agents.Judge`/`GeminiJudge`) — not a local `app/judge/`. baski
 owns the MECHANISM (the Gemini call, the `Verdict` schema); nisse owns the POLICY — every construction site
 passes its own `instructions=`, so grading rules are changed here, never by editing the library's default.
@@ -457,12 +469,32 @@ on any feature — read from the agent's own trace:
 3. **Answer** — the final reply is sensible.
 
 ```
-make probe MSG="…" [U=<id>]      # one agent run; prints injected context, tool calls, answer
+make probe MSG="…" [U=<id>]      # one agent run; prints tool calls + answer, SAVES the trace to scratch/traces/<id>.json
 make memories                    # dump `memories` (live + soft-deleted)
 make turns U=<id>                # dump one conversation's `conversation_turns` (active + soft-deleted)
 make curate U=<id> [DAYS=n] [DRY=1]   # one curator pass: evidence, every change with its `before`, the report
 make revisions U=<id> [RUN=<id>] [REV=<id>]   # the change history; REV prints one change untrimmed
 ```
+
+**Inspect a run WITHOUT re-running it (`app.tracing`) — don't burn tokens re-running just to see what happened.**
+`make probe` persists every run's trace to `scratch/traces/<trace_id>.json` and prints the id + the inspect
+command. Re-view any saved trace selectively (`app/tracing/` — CLI `__main__.py`, renderer `view.py`):
+
+```
+uv run python -m app.tracing <trace_id>                  # tool calls + answer + stats (compact)
+uv run python -m app.tracing <trace_id> --results        # + each tool RESULT (what the agent actually saw)
+uv run python -m app.tracing <trace_id> --grep "Order Placed"  # only result lines matching (implies --results)
+uv run python -m app.tracing <trace_id> --system --full  # + system prompt/first-turn; no truncation
+```
+
+The tool RESULTS are the ground truth for browser flows — read the actual checkout total / `/orders`
+confirmation the agent saw, instead of trusting its answer (it can confabulate success — always verify
+a real action on the real surface; see `docs/browser-actions.md`).
+
+**Browser-order e2e** (the DoorDash "order milk" target) runs through this exact path —
+`make probe U=1 MSG="закажи молоко на утро …"` → `Assistant.run` → the browser tools on the managed
+Browserbase browser. Requires `.env` with `MONGODB_URI`, `ANTHROPIC_API_KEY`, `BROWSERBASE_*`, and a
+captured DoorDash session in Mongo (`browser_sessions`). Run it as `uv run --env-file .env python -m app.probe …`.
 
 - **Injected context** is the ground truth for what the model saw — read it first.
 - **`=== ASKED THE OWNER ===`** counts the `ask_user` questions the agent chose to raise. The probe
@@ -477,9 +509,9 @@ make revisions U=<id> [RUN=<id>] [REV=<id>]   # the change history; REV prints o
   call, not what the child did inside). The child traces persist locally too (probe sets the trace-sink
   on `CoreDeps`); walk the whole delegation tree with
   `uv run python .claude/skills/analyze-traces/trace_tree.py <trace_id>` (main → researcher → retrieval
-  → leaf tools, via baski's `sub_trace_ids`). To exercise a sub-agent, seed it first with
-  `make seed U=<id>` (definitions in `app/subagents/agents.yml`) and probe the **same** `<id>`
-  (configs are per-conversation).
+  → leaf tools, via baski's `sub_trace_ids`). Configs are per-conversation and live only in Mongo, so
+  to exercise a sub-agent, probe a `<id>` whose `subagents` documents exist — copy them from a chat
+  that has them; there is no seed file to plant them from.
 
 Real API/DB calls (env from `.env`) — use a throwaway `U=`. Write expectations **before** running.
 

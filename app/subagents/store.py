@@ -51,20 +51,10 @@ class SubagentStore:
         """Unique (conversation_id, name) so names never collide in the parent's toolset."""
         await ensure_index(database[_COLLECTION], [("conversation_id", 1), ("name", 1)], unique=True)
 
-    @staticmethod
-    async def all_conversation_ids(database: AsyncDatabase) -> list[int]:
-        """Every conversation that has live sub-agent configs — for `seed all` (re-seed after a config change)."""
-        return sorted(await database[_COLLECTION].distinct("conversation_id", {"deleted_at": None}))
-
     async def list(self) -> list[SubagentConfig]:
         """Every live sub-agent config in this conversation."""
         query = {"conversation_id": self._conversation_id, "deleted_at": None}
         return [SubagentConfig.model_validate(doc) async for doc in self._collection.find(query)]
-
-    async def retired_names(self) -> set[str]:
-        """Names whose config is soft-deleted here — what `save` would silently revive."""
-        query = {"conversation_id": self._conversation_id, "deleted_at": {"$ne": None}}
-        return {doc["name"] async for doc in self._collection.find(query, {"name": 1})}
 
     async def get(self, name: str) -> SubagentConfig | None:
         """One live config by name within this conversation, or None."""
@@ -76,8 +66,8 @@ class SubagentStore:
     async def save(self, config: SubagentConfig) -> SubagentConfig:
         """Insert or replace by (conversation_id, name), recording the config it replaced.
 
-        The seed script and the curator share this path: a sub-agent's prompt IS its behaviour, so a
-        replaced one has to stay readable somewhere — the revision is where the old text survives.
+        Every write comes through here: a sub-agent's prompt IS its behaviour, so a replaced one has to
+        stay readable somewhere — the revision is where the old text survives.
         """
         previous = await self.get(config.name)
         await self._revisions.record(

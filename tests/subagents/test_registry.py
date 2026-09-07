@@ -68,16 +68,19 @@ def test_browser_is_registered_but_not_on_the_main_roster() -> None:
     assert build_tool_registry().get(BROWSER_TOOL_NAME) is not None
 
 
-def test_the_advertised_text_does_not_promise_a_session_that_cannot_exist() -> None:
+def test_the_advertised_text_promises_only_the_login_a_chat_actually_captured() -> None:
     """A chooser sees only `one_line`, so that is where a false promise does its damage.
 
-    Nothing writes `browser_sessions`, so `load()` returns None and every context opens signed out. The
-    text used to say "logged-in browser session"; a nightly pass reading that grants the browser to close
-    a behind-a-login gap, reports it closed, and the worker gets the login wall as page content — the same
-    promise-then-miss the capability work exists to remove. No deps needed: `one_line` is a class attribute.
+    A session exists for a chat exactly when `make startbrowser` captured one; `load()` returns None for
+    every other chat and that context opens signed out. So the text may not read as a standing login —
+    a nightly pass that takes "logged-in browser" at face value grants the browser to close a
+    behind-a-login gap, reports it closed, and the worker gets the login wall as page content. It must
+    also not read as the opposite (an earlier version claimed logins were absent), or the pass declines
+    a capability the owner has already captured. No deps needed: `one_line` is a class attribute.
     """
     acting = [t.one_line for t in (WebOpenTool, WebSnapshotTool, WebClickTool, WebTypeTool, WebScrollTool)]
-    assert "no saved logins" in WebOpenTool.one_line.lower(), "the chooser must be told logins are absent"
+    assert "captured" in WebOpenTool.one_line.lower(), "the chooser must be told a login is per-chat, not given"
+    assert "no saved logins" not in WebOpenTool.one_line.lower(), "startbrowser writes sessions — this is stale"
     assert not [line for line in acting if "logged-in" in line or "logged in" in line]
 
 

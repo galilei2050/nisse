@@ -6,7 +6,7 @@ verifier is `make curate U=<id> [DAYS=n]`. `DRY=1` stops after the classificatio
 curator, so it shows the evidence but says nothing about what the pass decides.
 
 Run against a **throwaway conversation id**, not the owner's — the pass edits live stores. To reproduce a
-real window safely, copy its turns to a sandbox id, `make seed U=<sandbox>` to plant the workers, then
+real window safely, copy its turns AND its `subagents` documents to a sandbox id, then
 `make curate U=<sandbox>`. Between runs, clear the sandbox's `prompts` / `memories` / `lists` /
 `subagents` / `revisions` / `curator_runs`: a second run otherwise reads the first run's edits and the
 prompt's own warning applies ("your own edits are already in what you see").

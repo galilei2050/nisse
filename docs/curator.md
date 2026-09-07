@@ -98,7 +98,7 @@ the roster is a routing surface — while a worker the owner called useless is l
 delegated to it. It is refused while a live worker names the retired one in its `tool_names`, which
 would otherwise surface as a failed delegation in a live turn rather than at the next build. Retiring
 is the answer to a rejected worker; the answer to a gap that cannot be closed is to report it and
-build nothing. `make seed` leaves a retired worker retired.
+build nothing.
 
 Why it can read the web at all: a **capability gap** is a failure class the behaviour levers cannot
 touch. When the day shows work the assistant could not do *at all*, the lever is the roster — grant the

@@ -1,8 +1,8 @@
 """Sub-agent management as tools — read the roster, write one config, retire one.
 
 The roster is editable at runtime through these three tools, which is what lets the curator act on
-what it learned overnight instead of only reporting it. `agents.yml` plus `make seed` remains the other
-writer — the file is still the source of truth for the roster's shape.
+what it learned overnight instead of only reporting it. They are the ONLY writer: a sub-agent exists
+as a Mongo document and nowhere else, so this is where its shape is decided.
 
 **This is a trusted admin surface** (`app/subagents/CLAUDE.md`): a config decides which tools, which
 model, and which prompt a child agent runs with. Only the curator gets these tools — they are

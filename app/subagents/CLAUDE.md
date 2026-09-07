@@ -8,9 +8,8 @@ with its own toolset/model/system-prompt/judge/context, wrapped by `SubagentTool
 
 - `store.py` — `SubagentConfig(NisseDbModel)` (eight required config axes incl. `max_turns` — the hard
   cap on the child's loop, passed to `AgentConfig.max_turns` — + `conversation_id`) +
-  `SubagentStore` (scoped `list()` for the build; `save()` records the config it replaced and is
-  shared by the seed script and the curator; `ensure_indexes` unique on
-  `(conversation_id, name)`).
+  `SubagentStore` (scoped `list()` for the build; `save()` records the config it replaced;
+  `ensure_indexes` unique on `(conversation_id, name)`).
 - `tool.py` — `SubagentTool`: per-config `name`/`description` (instance attrs, shadowing the class
   defaults — one class, N configs); `execute` runs a fresh isolated `Agent` on the pinned prompt and
   returns `result.response`, raising if it's `None` (no silent empty answer). `_resolve_tools` maps
@@ -39,31 +38,22 @@ it HAS siblings.**
 - A child sub-agent is built with `siblings={}`, so it can't see or delegate to anyone — capping
   nesting at one level.
 - A `tool_names` entry that is neither a registered tool nor a delegable sibling raises at build — a
-  seed error, loud.
+  bad config, loud.
 
-**The live definition is the Mongo document, not `agents.yml`.** The file is a SEED — it plants a
-conversation's first copy, and from then on the curator edits the document (`subagent_save` is in
-`CURATOR_TOOLS`), so the two diverge and the document is what runs. Measured 2026-08-08 on the owner's
-chat: the live `retrieval` prompt carried a whole effort-budget section absent from the file, and
-`researcher` a stop-early rule — 1367 vs 1218 chars and 2398 vs 1990. To read what an agent actually
-does, query `subagents`.
+**A sub-agent lives ONLY in Mongo — there is no file to edit.** The `subagents` collection is the
+definition; changing how a worker behaves means writing the document, through the curator's
+`subagent_save` or by hand. A seed file would only go stale against the curator's edits, and re-running
+it would throw them away. To read what an agent actually does, query `subagents`.
 
 **Nothing is lost by living in the database.** Every write goes through `SubagentStore.save`, which
 records a revision holding the full text before and after — so the history of a prompt is
-`make revisions U=<id>`, not `git log`. That is why the prompts are not mirrored back into the file:
-the reason to keep them in git would be history, and history is already kept.
+`make revisions U=<id>`, not `git log`. The reason to keep prompts in git would be history, and
+history is already kept.
 
-**Therefore `make seed U=all` is a REVERT, not a rollout.** It upserts the file over every live
-document and silently discards everything the curator learned. Use it for a brand-new conversation
-(`make seed U=<id>`), or when a new REQUIRED field would otherwise break reads — and in that case
-expect to lose the curator's text unless it is carried into the file first. To change how a live agent
-behaves, edit the document (the curator's own path), not the file.
-
-Sub-agent definitions (name, description, prompts, model, tool_names, judge) are seeded from
-**`agents.yml`** (`scripts/seed_subagents.py`, upsert on (conversation_id, name)). The intended shape is a `researcher` orchestrator (owns the hypothesis tree, decomposes the
-question, delegates each sub-question, synthesizes) over a `retrieval` worker (answers one
-self-contained sub-question with cited compression) — but `agents.yml` is what's actually defined.
-Methodology behind the prompts: `docs/research-subagent.md`.
+The shape in use is a `researcher` orchestrator (owns the hypothesis tree, decomposes the question,
+delegates each sub-question, synthesizes) over a `retrieval` worker (answers one self-contained
+sub-question with cited compression). Which tools either one actually holds is in its document, not
+here. Methodology behind the prompts: `docs/research-subagent.md`.
 
 **`subagent_list` prints its index in the RESULT, not through `Tool.user_message()`** — the one place in
 this app that deviates from the uniform seam. Two reasons: the index here is the whole registry
@@ -83,8 +73,8 @@ config). Add a verifier later only if usage shows a need.
 ## Wiring
 
 `Conversations._build_subagent_tools(conversation_id)` reads the configs and adds one `SubagentTool`
-each. Configs are read once at conversation-build; the agent is cached, so a re-seed takes effect on
-the next process start (no cache invalidation — not needed for an admin-seeded, rarely-changing set).
+each. Configs are read once at conversation-build; the agent is cached, so a config change takes effect
+on the next process start (no cache invalidation — not needed for a rarely-changing, admin-only set).
 A sub-agent builds its tools through the SAME `deps.tools` registry the main agent uses (`app/tools/`)
 — the main agent's spec is `MAIN_TOOLS` (in `app/assistant/`: general web + state tools), a
 sub-agent's is its `config.tool_names` (which may name the specialized SerpApi leaves + `hypothesis_tree`).
@@ -106,13 +96,11 @@ locally and links via baski's `sub_trace_ids`). Walk it with `analyze-traces/tra
   token volume dominates cost/quality (research: `docs/orchestrator-subagent-architecture.md` §3.2,
   §5). The downward brief (goal / output format / boundaries) lives in `SubagentTool.Input.prompt`'s
   description — the strongest lever available under the owner's fixed single-string interface.
-- **`subagents` is a trusted admin surface.** It drives which tools/model/prompts run. Two writers
-  exist, both trusted: the seed script, and the nightly curator through `subagent_list` /
-  `subagent_save` / `subagent_forget` (`tools.py`, registered as `subagents` — curator-only,
-  deliberately NOT in `MAIN_TOOLS`, so nothing the owner types in chat reaches this write path).
-  Retirement is a soft delete and is refused while a live worker names the target in its
-  `tool_names`; `make seed` leaves a retired worker retired, since reviving it would undo a decision
-  made on the owner's evidence. Never wire a
+- **`subagents` is a trusted admin surface.** It drives which tools/model/prompts run. One writer
+  exists: the nightly curator through `subagent_list` / `subagent_save` / `subagent_forget`
+  (`tools.py`, registered as `subagents` — curator-only, deliberately NOT in `MAIN_TOOLS`, so nothing
+  the owner types in chat reaches this write path). Retirement is a soft delete and is refused while
+  a live worker names the target in its `tool_names`. Never wire a
   user-facing writer to it. A save validates `tool_names` against the live registry and `model`
   against `ALLOWED_MODELS` *before* writing — an unknown tool name would otherwise surface as a
   crash at the next conversation build, taking the whole chat down rather than one tool call. The
